@@ -120,7 +120,7 @@ func renderMainView(m model) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("# Queue (%d items)", len(m.queueItems))))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("# Quick Action Queue (%d items)", len(m.queueItems))))
 	b.WriteString("\n")
 	if len(m.queueItems) == 0 {
 		b.WriteString(dimStyle.Render("  No items needing attention"))
@@ -154,7 +154,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[q]uick respond  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
+	help := "[q]uick action  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
