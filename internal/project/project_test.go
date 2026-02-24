@@ -42,9 +42,8 @@ func TestAdd_ShouldStoreProject_GivenValidProject(t *testing.T) {
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
 	project := &Project{
-		Name:       "test-project",
-		Path:       repoDir,
-		BaseBranch: "origin/master",
+		Name: "test-project",
+		Path: repoDir,
 	}
 
 	// Execute.
@@ -156,21 +155,69 @@ func TestRemove_ShouldDeleteProject_GivenValidName(t *testing.T) {
 	}
 }
 
-func TestAdd_ShouldSetDefaultBaseBranch_GivenEmptyBaseBranch(t *testing.T) {
+func TestGet_ShouldFail_GivenNonexistentName(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	_, err := store.Get("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent project, got nil")
+	}
+}
+
+func TestRemove_ShouldFail_GivenNonexistentName(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	err := store.Remove("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent project, got nil")
+	}
+}
+
+func TestAdd_ShouldStoreAbsolutePath_GivenRelativePath(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
 	project := &Project{
-		Name: "test",
+		Name: "abs-test",
 		Path: repoDir,
 	}
 
 	// Execute.
-	store.Add(project)
+	err := store.Add(project)
 
 	// Assert.
-	retrieved, _ := store.Get("test")
-	if retrieved.BaseBranch != "origin/master" {
-		t.Errorf("expected default base branch 'origin/master', got '%s'", retrieved.BaseBranch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("abs-test")
+	if retrieved.Path == "" {
+		t.Error("expected path to be set")
+	}
+}
+
+func TestList_ShouldReturnEmpty_GivenNoProjects(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	projects, err := store.List()
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(projects))
 	}
 }

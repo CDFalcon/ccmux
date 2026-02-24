@@ -133,3 +133,130 @@ func TestDelete_ShouldRemoveAgent_GivenValidID(t *testing.T) {
 		t.Errorf("expected 0 agents after deletion, got %d", len(agents))
 	}
 }
+
+func TestGet_ShouldFail_GivenNonexistentID(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	_, err := store.Get("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent agent, got nil")
+	}
+}
+
+func TestUpdate_ShouldFail_GivenNonexistentID(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	err := store.Update("nonexistent", func(a *Agent) {
+		a.Task = "updated"
+	})
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent agent, got nil")
+	}
+}
+
+func TestDelete_ShouldFail_GivenNonexistentID(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	err := store.Delete("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent agent, got nil")
+	}
+}
+
+func TestCreate_ShouldSetTimestamps_GivenNewAgent(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	err := store.Create(&Agent{ID: "ts-test", Task: "Task"})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("ts-test")
+	if retrieved.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set")
+	}
+	if retrieved.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be set")
+	}
+}
+
+func TestUpdate_ShouldUpdateTimestamp_GivenValidUpdate(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Create(&Agent{ID: "ts-test", Task: "Task", Status: StatusRunning})
+	original, _ := store.Get("ts-test")
+	originalUpdated := original.UpdatedAt
+
+	// Execute.
+	err := store.Update("ts-test", func(a *Agent) {
+		a.Status = StatusReady
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	updated, _ := store.Get("ts-test")
+	if !updated.UpdatedAt.After(originalUpdated) && !updated.UpdatedAt.Equal(originalUpdated) {
+		t.Error("expected UpdatedAt to be updated")
+	}
+}
+
+func TestList_ShouldReturnEmpty_GivenNoAgents(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	agents, err := store.List()
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents, got %d", len(agents))
+	}
+}
+
+func TestStatusConstants_ShouldHaveExpectedValues(t *testing.T) {
+	// Assert.
+	if StatusSpawning != "spawning" {
+		t.Errorf("expected 'spawning', got '%s'", StatusSpawning)
+	}
+	if StatusRunning != "running" {
+		t.Errorf("expected 'running', got '%s'", StatusRunning)
+	}
+	if StatusReady != "ready" {
+		t.Errorf("expected 'ready', got '%s'", StatusReady)
+	}
+	if StatusKilling != "killing" {
+		t.Errorf("expected 'killing', got '%s'", StatusKilling)
+	}
+	if StatusMerged != "merged" {
+		t.Errorf("expected 'merged', got '%s'", StatusMerged)
+	}
+	if StatusFailed != "failed" {
+		t.Errorf("expected 'failed', got '%s'", StatusFailed)
+	}
+}

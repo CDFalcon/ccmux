@@ -149,3 +149,150 @@ func TestClear_ShouldRemoveAllItems_GivenPopulatedQueue(t *testing.T) {
 		t.Errorf("expected 0 items after clear, got %d", len(items))
 	}
 }
+
+func TestGet_ShouldReturnItem_GivenValidID(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+	added, _ := q.Add(ItemTypeQuestion, "agent-1", "Test question", "Some details")
+
+	// Execute.
+	item, err := q.Get(added.ID)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if item.Summary != "Test question" {
+		t.Errorf("expected summary 'Test question', got '%s'", item.Summary)
+	}
+	if item.Details != "Some details" {
+		t.Errorf("expected details 'Some details', got '%s'", item.Details)
+	}
+}
+
+func TestGet_ShouldFail_GivenNonexistentID(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	_, err := q.Get("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent queue item, got nil")
+	}
+}
+
+func TestRemove_ShouldFail_GivenNonexistentID(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	err := q.Remove("nonexistent")
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for nonexistent queue item, got nil")
+	}
+}
+
+func TestAdd_ShouldIncrementCounter_GivenMultipleAdds(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	item1, _ := q.Add(ItemTypeQuestion, "agent-1", "Q1", "")
+	item2, _ := q.Add(ItemTypePRReady, "agent-2", "PR", "")
+	item3, _ := q.Add(ItemTypeIdle, "agent-3", "Idle", "")
+
+	// Assert.
+	if item1.ID != "q1" {
+		t.Errorf("expected first item ID 'q1', got '%s'", item1.ID)
+	}
+	if item2.ID != "q2" {
+		t.Errorf("expected second item ID 'q2', got '%s'", item2.ID)
+	}
+	if item3.ID != "q3" {
+		t.Errorf("expected third item ID 'q3', got '%s'", item3.ID)
+	}
+}
+
+func TestAdd_ShouldSetTimestamp_GivenNewItem(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	item, _ := q.Add(ItemTypeQuestion, "agent-1", "Q", "")
+
+	// Assert.
+	if item.Timestamp.IsZero() {
+		t.Error("expected timestamp to be set")
+	}
+}
+
+func TestList_ShouldReturnEmpty_GivenNoItems(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	items, err := q.List()
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+func TestListByType_ShouldReturnEmpty_GivenNoMatchingType(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+	q.Add(ItemTypePRReady, "agent-1", "PR", "")
+
+	// Execute.
+	items, err := q.ListByType(ItemTypeQuestion)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+func TestRemoveByAgent_ShouldNotError_GivenNonexistentAgent(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+
+	// Execute.
+	err := q.RemoveByAgent("nonexistent-agent")
+
+	// Assert.
+	if err != nil {
+		t.Errorf("expected no error for nonexistent agent removal, got %v", err)
+	}
+}
+
+func TestItemTypeConstants_ShouldHaveExpectedValues(t *testing.T) {
+	// Assert.
+	if ItemTypeQuestion != "question" {
+		t.Errorf("expected 'question', got '%s'", ItemTypeQuestion)
+	}
+	if ItemTypePRReady != "pr_ready" {
+		t.Errorf("expected 'pr_ready', got '%s'", ItemTypePRReady)
+	}
+	if ItemTypeIdle != "idle" {
+		t.Errorf("expected 'idle', got '%s'", ItemTypeIdle)
+	}
+}
