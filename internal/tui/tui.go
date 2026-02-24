@@ -450,9 +450,6 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = ViewSelectProject
 		m.selectedIndex = 0
-	case "r":
-		m.view = ViewReview
-		m.selectedIndex = 0
 	case "k":
 		m.view = ViewConfirmKill
 		m.selectedIndex = 0
