@@ -563,6 +563,13 @@ func doCleanup(agentID, action string) error {
 		wtManager.DeleteBranch(a.BranchName)
 	}
 
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+		os.Remove(filepath.Join(launcherDir, agentID+".sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
+	}
+
 	queueManager, err := queue.NewQueue(sessionID)
 	if err != nil {
 		return err
@@ -593,10 +600,17 @@ func killSessionCmd() *cobra.Command {
 				return fmt.Errorf("session %s does not exist", tmuxSessionName)
 			}
 
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get home directory: %w", err)
+			}
+
 			agentStore, err := agent.NewStore(sessionID)
 			if err != nil {
 				return err
 			}
+
+			launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
 
 			agents, _ := agentStore.List()
 			for _, a := range agents {
@@ -607,8 +621,12 @@ func killSessionCmd() *cobra.Command {
 					wtManager.Remove(a.WorktreePath)
 					wtManager.DeleteBranch(a.BranchName)
 				}
-				agentStore.Delete(a.ID)
+				os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 			}
+
+			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
+			os.RemoveAll(sessionDir)
 
 			if err := tmuxManager.KillSession(); err != nil {
 				return err
