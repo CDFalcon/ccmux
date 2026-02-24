@@ -27,7 +27,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "ccmux [session-id]",
-		Short: "Claude Code Multiplexer - manage multiple Claude agents in parallel",
+		Short: "Colby's Claude Multiplexer - manage multiple Claude agents in parallel",
 		Long: `ccmux starts or attaches to a Claude agent orchestrator session.
 
 Without arguments, uses the "default" session.
