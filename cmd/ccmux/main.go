@@ -85,18 +85,30 @@ func runSession(sessionID string) error {
 	if !tmux.InsideTmux() {
 		if !tmuxManager.SessionExists() {
 			homeDir, _ := os.UserHomeDir()
+
+			recovered := false
 			if homeDir != "" {
-				sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
-				os.RemoveAll(sessionDir)
+				var err error
+				recovered, err = recoverOrphanedAgents(sessionID, tmuxManager, homeDir)
+				if err != nil {
+					logging.Log("recovery: error during agent recovery: %v", err)
+				}
 			}
 
-			exePath, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("failed to get executable path: %w", err)
-			}
-			cmd := fmt.Sprintf("%s %s", exePath, sessionID)
-			if err := tmuxManager.CreateSessionWithCommand(homeDir, cmd); err != nil {
-				return err
+			if !recovered {
+				if homeDir != "" {
+					sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
+					os.RemoveAll(sessionDir)
+				}
+
+				exePath, err := os.Executable()
+				if err != nil {
+					return fmt.Errorf("failed to get executable path: %w", err)
+				}
+				cmd := fmt.Sprintf("%s %s", exePath, sessionID)
+				if err := tmuxManager.CreateSessionWithCommand(homeDir, cmd); err != nil {
+					return err
+				}
 			}
 		} else {
 			tmuxManager.SourceUserConfig()
@@ -594,6 +606,8 @@ func doCleanup(agentID, action string) error {
 		launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
 		os.Remove(filepath.Join(launcherDir, agentID+".sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
 	}
 
 	queueManager, err := queue.NewQueue(sessionID)
@@ -642,6 +656,8 @@ func killSessionCmd() *cobra.Command {
 				}
 				os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
 			}
 
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
@@ -660,6 +676,263 @@ func killSessionCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir string) (bool, error) {
+	agentStore, err := agent.NewStore(sessionID)
+	if err != nil {
+		return false, err
+	}
+
+	agents, err := agentStore.List()
+	if err != nil || len(agents) == 0 {
+		return false, nil
+	}
+
+	type recoverable struct {
+		agent      *agent.Agent
+		scriptPath string
+		kind       string // "resume" or "placeholder"
+	}
+
+	var toRecover []recoverable
+	var toCleanup []*agent.Agent
+	var toRemove []string
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+
+	for _, a := range agents {
+		worktreeExists := a.WorktreePath != "" && dirExists(a.WorktreePath)
+
+		switch {
+		case (a.Status == agent.StatusCleaningUp || a.Status == agent.StatusKilling) && worktreeExists:
+			toCleanup = append(toCleanup, a)
+
+		case (a.Status == agent.StatusRunning || a.Status == agent.StatusSpawning) && worktreeExists:
+			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, sessionID)
+			if err != nil {
+				logging.Log("recovery: failed to write recovery script for %s: %v", a.ID, err)
+				continue
+			}
+			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "resume"})
+
+		case a.Status == agent.StatusReady && worktreeExists:
+			scriptPath, err := writePlaceholderScript(a.ID, a.WorktreePath, a.Task)
+			if err != nil {
+				logging.Log("recovery: failed to write placeholder script for %s: %v", a.ID, err)
+				continue
+			}
+			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
+
+		default:
+			toRemove = append(toRemove, a.ID)
+		}
+	}
+
+	for _, a := range toCleanup {
+		logging.Log("recovery: cleaning up stale agent %s", a.ID)
+		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+		if err == nil {
+			wtManager := worktree.NewManager(repoRoot)
+			os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+			wtManager.Remove(a.WorktreePath)
+			wtManager.DeleteBranch(a.BranchName)
+		}
+		os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
+		agentStore.Delete(a.ID)
+	}
+
+	for _, id := range toRemove {
+		logging.Log("recovery: removing orphaned agent record %s", id)
+		os.Remove(filepath.Join(launcherDir, id+".sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
+		agentStore.Delete(id)
+	}
+
+	if len(toRecover) == 0 {
+		return false, nil
+	}
+
+	logging.Log("recovery: recovering %d agents", len(toRecover))
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("failed to get executable path: %w", err)
+	}
+	tuiCmd := fmt.Sprintf("%s %s", exePath, sessionID)
+	if err := tmuxManager.CreateSessionWithCommand(homeDir, tuiCmd); err != nil {
+		return false, err
+	}
+
+	for _, r := range toRecover {
+		windowID, err := tmuxManager.CreateWindow(r.agent.WorktreePath, "bash "+r.scriptPath, r.agent.ID[:8])
+		if err != nil {
+			logging.Log("recovery: failed to create window for %s: %v", r.agent.ID, err)
+			continue
+		}
+		agentStore.Update(r.agent.ID, func(a *agent.Agent) {
+			a.TmuxWindow = windowID
+			if r.kind == "resume" {
+				a.Status = agent.StatusRunning
+			}
+		})
+		logging.Log("recovery: agent %s recovered (%s) -> window %s", r.agent.ID, r.kind, windowID)
+	}
+
+	queueManager, err := queue.NewQueue(sessionID)
+	if err != nil {
+		logging.Log("recovery: failed to create queue manager: %v", err)
+	} else {
+		items, _ := queueManager.List()
+		activeAgents := make(map[string]bool)
+		recoveredAgents, _ := agentStore.List()
+		for _, a := range recoveredAgents {
+			activeAgents[a.ID] = true
+		}
+		for _, item := range items {
+			if !activeAgents[item.AgentID] {
+				queueManager.Remove(item.ID)
+			}
+		}
+	}
+
+	return true, nil
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func writeRecoveryScript(agentID, worktreePath, sessionID string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-recovery.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID="%s"
+WORKTREE_PATH="%s"
+SESSION_ID="%s"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+YELLOW="\033[38;5;226m"
+RESET="\033[0m"
+echo -e "${YELLOW}RECOVERING${RESET} ${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Resuming after session loss...${RESET}"
+echo ""
+
+cd "$WORKTREE_PATH"
+
+# Reinstall hooks
+mkdir -p .claude/hooks
+
+cat > .claude/hooks/stop.sh << 'HOOKEOF'
+#!/bin/bash
+ccmux agent-stopped "$CCMUX_AGENT_ID"
+HOOKEOF
+chmod +x .claude/hooks/stop.sh
+
+cat > .claude/settings.json << SETTINGSEOF
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+SETTINGSEOF
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION=us-west-2
+unset CLAUDECODE
+
+echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"
+echo ""
+
+claude --continue --dangerously-skip-permissions --system-prompt "You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+
+IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
+
+When done with your task:
+1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
+2. After creating the PR, run: ccmux pr-ready <pr-url>"
+
+ccmux agent-stopped "$AGENT_ID"
+`, agentID, worktreePath, sessionID)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func writePlaceholderScript(agentID, worktreePath, task string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+
+AGENT_ID="%s"
+WORKTREE_PATH="%s"
+TASK=%q
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+GREEN="\033[38;5;46m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Task:${RESET} $TASK"
+echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
+echo ""
+echo -e "${GREEN}● Waiting for PR review${RESET}"
+echo -e "${DIM}This agent has a PR up for review. Use the TUI to accept, comment, or reject.${RESET}"
+echo ""
+
+while true; do
+  sleep 3600
+done
+`, agentID, worktreePath, task)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
 }
 
 func generateID() string {
