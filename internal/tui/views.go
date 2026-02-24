@@ -537,34 +537,7 @@ func renderConfirmKillView(m model) string {
 
 	b.WriteString(titleStyle.Render("# Kill Agent"))
 	b.WriteString("\n\n")
-
-	if len(m.agents) == 0 {
-		b.WriteString(dimStyle.Render("No agents to kill"))
-		b.WriteString("\n\n")
-	} else {
-		for i, a := range m.agents {
-			style := queueItemStyle
-			if i == m.selectedIndex {
-				style = selectedItemStyle
-			}
-			statusStyle := getAgentStatusStyle(a.Status)
-			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(string(a.Status)))
-			b.WriteString(style.Render(line))
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-
-	if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
-		selected := m.agents[m.selectedIndex]
-		b.WriteString(headerStyle.Render("## Agent Details"))
-		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("ID: %s\n", selected.ID))
-		b.WriteString(fmt.Sprintf("Task: %s\n", selected.Task))
-		b.WriteString(fmt.Sprintf("Branch: %s\n", dimStyle.Render(selected.BranchName)))
-		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
-		b.WriteString("\n")
-	}
+	b.WriteString(renderAgentSelector(m, "No agents to kill"))
 
 	help := "[↑/↓/j/k] select  [enter] kill  [esc] back"
 	b.WriteString(helpStyle.Render(help))
@@ -772,6 +745,61 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+func wrapText(s string, width int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= width {
+		return s
+	}
+	var lines []string
+	for len(s) > 0 {
+		if len(s) <= width {
+			lines = append(lines, s)
+			break
+		}
+		cut := strings.LastIndex(s[:width], " ")
+		if cut <= 0 {
+			cut = width
+		}
+		lines = append(lines, s[:cut])
+		s = strings.TrimLeft(s[cut:], " ")
+	}
+	return strings.Join(lines, "\n        ")
+}
+
+func renderAgentSelector(m model, emptyMsg string) string {
+	var b strings.Builder
+
+	if len(m.agents) == 0 {
+		b.WriteString(dimStyle.Render(emptyMsg))
+		b.WriteString("\n\n")
+	} else {
+		for i, a := range m.agents {
+			style := queueItemStyle
+			if i == m.selectedIndex {
+				style = selectedItemStyle
+			}
+			statusStyle := getAgentStatusStyle(a.Status)
+			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(string(a.Status)))
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
+		selected := m.agents[m.selectedIndex]
+		b.WriteString(headerStyle.Render("## Agent Details"))
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("ID:       %s\n", selected.ID))
+		b.WriteString(fmt.Sprintf("Task:     %s\n", wrapText(selected.Task, 60)))
+		b.WriteString(fmt.Sprintf("Branch:   %s\n", dimStyle.Render(selected.BranchName)))
+		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 func marquee(s string, maxWidth int, offset int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	runes := []rune(s)
@@ -816,34 +844,7 @@ func renderJumpToAgentView(m model) string {
 
 	b.WriteString(titleStyle.Render("# Jump to Agent"))
 	b.WriteString("\n\n")
-
-	if len(m.agents) == 0 {
-		b.WriteString(dimStyle.Render("No agents running"))
-		b.WriteString("\n\n")
-	} else {
-		for i, a := range m.agents {
-			style := queueItemStyle
-			if i == m.selectedIndex {
-				style = selectedItemStyle
-			}
-			statusStyle := getAgentStatusStyle(a.Status)
-			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(string(a.Status)))
-			b.WriteString(style.Render(line))
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-
-	if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
-		selected := m.agents[m.selectedIndex]
-		b.WriteString(headerStyle.Render("## Agent Details"))
-		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("ID: %s\n", selected.ID))
-		b.WriteString(fmt.Sprintf("Task: %s\n", selected.Task))
-		b.WriteString(fmt.Sprintf("Branch: %s\n", dimStyle.Render(selected.BranchName)))
-		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
-		b.WriteString("\n")
-	}
+	b.WriteString(renderAgentSelector(m, "No agents running"))
 
 	help := "[↑/↓/j/k] select  [enter] jump  [esc] back"
 	b.WriteString(helpStyle.Render(help))
