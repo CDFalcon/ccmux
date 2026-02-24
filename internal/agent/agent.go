@@ -13,12 +13,13 @@ import (
 type Status string
 
 const (
-	StatusSpawning Status = "spawning"
-	StatusRunning  Status = "running"
-	StatusReady    Status = "ready"
-	StatusKilling  Status = "killing"
-	StatusMerged   Status = "merged"
-	StatusFailed   Status = "failed"
+	StatusSpawning   Status = "spawning"
+	StatusRunning    Status = "running"
+	StatusReady      Status = "ready"
+	StatusCleaningUp Status = "cleaning_up"
+	StatusKilling    Status = "killing"
+	StatusMerged     Status = "merged"
+	StatusFailed     Status = "failed"
 )
 
 type Agent struct {

@@ -45,11 +45,9 @@ type model struct {
 	// Ctrl+C confirmation
 	ctrlCPressed bool
 
-	// Loading states
-	cleaningUp      bool
-	cleaningUpAgent string
-	spinnerFrame    int
-	marqueeOffset   int
+	// Animation state
+	spinnerFrame  int
+	marqueeOffset int
 
 	agentStore   *agent.Store
 	queueManager *queue.Queue
@@ -274,14 +272,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tickCmd(), m.refreshCmd())
 
 	case spinnerTickMsg:
-		hasActiveAgents := false
+		hasAnimatedAgents := false
 		for _, a := range m.agents {
-			if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning {
-				hasActiveAgents = true
+			if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp {
+				hasAnimatedAgents = true
 				break
 			}
 		}
-		if m.cleaningUp || hasActiveAgents {
+		if hasAnimatedAgents {
 			m.spinnerFrame = (m.spinnerFrame + 1) % SpinnerFrameCount
 			m.marqueeOffset++
 			m.updateWindowNames()
@@ -299,14 +297,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
-		m.cleaningUp = false
-		m.cleaningUpAgent = ""
 		return m, tea.Batch(clearMessageCmd(), m.refreshCmd())
 
 	case successMsg:
 		m.err = nil
-		m.cleaningUp = false
-		m.cleaningUpAgent = ""
 		return m, m.refreshCmd()
 
 	case clearMessageMsg:
@@ -596,8 +590,9 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if a, _ := findAgent(); a != nil {
 			m.view = ViewMain
-			m.cleaningUp = true
-			m.cleaningUpAgent = a.ID
+			m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusCleaningUp
+			})
 			return m, m.acceptPRCmd(a)
 		}
 	case "c":
@@ -608,8 +603,9 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if a, item := findAgent(); a != nil {
 			m.view = ViewMain
-			m.cleaningUp = true
-			m.cleaningUpAgent = a.ID
+			m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusCleaningUp
+			})
 			return m, m.rejectPRCmd(a, item.Details)
 		}
 	case "b":
@@ -824,6 +820,8 @@ func (m model) updateWindowNames() {
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusRunning:
 			name = spinner(m.spinnerFrame) + " " + short
+		case agent.StatusCleaningUp:
+			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusKilling:
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusReady:
@@ -925,6 +923,9 @@ func (m model) sendKeysToAgentCmd(a *agent.Agent, text string) tea.Cmd {
 
 func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
+	m.agentStore.Update(agentID, func(ag *agent.Agent) {
+		ag.Status = agent.StatusCleaningUp
+	})
 	return func() tea.Msg {
 		go func() {
 			exePath, _ := os.Executable()

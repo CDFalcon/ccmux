@@ -4,6 +4,7 @@ import "github.com/charmbracelet/lipgloss"
 
 const (
 	ColorRoyalBlue   = "63"
+	ColorLightBlue   = "117"
 	ColorSilverWhite = "252"
 	ColorDimGray     = "245"
 	ColorGreen       = "46"
@@ -64,6 +65,9 @@ var (
 
 	agentKillingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorRed))
+
+	agentCleaningUpStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(ColorLightBlue))
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(dimGray).
