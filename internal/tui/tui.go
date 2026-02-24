@@ -919,9 +919,19 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
 
-		if err := m.tmuxManager.RespawnPane(tmuxWindow, "bash "+scriptPath); err != nil {
-			return errMsg{fmt.Errorf("failed to restart agent: %w", err)}
+		// Kill old window and create a fresh one instead of respawning the
+		// dead pane. Respawn-pane inherits stale terminal state (alternate
+		// screen, raw mode) from the previous Claude Code process, which
+		// causes the new process to hang waiting for input.
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
 		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to address PR comments", agentID)}
 	}
