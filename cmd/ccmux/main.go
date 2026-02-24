@@ -252,6 +252,17 @@ SETTINGSEOF
 echo "✓ Hooks installed"
 echo ""
 
+# Pre-trust worktree directory in Claude Code
+echo "→ Pre-trusting worktree directory..."
+CLAUDE_JSON="$HOME/.claude.json"
+if [ -f "$CLAUDE_JSON" ]; then
+  jq --arg path "$WORKTREE_PATH" '.projects[$path].hasTrustDialogAccepted = true' "$CLAUDE_JSON" > "${CLAUDE_JSON}.tmp" && mv "${CLAUDE_JSON}.tmp" "$CLAUDE_JSON"
+else
+  echo '{}' | jq --arg path "$WORKTREE_PATH" '.projects[$path].hasTrustDialogAccepted = true' > "$CLAUDE_JSON"
+fi
+echo "✓ Directory trusted"
+echo ""
+
 # Register agent
 echo "→ Registering agent..."
 WINDOW_ID=$(tmux display-message -p '#{window_id}')
