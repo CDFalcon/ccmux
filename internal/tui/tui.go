@@ -400,7 +400,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case queue.ItemTypeIdle, queue.ItemTypeQuestion:
 			for _, a := range m.agents {
 				if a.ID == item.AgentID {
-					return m, m.jumpToAgentCmd(a)
+					return m, m.quickRespondToAgentCmd(a)
 				}
 			}
 		case queue.ItemTypePRReady:
@@ -862,6 +862,16 @@ func (m model) spawnAgentCmd(task string, proj *project.Project, branch string) 
 
 func (m model) jumpToAgentCmd(a *agent.Agent) tea.Cmd {
 	return func() tea.Msg {
+		if err := m.tmuxManager.SelectWindow(a.TmuxWindow); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
+}
+
+func (m model) quickRespondToAgentCmd(a *agent.Agent) tea.Cmd {
+	return func() tea.Msg {
+		m.queueManager.RemoveByAgent(a.ID)
 		if err := m.tmuxManager.SelectWindow(a.TmuxWindow); err != nil {
 			return errMsg{err}
 		}
