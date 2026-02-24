@@ -123,7 +123,7 @@ func renderMainView(m model) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("# Quick Action Queue (%d items)", len(m.queueItems))))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("# Quick action queue (%d items)", len(m.queueItems))))
 	b.WriteString("\n")
 	if len(m.queueItems) == 0 {
 		b.WriteString(dimStyle.Render("  No items needing attention"))
@@ -205,11 +205,16 @@ func renderNewTaskBranchView(m model) string {
 
 	b.WriteString("Select base branch:\n\n")
 
-	var entries []string
-	entries = append(entries, branchTagStyle.Render("(origin)")+" master")
-	entries = append(entries, "Manually specify branch")
+	type branchEntry struct {
+		tag  string
+		name string
+	}
+
+	var entries []branchEntry
+	entries = append(entries, branchEntry{tag: "(origin)", name: "master"})
+	entries = append(entries, branchEntry{name: "Manually specify branch"})
 	for _, branch := range m.branchOptions {
-		entries = append(entries, branchTagStyle.Render("(local)")+" "+branch)
+		entries = append(entries, branchEntry{tag: "(local)", name: branch})
 	}
 
 	totalItems := len(entries)
@@ -235,11 +240,23 @@ func renderNewTaskBranchView(m model) string {
 	}
 
 	for i := visibleStart; i < visibleEnd; i++ {
+		entry := entries[i]
+		isSelected := i == m.selectedIndex
 		style := queueItemStyle
-		if i == m.selectedIndex {
+		if isSelected {
 			style = selectedItemStyle
 		}
-		b.WriteString(style.Render(entries[i]))
+		var text string
+		if entry.tag != "" {
+			if isSelected {
+				text = entry.tag + " " + entry.name
+			} else {
+				text = branchTagStyle.Render(entry.tag) + " " + entry.name
+			}
+		} else {
+			text = entry.name
+		}
+		b.WriteString(style.Render(text))
 		b.WriteString("\n")
 	}
 

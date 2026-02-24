@@ -2,6 +2,7 @@ package updater
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,16 +46,26 @@ func DownloadUpdate(targetVersion string) error {
 		return fmt.Errorf("failed to resolve binary path: %w", err)
 	}
 
-	tmpPath := currentBinary + ".tmp"
+	tmpDir, err := os.MkdirTemp(filepath.Dir(currentBinary), ".ccmux-update-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	cmd := exec.Command("gh", "release", "download", targetVersion,
 		"--repo", repo,
 		"--pattern", pattern,
-		"--output", tmpPath,
+		"--dir", tmpDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		os.Remove(tmpPath)
 		return fmt.Errorf("failed to download update: %s: %w", string(output), err)
+	}
+
+	downloadedFile := filepath.Join(tmpDir, pattern)
+	tmpPath := currentBinary + ".tmp"
+
+	if err := copyFile(downloadedFile, tmpPath); err != nil {
+		return fmt.Errorf("failed to stage downloaded file: %w", err)
 	}
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
@@ -68,4 +79,21 @@ func DownloadUpdate(targetVersion string) error {
 	}
 
 	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
