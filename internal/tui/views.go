@@ -205,11 +205,6 @@ func renderNewTaskBranchView(m model) string {
 
 	b.WriteString("Select base branch:\n\n")
 
-	type branchEntry struct {
-		tag  string
-		name string
-	}
-
 	var entries []branchEntry
 	entries = append(entries, branchEntry{tag: "(origin)", name: "master"})
 	entries = append(entries, branchEntry{name: "Manually specify branch"})
@@ -285,17 +280,111 @@ func renderNewTaskBranchInputView(m model) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Enter base branch (leave empty for origin/master):\n")
+	b.WriteString("Search branches:\n")
 	b.WriteString(inputStyle.Render(m.branchInput.View()))
 	b.WriteString("\n\n")
 
-	b.WriteString(dimStyle.Render("Branch to create worktree from (e.g., 'origin/main', 'origin/develop')"))
-	b.WriteString("\n\n")
+	entries := m.branchFilteredEntries
+	totalItems := len(entries)
 
-	help := "[enter] next  [esc] back"
+	if totalItems == 0 {
+		if m.branchInput.Value() != "" {
+			b.WriteString(dimStyle.Render("  No matching branches"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  Press enter to use \"" + m.branchInput.Value() + "\" as-is"))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(dimStyle.Render("  No branches found"))
+			b.WriteString("\n")
+		}
+	} else {
+		visibleStart := 0
+		visibleEnd := totalItems
+		if totalItems > MaxVisibleBranchItems {
+			half := MaxVisibleBranchItems / 2
+			visibleStart = m.branchSearchIndex - half
+			if visibleStart < 0 {
+				visibleStart = 0
+			}
+			visibleEnd = visibleStart + MaxVisibleBranchItems
+			if visibleEnd > totalItems {
+				visibleEnd = totalItems
+				visibleStart = visibleEnd - MaxVisibleBranchItems
+			}
+		}
+
+		if visibleStart > 0 {
+			b.WriteString(dimStyle.Render("  ↑ more"))
+			b.WriteString("\n")
+		}
+
+		for i := visibleStart; i < visibleEnd; i++ {
+			entry := entries[i]
+			isSelected := i == m.branchSearchIndex
+
+			if isSelected {
+				var text string
+				if entry.tag != "" {
+					text = entry.tag + " " + entry.name
+				} else {
+					text = entry.name
+				}
+				b.WriteString(selectedItemStyle.Render(text))
+			} else {
+				var text string
+				if entry.tag != "" {
+					text = branchTagStyle.Render(entry.tag) + " " + renderMatchedName(entry.name, entry.matchedIndexes)
+				} else {
+					text = renderMatchedName(entry.name, entry.matchedIndexes)
+				}
+				b.WriteString(queueItemStyle.Render(text))
+			}
+			b.WriteString("\n")
+		}
+
+		if visibleEnd < totalItems {
+			b.WriteString(dimStyle.Render("  ↓ more"))
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n")
+
+	help := "[↑/↓] select  [enter] choose  [esc] back"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
+}
+
+func renderMatchedName(name string, matchedIndexes []int) string {
+	if len(matchedIndexes) == 0 {
+		return name
+	}
+
+	matchSet := make(map[int]bool)
+	for _, idx := range matchedIndexes {
+		matchSet[idx] = true
+	}
+
+	runes := []rune(name)
+	var result strings.Builder
+	i := 0
+	for i < len(runes) {
+		if matchSet[i] {
+			start := i
+			for i < len(runes) && matchSet[i] {
+				i++
+			}
+			result.WriteString(branchMatchStyle.Render(string(runes[start:i])))
+		} else {
+			start := i
+			for i < len(runes) && !matchSet[i] {
+				i++
+			}
+			result.WriteString(string(runes[start:i]))
+		}
+	}
+	return result.String()
 }
 
 func renderNewTaskInputView(m model) string {

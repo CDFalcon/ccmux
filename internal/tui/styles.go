@@ -88,6 +88,10 @@ var (
 	branchTagStyle = lipgloss.NewStyle().
 			Foreground(dimGray)
 
+	branchMatchStyle = lipgloss.NewStyle().
+				Foreground(royalBlue).
+				Bold(true)
+
 	questionStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorYellow))
 
