@@ -72,12 +72,17 @@ func runSession(sessionID string) error {
 
 	if !tmux.InsideTmux() {
 		if !tmuxManager.SessionExists() {
+			homeDir, _ := os.UserHomeDir()
+			if homeDir != "" {
+				sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
+				os.RemoveAll(sessionDir)
+			}
+
 			exePath, err := os.Executable()
 			if err != nil {
 				return fmt.Errorf("failed to get executable path: %w", err)
 			}
 			cmd := fmt.Sprintf("%s %s", exePath, sessionID)
-			homeDir, _ := os.UserHomeDir()
 			if err := tmuxManager.CreateSessionWithCommand(homeDir, cmd); err != nil {
 				return err
 			}
@@ -593,13 +598,6 @@ func killSessionCmd() *cobra.Command {
 				sessionID = args[0]
 			}
 
-			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
-			tmuxManager := tmux.NewManager(tmuxSessionName)
-
-			if !tmuxManager.SessionExists() {
-				return fmt.Errorf("session %s does not exist", tmuxSessionName)
-			}
-
 			homeDir, err := os.UserHomeDir()
 			if err != nil {
 				return fmt.Errorf("failed to get home directory: %w", err)
@@ -628,8 +626,13 @@ func killSessionCmd() *cobra.Command {
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
 			os.RemoveAll(sessionDir)
 
-			if err := tmuxManager.KillSession(); err != nil {
-				return err
+			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
+			tmuxManager := tmux.NewManager(tmuxSessionName)
+
+			if tmuxManager.SessionExists() {
+				if err := tmuxManager.KillSession(); err != nil {
+					return err
+				}
 			}
 
 			fmt.Printf("Killed session %s\n", tmuxSessionName)
