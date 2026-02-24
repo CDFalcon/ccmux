@@ -25,8 +25,10 @@ type model struct {
 	selectedProj  *project.Project
 	err           error
 
-	// Single task input
-	taskInput textinput.Model
+	// Task spawn inputs
+	taskInput   textinput.Model
+	branchInput textinput.Model
+	spawnBranch string
 
 	// Project form inputs
 	projectForm    projectFormModel
@@ -53,10 +55,9 @@ type model struct {
 }
 
 type projectFormModel struct {
-	nameInput   textinput.Model
-	pathInput   textinput.Model
-	branchInput textinput.Model
-	focusIndex  int // 0=name, 1=path, 2=branch
+	nameInput  textinput.Model
+	pathInput  textinput.Model
+	focusIndex int // 0=name, 1=path
 }
 
 func newProjectForm() projectFormModel {
@@ -70,64 +71,21 @@ func newProjectForm() projectFormModel {
 	pathInput.Width = 50
 	pathInput.CharLimit = 200
 
-	branchInput := textinput.New()
-	branchInput.Placeholder = "origin/master"
-	branchInput.Width = 50
-	branchInput.CharLimit = 100
-
 	return projectFormModel{
-		nameInput:   nameInput,
-		pathInput:   pathInput,
-		branchInput: branchInput,
-		focusIndex:  0,
+		nameInput:  nameInput,
+		pathInput:  pathInput,
+		focusIndex: 0,
 	}
-}
-
-func (pf *projectFormModel) focusedInput() *textinput.Model {
-	switch pf.focusIndex {
-	case 0:
-		return &pf.nameInput
-	case 1:
-		return &pf.pathInput
-	case 2:
-		return &pf.branchInput
-	}
-	return nil
-}
-
-func (pf *projectFormModel) nextField() {
-	pf.blurAll()
-	pf.focusIndex = (pf.focusIndex + 1) % 3
-	pf.focusCurrent()
-}
-
-func (pf *projectFormModel) prevField() {
-	pf.blurAll()
-	pf.focusIndex = (pf.focusIndex + 2) % 3
-	pf.focusCurrent()
 }
 
 func (pf *projectFormModel) blurAll() {
 	pf.nameInput.Blur()
 	pf.pathInput.Blur()
-	pf.branchInput.Blur()
-}
-
-func (pf *projectFormModel) focusCurrent() {
-	switch pf.focusIndex {
-	case 0:
-		pf.nameInput.Focus()
-	case 1:
-		pf.pathInput.Focus()
-	case 2:
-		pf.branchInput.Focus()
-	}
 }
 
 func (pf *projectFormModel) reset() {
 	pf.nameInput.SetValue("")
 	pf.pathInput.SetValue("")
-	pf.branchInput.SetValue("")
 	pf.focusIndex = 0
 	pf.blurAll()
 	pf.nameInput.Focus()
@@ -180,6 +138,11 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	taskInput.Placeholder = "Describe the task..."
 	taskInput.Width = 60
 
+	branchInput := textinput.New()
+	branchInput.Placeholder = "origin/master"
+	branchInput.Width = 50
+	branchInput.CharLimit = 100
+
 	interveneInput := textinput.New()
 	interveneInput.Placeholder = "Type message to send to agent..."
 	interveneInput.Width = 60
@@ -187,6 +150,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	return model{
 		view:           ViewMain,
 		taskInput:      taskInput,
+		branchInput:    branchInput,
 		interveneInput: interveneInput,
 		projectForm:    newProjectForm(),
 		agentStore:     agentStore,
@@ -332,6 +296,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs for blink cursor
+	if m.view == ViewNewTaskBranch {
+		var cmd tea.Cmd
+		m.branchInput, cmd = m.branchInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if m.view == ViewNewTaskInput {
 		var cmd tea.Cmd
 		m.taskInput, cmd = m.taskInput.Update(msg)
@@ -348,13 +317,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewAddProjectPath {
 		var cmd tea.Cmd
 		m.projectForm.pathInput, cmd = m.projectForm.pathInput.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-	}
-	if m.view == ViewAddProjectBranch {
-		var cmd tea.Cmd
-		m.projectForm.branchInput, cmd = m.projectForm.branchInput.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -393,6 +355,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMainKeys(msg)
 	case ViewSelectProject:
 		return m.handleSelectProjectKeys(msg)
+	case ViewNewTaskBranch:
+		return m.handleNewTaskBranchKeys(msg)
 	case ViewNewTaskInput:
 		return m.handleNewTaskInputKeys(msg)
 	case ViewIntervene:
@@ -411,8 +375,6 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddProjectNameKeys(msg)
 	case ViewAddProjectPath:
 		return m.handleAddProjectPathKeys(msg)
-	case ViewAddProjectBranch:
-		return m.handleAddProjectBranchKeys(msg)
 	case ViewConfirmRemoveProject:
 		return m.handleConfirmRemoveProjectKeys(msg)
 	case ViewConfirmKillSession:
@@ -484,31 +446,58 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
 			m.selectedProj = m.projects[m.selectedIndex]
-			m.view = ViewNewTaskInput
-			m.taskInput.SetValue("")
-			m.taskInput.Focus()
+			m.view = ViewNewTaskBranch
+			m.branchInput.SetValue("")
+			m.branchInput.Focus()
 			return m, textinput.Blink
 		}
 	}
 	return m, nil
 }
 
-func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewSelectProject
-		m.taskInput.SetValue("")
+		m.branchInput.SetValue("")
 		return m, nil
+	case "enter":
+		branch := m.branchInput.Value()
+		if branch == "" {
+			branch = "origin/master"
+		}
+		m.spawnBranch = branch
+		m.view = ViewNewTaskInput
+		m.taskInput.SetValue("")
+		m.taskInput.Focus()
+		return m, textinput.Blink
+	}
+
+	var cmd tea.Cmd
+	m.branchInput, cmd = m.branchInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewNewTaskBranch
+		m.branchInput.SetValue(m.spawnBranch)
+		m.branchInput.Focus()
+		m.taskInput.SetValue("")
+		return m, textinput.Blink
 	case "enter":
 		task := m.taskInput.Value()
 		if task == "" {
 			return m, nil
 		}
 		proj := m.selectedProj
+		branch := m.spawnBranch
 		m.view = ViewMain
 		m.taskInput.SetValue("")
 		m.selectedProj = nil
-		return m, m.spawnAgentCmd(task, proj)
+		m.spawnBranch = ""
+		return m, m.spawnAgentCmd(task, proj, branch)
 	}
 
 	var cmd tea.Cmd
@@ -690,37 +679,12 @@ func (m model) handleAddProjectPathKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if path == "" {
 			return m, nil
 		}
-		m.newProjectPath = path
-		m.view = ViewAddProjectBranch
-		m.projectForm.branchInput.SetValue("")
-		m.projectForm.branchInput.Focus()
-		return m, textinput.Blink
+		m.view = ViewManageProjects
+		return m, m.addProjectCmd(m.newProjectName, path)
 	}
 
 	var cmd tea.Cmd
 	m.projectForm.pathInput, cmd = m.projectForm.pathInput.Update(msg)
-	return m, cmd
-}
-
-func (m model) handleAddProjectBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.view = ViewAddProjectPath
-		m.projectForm.pathInput.SetValue(m.newProjectPath)
-		m.projectForm.pathInput.Focus()
-		return m, textinput.Blink
-	case "enter":
-		branch := m.projectForm.branchInput.Value()
-		if branch == "" {
-			branch = "origin/master"
-		}
-
-		m.view = ViewManageProjects
-		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, branch)
-	}
-
-	var cmd tea.Cmd
-	m.projectForm.branchInput, cmd = m.projectForm.branchInput.Update(msg)
 	return m, cmd
 }
 
@@ -839,12 +803,11 @@ func (m model) detachCmd() tea.Cmd {
 	}
 }
 
-func (m model) addProjectCmd(name, path, branch string) tea.Cmd {
+func (m model) addProjectCmd(name, path string) tea.Cmd {
 	return func() tea.Msg {
 		p := &project.Project{
-			Name:       name,
-			Path:       path,
-			BaseBranch: branch,
+			Name: name,
+			Path: path,
 		}
 		if err := m.projectStore.Add(p); err != nil {
 			return errMsg{err}
@@ -862,13 +825,13 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 	}
 }
 
-func (m model) spawnAgentCmd(task string, proj *project.Project) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to get executable: %w", err)}
 		}
-		cmd := exec.Command(exePath, "spawn", task, "--project", proj.Name)
+		cmd := exec.Command(exePath, "spawn", task, "--project", proj.Name, "--branch", branch)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return errMsg{fmt.Errorf("spawn failed: %s: %w", string(output), err)}
@@ -934,6 +897,8 @@ func (m model) View() string {
 		content = renderMainView(m)
 	case ViewSelectProject:
 		content = renderSelectProjectView(m)
+	case ViewNewTaskBranch:
+		content = renderNewTaskBranchView(m)
 	case ViewNewTaskInput:
 		content = renderNewTaskInputView(m)
 	case ViewIntervene:
@@ -952,8 +917,6 @@ func (m model) View() string {
 		content = renderAddProjectNameView(m)
 	case ViewAddProjectPath:
 		content = renderAddProjectPathView(m)
-	case ViewAddProjectBranch:
-		content = renderAddProjectBranchView(m)
 	case ViewConfirmRemoveProject:
 		content = renderConfirmRemoveProjectView(m)
 	case ViewConfirmKillSession:

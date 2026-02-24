@@ -13,9 +13,8 @@ import (
 )
 
 type Project struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	BaseBranch string `json:"base_branch"`
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type Store struct {
@@ -88,10 +87,6 @@ func (s *Store) Add(project *Project) error {
 
 	if !isGitRepo(project.Path) {
 		return fmt.Errorf("path is not a git repository: %s", project.Path)
-	}
-
-	if project.BaseBranch == "" {
-		project.BaseBranch = "origin/master"
 	}
 
 	data, err := s.load()

@@ -15,6 +15,7 @@ type ViewState int
 const (
 	ViewMain ViewState = iota
 	ViewSelectProject
+	ViewNewTaskBranch
 	ViewNewTaskInput
 	ViewIntervene
 	ViewInterveneInput
@@ -24,7 +25,6 @@ const (
 	ViewManageProjects
 	ViewAddProjectName
 	ViewAddProjectPath
-	ViewAddProjectBranch
 	ViewConfirmRemoveProject
 	ViewConfirmKillSession
 	ViewJumpToAgent
@@ -171,6 +171,31 @@ func renderSelectProjectView(m model) string {
 	return b.String()
 }
 
+func renderNewTaskBranchView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# New Task - Base Branch"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Enter base branch (leave empty for origin/master):\n")
+	b.WriteString(inputStyle.Render(m.branchInput.View()))
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("Branch to create worktree from (e.g., 'origin/main', 'origin/develop')"))
+	b.WriteString("\n\n")
+
+	help := "[enter] next  [esc] back"
+	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
 func renderNewTaskInputView(m model) string {
 	var b strings.Builder
 
@@ -180,7 +205,7 @@ func renderNewTaskInputView(m model) string {
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
 		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
-		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.selectedProj.BaseBranch)))
+		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 		b.WriteString("\n")
 	}
 
@@ -371,7 +396,7 @@ func renderManageProjectsView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			line := fmt.Sprintf("%s  %s  %s", p.Name, dimStyle.Render(p.Path), dimStyle.Render("("+p.BaseBranch+")"))
+			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
@@ -387,7 +412,7 @@ func renderManageProjectsView(m model) string {
 func renderAddProjectNameView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 1/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Step 1/2"))
 	b.WriteString("\n\n")
 
 	b.WriteString("Enter project name:\n")
@@ -406,7 +431,7 @@ func renderAddProjectNameView(m model) string {
 func renderAddProjectPathView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 2/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Step 2/2"))
 	b.WriteString("\n\n")
 
 	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.newProjectName)))
@@ -416,28 +441,6 @@ func renderAddProjectPathView(m model) string {
 	b.WriteString("\n\n")
 
 	b.WriteString(dimStyle.Render("Full path to the repo root (e.g., '/home/user/projects/myapp')"))
-	b.WriteString("\n\n")
-
-	help := "[enter] next  [esc] back"
-	b.WriteString(helpStyle.Render(help))
-
-	return b.String()
-}
-
-func renderAddProjectBranchView(m model) string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("# Add Project - Step 3/3"))
-	b.WriteString("\n\n")
-
-	b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.newProjectName)))
-	b.WriteString(fmt.Sprintf("Path: %s\n\n", dimStyle.Render(m.newProjectPath)))
-
-	b.WriteString("Enter base branch (leave empty for origin/master):\n")
-	b.WriteString(inputStyle.Render(m.projectForm.branchInput.View()))
-	b.WriteString("\n\n")
-
-	b.WriteString(dimStyle.Render("Branch to create worktrees from (e.g., 'origin/main', 'origin/develop')"))
 	b.WriteString("\n\n")
 
 	help := "[enter] create project  [esc] back"
