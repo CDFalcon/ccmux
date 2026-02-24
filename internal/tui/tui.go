@@ -426,7 +426,23 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q":
-		return m, m.detachCmd()
+		if len(m.queueItems) == 0 {
+			m.err = fmt.Errorf("no items in queue")
+			return m, clearMessageCmd()
+		}
+		item := m.queueItems[len(m.queueItems)-1]
+		switch item.Type {
+		case queue.ItemTypeIdle, queue.ItemTypeQuestion:
+			for _, a := range m.agents {
+				if a.ID == item.AgentID {
+					return m, m.jumpToAgentCmd(a)
+				}
+			}
+		case queue.ItemTypePRReady:
+			m.view = ViewReview
+			m.selectedIndex = 0
+			return m, nil
+		}
 	case "n":
 		if len(m.projects) == 0 {
 			m.err = fmt.Errorf("no projects registered. Press [p] to add one")

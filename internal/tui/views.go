@@ -137,7 +137,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[n]ew task  [j]ump to agent  [r]eview PR  [k]ill agent  [p]rojects  [q]uit  [K]ill session"
+	help := "[q]uick respond  [n]ew task  [j]ump to agent  [r]eview PR  [k]ill agent  [p]rojects  [K]ill session"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
