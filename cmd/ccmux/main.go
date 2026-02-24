@@ -109,6 +109,7 @@ func runSession(sessionID string) error {
 
 func spawnCmd() *cobra.Command {
 	var projectName string
+	var baseBranch string
 
 	cmd := &cobra.Command{
 		Use:    "spawn <task>",
@@ -116,10 +117,14 @@ func spawnCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task := args[0]
-			logging.Log("spawn: starting for task=%q project=%q", task, projectName)
+			logging.Log("spawn: starting for task=%q project=%q branch=%q", task, projectName, baseBranch)
 
 			if projectName == "" {
 				return fmt.Errorf("--project is required")
+			}
+
+			if baseBranch == "" {
+				baseBranch = "origin/master"
 			}
 
 			sessionID := getCurrentSessionID()
@@ -138,7 +143,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.Path, proj.BaseBranch, sessionID)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.Path, baseBranch, sessionID)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -158,7 +163,7 @@ func spawnCmd() *cobra.Command {
 				ID:         agentID,
 				Task:       task,
 				TmuxWindow: windowID,
-				BaseBranch: proj.BaseBranch,
+				BaseBranch: baseBranch,
 				Status:     agent.StatusSpawning,
 			}
 			if err := agentStore.Create(a); err != nil {
@@ -171,6 +176,7 @@ func spawnCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&projectName, "project", "", "Project to use")
+	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
