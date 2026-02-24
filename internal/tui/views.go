@@ -34,11 +34,12 @@ const (
 )
 
 const (
-	MaxTaskDisplayLen    = 40
-	MaxSummaryDisplayLen = 50
-	SpinnerFrameCount    = 6
-	MarqueeTickRate      = 3
-	MarqueeSeparator     = "  \u00b7\u00b7\u00b7  "
+	MaxTaskDisplayLen     = 40
+	MaxSummaryDisplayLen  = 50
+	SpinnerFrameCount     = 6
+	MarqueeTickRate       = 3
+	MarqueeSeparator      = "  \u00b7\u00b7\u00b7  "
+	MaxVisibleBranchItems = 10
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
@@ -202,21 +203,49 @@ func renderNewTaskBranchView(m model) string {
 
 	b.WriteString("Select base branch:\n\n")
 
-	style := queueItemStyle
-	if m.selectedIndex == 0 {
-		style = selectedItemStyle
+	var entries []string
+	entries = append(entries, branchTagStyle.Render("(origin)")+" master")
+	entries = append(entries, "Manually specify branch")
+	for _, branch := range m.branchOptions {
+		entries = append(entries, branchTagStyle.Render("(local)")+" "+branch)
 	}
-	b.WriteString(style.Render("Specify branch...  " + dimStyle.Render("(origin/master)")))
-	b.WriteString("\n")
 
-	for i, branch := range m.branchOptions {
-		style = queueItemStyle
-		if i+1 == m.selectedIndex {
-			style = selectedItemStyle
+	totalItems := len(entries)
+
+	visibleStart := 0
+	visibleEnd := totalItems
+	if totalItems > MaxVisibleBranchItems {
+		half := MaxVisibleBranchItems / 2
+		visibleStart = m.selectedIndex - half
+		if visibleStart < 0 {
+			visibleStart = 0
 		}
-		b.WriteString(style.Render(branch))
+		visibleEnd = visibleStart + MaxVisibleBranchItems
+		if visibleEnd > totalItems {
+			visibleEnd = totalItems
+			visibleStart = visibleEnd - MaxVisibleBranchItems
+		}
+	}
+
+	if visibleStart > 0 {
+		b.WriteString(dimStyle.Render("  ↑ more"))
 		b.WriteString("\n")
 	}
+
+	for i := visibleStart; i < visibleEnd; i++ {
+		style := queueItemStyle
+		if i == m.selectedIndex {
+			style = selectedItemStyle
+		}
+		b.WriteString(style.Render(entries[i]))
+		b.WriteString("\n")
+	}
+
+	if visibleEnd < totalItems {
+		b.WriteString(dimStyle.Render("  ↓ more"))
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n")
 
 	help := "[↑/↓/j/k] select  [enter] choose  [esc] back"

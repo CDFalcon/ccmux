@@ -557,7 +557,7 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	totalItems := 1 + len(m.branchOptions)
+	totalItems := 2 + len(m.branchOptions)
 
 	switch msg.String() {
 	case "esc":
@@ -574,12 +574,21 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.selectedIndex == 0 {
+			m.spawnBranch = "origin/master"
+			m.view = ViewNewTaskInput
+			m.taskInput.SetValue("")
+			m.taskInput.SetHeight(1)
+			m.selectedIndex = 0
+			cmd := m.taskInput.Focus()
+			return m, cmd
+		}
+		if m.selectedIndex == 1 {
 			m.view = ViewNewTaskBranchInput
 			m.branchInput.SetValue("")
 			m.branchInput.Focus()
 			return m, textinput.Blink
 		}
-		branch := m.branchOptions[m.selectedIndex-1]
+		branch := m.branchOptions[m.selectedIndex-2]
 		m.spawnBranch = branch
 		m.view = ViewNewTaskInput
 		m.taskInput.SetValue("")
