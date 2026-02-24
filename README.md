@@ -1,4 +1,4 @@
-# ccmux
+# ccmux — Colby's Claude Multiplexer
 
 A terminal-based orchestrator for managing multiple [Claude Code](https://claude.ai/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
