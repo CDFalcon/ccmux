@@ -564,11 +564,11 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedIndex++
 		}
 	case "a":
-		if a, item := findAgent(); a != nil {
+		if a, _ := findAgent(); a != nil {
 			m.view = ViewMain
 			m.cleaningUp = true
 			m.cleaningUpAgent = a.ID
-			return m, m.approvePRCmd(a, item.Details)
+			return m, m.acceptPRCmd(a)
 		}
 	case "c":
 		if a, item := findAgent(); a != nil {
@@ -891,25 +891,15 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 	}
 }
 
-func (m model) approvePRCmd(a *agent.Agent, prURL string) tea.Cmd {
+func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	return func() tea.Msg {
-		approveCmd := exec.Command("gh", "pr", "review", prURL, "--approve", "--body", "Approved via ccmux")
-		if output, err := approveCmd.CombinedOutput(); err != nil {
-			return errMsg{fmt.Errorf("approve failed: %s: %w", string(output), err)}
-		}
-
-		mergeCmd := exec.Command("gh", "pr", "merge", prURL, "--merge", "--delete-branch")
-		if output, err := mergeCmd.CombinedOutput(); err != nil {
-			return errMsg{fmt.Errorf("merge failed: %s: %w", string(output), err)}
-		}
-
 		go func() {
 			exePath, _ := os.Executable()
 			exec.Command(exePath, "cleanup", agentID).Run()
 		}()
 
-		return successMsg{fmt.Sprintf("Approved & merged PR, cleaning up agent %s", agentID)}
+		return successMsg{fmt.Sprintf("Accepted PR, cleaning up agent %s", agentID)}
 	}
 }
 

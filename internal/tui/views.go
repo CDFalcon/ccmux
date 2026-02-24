@@ -316,7 +316,7 @@ func renderReviewView(m model) string {
 		b.WriteString("\n")
 	}
 
-	help := "[↑/↓/j/k] select  [a]pprove & merge  [c]omment  [x] reject  [b]rowser  [esc] back"
+	help := "[↑/↓/j/k] select  [a]ccept  [c]omment  [x] reject  [b]rowser  [esc] back"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
