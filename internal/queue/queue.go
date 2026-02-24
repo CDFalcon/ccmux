@@ -1,4 +1,3 @@
-// Package queue manages the attention queue for agent events.
 package queue
 
 import (
@@ -10,31 +9,9 @@ import (
 	"time"
 )
 
-type ItemType string
-
-const (
-	ItemTypeQuestion ItemType = "question"
-	ItemTypePRReady  ItemType = "pr_ready"
-	ItemTypeIdle ItemType = "idle"
-)
-
-type QueueItem struct {
-	ID        string    `json:"id"`
-	Type      ItemType  `json:"type"`
-	AgentID   string    `json:"agent_id"`
-	Summary   string    `json:"summary"`
-	Details   string    `json:"details"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
 type Queue struct {
 	mu       sync.Mutex
 	filePath string
-}
-
-type queueData struct {
-	Items   []*QueueItem `json:"items"`
-	Counter int          `json:"counter"`
 }
 
 func NewQueue(sessionID string) (*Queue, error) {
@@ -58,7 +35,7 @@ func (q *Queue) load() (*queueData, error) {
 		Items: make([]*QueueItem, 0),
 	}
 
-	bytes, err := os.ReadFile(q.filePath)
+	raw, err := os.ReadFile(q.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}
@@ -66,14 +43,30 @@ func (q *Queue) load() (*queueData, error) {
 		return nil, fmt.Errorf("failed to read queue file: %w", err)
 	}
 
-	if err := json.Unmarshal(bytes, data); err != nil {
+	var envelope struct {
+		Version int `json:"version"`
+	}
+	json.Unmarshal(raw, &envelope)
+
+	if envelope.Version < CurrentSchemaVersion {
+		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
+		if err != nil {
+			return nil, fmt.Errorf("failed to migrate queue file: %w", err)
+		}
+	}
+
+	if err := json.Unmarshal(raw, data); err != nil {
 		return nil, fmt.Errorf("failed to parse queue file: %w", err)
 	}
+
+	data.Version = CurrentSchemaVersion
 
 	return data, nil
 }
 
 func (q *Queue) save(data *queueData) error {
+	data.Version = CurrentSchemaVersion
+
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal queue: %w", err)

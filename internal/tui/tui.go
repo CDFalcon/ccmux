@@ -17,6 +17,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
+	"github.com/CDFalcon/ccmux/internal/updater"
 )
 
 type model struct {
@@ -43,6 +44,14 @@ type model struct {
 	// Intervention input
 	interveneInput textarea.Model
 	interveneAgent *agent.Agent
+
+	// Update state
+	updateChecking    bool
+	updateAvailable   bool
+	updateVersion     string
+	updateDownloading bool
+	updateComplete    bool
+	updateError       string
 
 	// Ctrl+C confirmation
 	ctrlCPressed bool
@@ -152,6 +161,14 @@ type successMsg struct{ msg string }
 type clearMessageMsg struct{}
 type clearCtrlCMsg struct{}
 type spawnStartedMsg struct{}
+type updateCheckResultMsg struct {
+	version   string
+	available bool
+	err       error
+}
+type updateCompleteMsg struct {
+	err error
+}
 
 func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
@@ -282,6 +299,20 @@ func clearCtrlCCmd() tea.Cmd {
 	})
 }
 
+func checkForUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		latest, available, err := updater.CheckForUpdate()
+		return updateCheckResultMsg{version: latest, available: available, err: err}
+	}
+}
+
+func downloadUpdateCmd(targetVersion string) tea.Cmd {
+	return func() tea.Msg {
+		err := updater.DownloadUpdate(targetVersion)
+		return updateCompleteMsg{err: err}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -311,6 +342,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spawnStartedMsg:
+		return m, nil
+
+	case updateCheckResultMsg:
+		m.updateChecking = false
+		if msg.err != nil {
+			m.updateError = fmt.Sprintf("Update check failed: %s", msg.err.Error())
+			return m, nil
+		}
+		m.updateVersion = msg.version
+		m.updateAvailable = msg.available
+		return m, nil
+
+	case updateCompleteMsg:
+		m.updateDownloading = false
+		if msg.err != nil {
+			m.updateError = fmt.Sprintf("Update failed: %s", msg.err.Error())
+			return m, nil
+		}
+		m.updateComplete = true
 		return m, nil
 
 	case errMsg:
@@ -423,6 +473,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKillSessionKeys(msg)
 	case ViewJumpToAgent:
 		return m.handleJumpToAgentKeys(msg)
+	case ViewUpdate:
+		return m.handleUpdateKeys(msg)
 	}
 	return m, nil
 }
@@ -465,6 +517,15 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		m.view = ViewManageProjects
 		m.selectedIndex = 0
+	case "u":
+		m.view = ViewUpdate
+		m.updateChecking = true
+		m.updateAvailable = false
+		m.updateVersion = ""
+		m.updateDownloading = false
+		m.updateComplete = false
+		m.updateError = ""
+		return m, checkForUpdateCmd()
 	}
 	return m, nil
 }
@@ -838,6 +899,24 @@ func (m model) handleJumpToAgentKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.updateChecking || m.updateDownloading {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc", "n":
+		m.view = ViewMain
+	case "y":
+		if m.updateAvailable && !m.updateComplete {
+			m.updateDownloading = true
+			m.updateError = ""
+			return m, downloadUpdateCmd(m.updateVersion)
+		}
+	}
+	return m, nil
+}
+
 func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -1154,6 +1233,8 @@ func (m model) View() string {
 		content = renderConfirmKillSessionView(m)
 	case ViewJumpToAgent:
 		content = renderJumpToAgentView(m)
+	case ViewUpdate:
+		content = renderUpdateView(m)
 	default:
 		content = renderMainView(m)
 	}

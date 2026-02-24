@@ -15,6 +15,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
+	"github.com/CDFalcon/ccmux/internal/version"
 	"github.com/CDFalcon/ccmux/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -48,6 +49,7 @@ Examples:
 	}
 
 	rootCmd.AddCommand(
+		versionCmd(),
 		spawnCmd(),
 		registerAgentCmd(),
 		queueAddCmd(),
@@ -63,6 +65,16 @@ Examples:
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("ccmux %s (%s) built %s\n", version.Version, version.GitCommit, version.BuildDate)
+		},
 	}
 }
 

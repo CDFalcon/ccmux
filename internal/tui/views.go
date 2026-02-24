@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/version"
 )
 
 type ViewState int
@@ -29,6 +30,7 @@ const (
 	ViewConfirmRemoveProject
 	ViewConfirmKillSession
 	ViewJumpToAgent
+	ViewUpdate
 )
 
 const (
@@ -60,6 +62,7 @@ func renderLogo() string {
 		c.Render("  ╚██████╗ ╚██████╗ ") + w.Render("██║ ╚═╝ ██║╚██████╔╝██╔╝ ██╗"),
 		c.Render("   ╚═════╝  ╚═════╝ ") + w.Render("╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝"),
 		"  " + c.Render("C") + w.Render("olby's ") + c.Render("C") + w.Render("laude ") + w.Render("Mu") + w.Render("ltiple") + w.Render("x") + w.Render("er"),
+		"  " + dimStyle.Render(version.Version),
 	}
 
 	return strings.Join(lines, "\n")
@@ -146,7 +149,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[q]uick respond  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
+	help := "[q]uick respond  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [u]pdate  [K]ill session"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
@@ -702,6 +705,48 @@ func renderJumpToAgentView(m model) string {
 
 	help := "[↑/↓/j/k] select  [enter] jump  [esc] back"
 	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func renderUpdateView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Update"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Current version: %s\n", projectStyle.Render(version.Version)))
+
+	if m.updateChecking {
+		b.WriteString(fmt.Sprintf("\n%s Checking for updates...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
+	} else if m.updateError != "" {
+		b.WriteString(fmt.Sprintf("\n%s\n", errorStyle.Render(m.updateError)))
+	} else if m.updateDownloading {
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("\n%s Downloading update...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
+	} else if m.updateComplete {
+		b.WriteString(fmt.Sprintf("Updated to:      %s\n", projectStyle.Render(m.updateVersion)))
+		b.WriteString("\n")
+		b.WriteString(agentReadyStyle.Render("Update complete! Detach and reattach to use the new version."))
+		b.WriteString("\n")
+	} else if m.updateAvailable {
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		b.WriteString("\nUpdate available. Install it?\n")
+	} else {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("You are on the latest version."))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	if m.updateAvailable && !m.updateDownloading && !m.updateComplete {
+		help := "[y] install  [n] cancel"
+		b.WriteString(helpStyle.Render(help))
+	} else if !m.updateChecking && !m.updateDownloading {
+		help := "[esc] back"
+		b.WriteString(helpStyle.Render(help))
+	}
 
 	return b.String()
 }
