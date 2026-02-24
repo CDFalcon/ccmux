@@ -179,7 +179,7 @@ func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
 	ta.SetWidth(width)
 	ta.SetHeight(1)
 	ta.CharLimit = 0
-	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	return ta
