@@ -11,7 +11,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/version"
 )
 
-const repo = "CDFalcon/ccmux"
+const repo = "colby-duke-ai/ccmux"
 
 func CheckForUpdate() (latestVersion string, hasUpdate bool, err error) {
 	cmd := exec.Command("gh", "release", "view", "--repo", repo, "--json", "tagName", "-q", ".tagName")

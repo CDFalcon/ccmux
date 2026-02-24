@@ -74,6 +74,8 @@ func renderMainView(m model) string {
 	b.WriteString("\n")
 	if m.updateAvailable && m.updateVersion != "" {
 		b.WriteString("  " + dimStyle.Render(version.Version) + " - " + projectStyle.Render("[u]pdate to latest remote ("+m.updateVersion+")"))
+	} else if !m.updateAvailable && m.updateVersion != "" {
+		b.WriteString("  " + dimStyle.Render(version.Version+" - latest"))
 	} else {
 		b.WriteString("  " + dimStyle.Render(version.Version))
 	}
