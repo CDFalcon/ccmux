@@ -575,7 +575,7 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = ViewMain
 			return m, m.commentPRCmd(a, item.Details)
 		}
-	case "x":
+	case "r":
 		if a, item := findAgent(); a != nil {
 			m.view = ViewMain
 			m.cleaningUp = true
