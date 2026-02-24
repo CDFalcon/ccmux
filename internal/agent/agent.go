@@ -1,4 +1,3 @@
-// Package agent manages agent state and persistence.
 package agent
 
 import (
@@ -10,37 +9,9 @@ import (
 	"time"
 )
 
-type Status string
-
-const (
-	StatusSpawning   Status = "spawning"
-	StatusRunning    Status = "running"
-	StatusReady      Status = "ready"
-	StatusCleaningUp Status = "cleaning_up"
-	StatusKilling    Status = "killing"
-	StatusMerged     Status = "merged"
-	StatusFailed     Status = "failed"
-)
-
-type Agent struct {
-	ID           string    `json:"id"`
-	Task         string    `json:"task"`
-	WorktreePath string    `json:"worktree_path"`
-	BranchName   string    `json:"branch_name"`
-	BaseBranch   string    `json:"base_branch"`
-	TmuxWindow   string    `json:"tmux_window"`
-	Status       Status    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-}
-
 type Store struct {
 	mu       sync.Mutex
 	filePath string
-}
-
-type storeData struct {
-	Agents map[string]*Agent `json:"agents"`
 }
 
 func NewStore(sessionID string) (*Store, error) {
@@ -64,7 +35,7 @@ func (s *Store) load() (*storeData, error) {
 		Agents: make(map[string]*Agent),
 	}
 
-	bytes, err := os.ReadFile(s.filePath)
+	raw, err := os.ReadFile(s.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}
@@ -72,14 +43,30 @@ func (s *Store) load() (*storeData, error) {
 		return nil, fmt.Errorf("failed to read agents file: %w", err)
 	}
 
-	if err := json.Unmarshal(bytes, data); err != nil {
+	var envelope struct {
+		Version int `json:"version"`
+	}
+	json.Unmarshal(raw, &envelope)
+
+	if envelope.Version < CurrentSchemaVersion {
+		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
+		if err != nil {
+			return nil, fmt.Errorf("failed to migrate agents file: %w", err)
+		}
+	}
+
+	if err := json.Unmarshal(raw, data); err != nil {
 		return nil, fmt.Errorf("failed to parse agents file: %w", err)
 	}
+
+	data.Version = CurrentSchemaVersion
 
 	return data, nil
 }
 
 func (s *Store) save(data *storeData) error {
+	data.Version = CurrentSchemaVersion
+
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal agents: %w", err)

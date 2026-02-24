@@ -1,4 +1,3 @@
-// Package project manages registered project configurations.
 package project
 
 import (
@@ -12,18 +11,9 @@ import (
 	"sync"
 )
 
-type Project struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-}
-
 type Store struct {
 	mu       sync.Mutex
 	filePath string
-}
-
-type storeData struct {
-	Projects map[string]*Project `json:"projects"`
 }
 
 func NewStore() (*Store, error) {
@@ -47,7 +37,7 @@ func (s *Store) load() (*storeData, error) {
 		Projects: make(map[string]*Project),
 	}
 
-	bytes, err := os.ReadFile(s.filePath)
+	raw, err := os.ReadFile(s.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}
@@ -55,14 +45,30 @@ func (s *Store) load() (*storeData, error) {
 		return nil, fmt.Errorf("failed to read projects file: %w", err)
 	}
 
-	if err := json.Unmarshal(bytes, data); err != nil {
+	var envelope struct {
+		Version int `json:"version"`
+	}
+	json.Unmarshal(raw, &envelope)
+
+	if envelope.Version < CurrentSchemaVersion {
+		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
+		if err != nil {
+			return nil, fmt.Errorf("failed to migrate projects file: %w", err)
+		}
+	}
+
+	if err := json.Unmarshal(raw, data); err != nil {
 		return nil, fmt.Errorf("failed to parse projects file: %w", err)
 	}
+
+	data.Version = CurrentSchemaVersion
 
 	return data, nil
 }
 
 func (s *Store) save(data *storeData) error {
+	data.Version = CurrentSchemaVersion
+
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal projects: %w", err)

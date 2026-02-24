@@ -42,9 +42,8 @@ func TestAdd_ShouldStoreProject_GivenValidProject(t *testing.T) {
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
 	project := &Project{
-		Name:       "test-project",
-		Path:       repoDir,
-		BaseBranch: "origin/master",
+		Name: "test-project",
+		Path: repoDir,
 	}
 
 	// Execute.
@@ -156,21 +155,3 @@ func TestRemove_ShouldDeleteProject_GivenValidName(t *testing.T) {
 	}
 }
 
-func TestAdd_ShouldSetDefaultBaseBranch_GivenEmptyBaseBranch(t *testing.T) {
-	// Setup.
-	store, repoDir, cleanup := setupTestStore(t)
-	defer cleanup()
-	project := &Project{
-		Name: "test",
-		Path: repoDir,
-	}
-
-	// Execute.
-	store.Add(project)
-
-	// Assert.
-	retrieved, _ := store.Get("test")
-	if retrieved.BaseBranch != "origin/master" {
-		t.Errorf("expected default base branch 'origin/master', got '%s'", retrieved.BaseBranch)
-	}
-}

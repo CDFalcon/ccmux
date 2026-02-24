@@ -1,0 +1,34 @@
+package agent
+
+import "time"
+
+const CurrentSchemaVersion = 1
+
+type Status string
+
+const (
+	StatusSpawning   Status = "spawning"
+	StatusRunning    Status = "running"
+	StatusReady      Status = "ready"
+	StatusCleaningUp Status = "cleaning_up"
+	StatusKilling    Status = "killing"
+	StatusMerged     Status = "merged"
+	StatusFailed     Status = "failed"
+)
+
+type Agent struct {
+	ID           string    `json:"id"`
+	Task         string    `json:"task"`
+	WorktreePath string    `json:"worktree_path"`
+	BranchName   string    `json:"branch_name"`
+	BaseBranch   string    `json:"base_branch"`
+	TmuxWindow   string    `json:"tmux_window"`
+	Status       Status    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type storeData struct {
+	Version int               `json:"version"`
+	Agents  map[string]*Agent `json:"agents"`
+}

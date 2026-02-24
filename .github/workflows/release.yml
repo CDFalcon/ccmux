@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Compute version tag
+        id: version
+        run: |
+          DATE_PREFIX="v$(date -u +'%Y.%m.%d')"
+          EXISTING=$(gh release list --limit 100 --json tagName -q '.[].tagName' | grep "^${DATE_PREFIX}\." | sort -t. -k4 -n | tail -1 || true)
+          if [ -z "$EXISTING" ]; then
+            COUNTER=1
+          else
+            LAST_COUNTER=$(echo "$EXISTING" | rev | cut -d. -f1 | rev)
+            COUNTER=$((LAST_COUNTER + 1))
+          fi
+          VERSION="${DATE_PREFIX}.${COUNTER}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binaries
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GIT_COMMIT="${{ github.sha }}"
+          BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          LDFLAGS="-X github.com/CDFalcon/ccmux/internal/version.Version=${VERSION}"
+          LDFLAGS="${LDFLAGS} -X github.com/CDFalcon/ccmux/internal/version.GitCommit=${GIT_COMMIT:0:7}"
+          LDFLAGS="${LDFLAGS} -X github.com/CDFalcon/ccmux/internal/version.BuildDate=${BUILD_DATE}"
+
+          GOOS=linux  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o ccmux-linux-amd64  ./cmd/ccmux
+          GOOS=linux  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o ccmux-linux-arm64  ./cmd/ccmux
+          GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o ccmux-darwin-amd64 ./cmd/ccmux
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o ccmux-darwin-arm64 ./cmd/ccmux
+
+      - name: Create tag
+        run: |
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            ccmux-linux-amd64
+            ccmux-linux-arm64
+            ccmux-darwin-amd64
+            ccmux-darwin-arm64
