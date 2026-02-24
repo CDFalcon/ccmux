@@ -16,6 +16,7 @@ const (
 	ViewMain ViewState = iota
 	ViewSelectProject
 	ViewNewTaskBranch
+	ViewNewTaskBranchInput
 	ViewNewTaskInput
 	ViewIntervene
 	ViewInterveneInput
@@ -174,6 +175,43 @@ func renderSelectProjectView(m model) string {
 }
 
 func renderNewTaskBranchView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# New Task - Base Branch"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Select base branch:\n\n")
+
+	style := queueItemStyle
+	if m.selectedIndex == 0 {
+		style = selectedItemStyle
+	}
+	b.WriteString(style.Render("Specify branch...  " + dimStyle.Render("(origin/master)")))
+	b.WriteString("\n")
+
+	for i, branch := range m.branchOptions {
+		style = queueItemStyle
+		if i+1 == m.selectedIndex {
+			style = selectedItemStyle
+		}
+		b.WriteString(style.Render(branch))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	help := "[↑/↓/j/k] select  [enter] choose  [esc] back"
+	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func renderNewTaskBranchInputView(m model) string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render("# New Task - Base Branch"))

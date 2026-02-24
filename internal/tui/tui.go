@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -29,9 +30,10 @@ type model struct {
 	err           error
 
 	// Task spawn inputs
-	taskInput   textarea.Model
-	branchInput textinput.Model
-	spawnBranch string
+	taskInput     textarea.Model
+	branchInput   textinput.Model
+	branchOptions []string
+	spawnBranch   string
 
 	// Project form inputs
 	projectForm    projectFormModel
@@ -122,6 +124,22 @@ func findProjectPath(name string) string {
 	}
 
 	return ""
+}
+
+func getLocalBranches(repoPath string) []string {
+	cmd := exec.Command("git", "-C", repoPath, "branch", "--format=%(refname:short)")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var branches []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches
 }
 
 type tickMsg time.Time
@@ -322,7 +340,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs for blink cursor
-	if m.view == ViewNewTaskBranch {
+	if m.view == ViewNewTaskBranchInput {
 		var cmd tea.Cmd
 		m.branchInput, cmd = m.branchInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -385,6 +403,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSelectProjectKeys(msg)
 	case ViewNewTaskBranch:
 		return m.handleNewTaskBranchKeys(msg)
+	case ViewNewTaskBranchInput:
+		return m.handleNewTaskBranchInputKeys(msg)
 	case ViewNewTaskInput:
 		return m.handleNewTaskInputKeys(msg)
 	case ViewIntervene:
@@ -471,19 +491,54 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
 			m.selectedProj = m.projects[m.selectedIndex]
+			m.branchOptions = getLocalBranches(m.selectedProj.Path)
 			m.view = ViewNewTaskBranch
-			m.branchInput.SetValue("")
-			m.branchInput.Focus()
-			return m, textinput.Blink
+			m.selectedIndex = 0
+			return m, nil
 		}
 	}
 	return m, nil
 }
 
 func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	totalItems := 1 + len(m.branchOptions)
+
 	switch msg.String() {
 	case "esc":
 		m.view = ViewSelectProject
+		m.selectedIndex = 0
+		return m, nil
+	case "up", "k":
+		if m.selectedIndex > 0 {
+			m.selectedIndex--
+		}
+	case "down", "j":
+		if m.selectedIndex < totalItems-1 {
+			m.selectedIndex++
+		}
+	case "enter":
+		if m.selectedIndex == 0 {
+			m.view = ViewNewTaskBranchInput
+			m.branchInput.SetValue("")
+			m.branchInput.Focus()
+			return m, textinput.Blink
+		}
+		branch := m.branchOptions[m.selectedIndex-1]
+		m.spawnBranch = branch
+		m.view = ViewNewTaskInput
+		m.taskInput.SetValue("")
+		m.taskInput.SetHeight(1)
+		m.selectedIndex = 0
+		cmd := m.taskInput.Focus()
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewNewTaskBranch
 		m.branchInput.SetValue("")
 		return m, nil
 	case "enter":
@@ -495,6 +550,7 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewNewTaskInput
 		m.taskInput.SetValue("")
 		m.taskInput.SetHeight(1)
+		m.selectedIndex = 0
 		cmd := m.taskInput.Focus()
 		return m, cmd
 	}
@@ -508,11 +564,10 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewNewTaskBranch
-		m.branchInput.SetValue(m.spawnBranch)
-		m.branchInput.Focus()
+		m.selectedIndex = 0
 		m.taskInput.SetValue("")
 		m.taskInput.SetHeight(1)
-		return m, textinput.Blink
+		return m, nil
 	case "enter":
 		task := m.taskInput.Value()
 		if task == "" {
@@ -1072,6 +1127,8 @@ func (m model) View() string {
 		content = renderSelectProjectView(m)
 	case ViewNewTaskBranch:
 		content = renderNewTaskBranchView(m)
+	case ViewNewTaskBranchInput:
+		content = renderNewTaskBranchInputView(m)
 	case ViewNewTaskInput:
 		content = renderNewTaskInputView(m)
 	case ViewIntervene:
