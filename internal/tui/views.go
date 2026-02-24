@@ -215,7 +215,7 @@ func renderNewTaskInputView(m model) string {
 	b.WriteString(inputStyle.Render(m.taskInput.View()))
 	b.WriteString("\n\n")
 
-	help := "[enter] submit  [esc] back"
+	help := "[enter] submit  [alt+enter] new line  [esc] back"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
@@ -278,7 +278,7 @@ func renderInterveneInputView(m model) string {
 	b.WriteString(dimStyle.Render("This will send the text to the agent's terminal"))
 	b.WriteString("\n\n")
 
-	help := "[enter] send  [esc] back"
+	help := "[enter] send  [alt+enter] new line  [esc] back"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
@@ -572,6 +572,7 @@ func filterQueueByType(items []*queue.QueueItem, types ...queue.ItemType) []*que
 }
 
 func truncate(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= max {
 		return s
 	}
@@ -579,6 +580,7 @@ func truncate(s string, max int) string {
 }
 
 func marquee(s string, maxWidth int, offset int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
 	runes := []rune(s)
 	if len(runes) <= maxWidth {
 		return s

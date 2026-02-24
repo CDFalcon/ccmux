@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -27,7 +29,7 @@ type model struct {
 	err           error
 
 	// Task spawn inputs
-	taskInput   textinput.Model
+	taskInput   textarea.Model
 	branchInput textinput.Model
 	spawnBranch string
 
@@ -37,7 +39,7 @@ type model struct {
 	newProjectPath string
 
 	// Intervention input
-	interveneInput textinput.Model
+	interveneInput textarea.Model
 	interveneAgent *agent.Agent
 
 	// Ctrl+C confirmation
@@ -135,19 +137,40 @@ type clearMessageMsg struct{}
 type clearCtrlCMsg struct{}
 type spawnStartedMsg struct{}
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
-	taskInput := textinput.New()
-	taskInput.Placeholder = "Describe the task..."
-	taskInput.Width = 60
+func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = placeholder
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.EndOfBufferCharacter = ' '
+	ta.SetWidth(width)
+	ta.SetHeight(1)
+	ta.CharLimit = 0
+	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	return ta
+}
 
+func autoResizeTextarea(ta *textarea.Model, maxHeight int) {
+	lines := ta.LineCount()
+	if lines < 1 {
+		lines = 1
+	}
+	if lines > maxHeight {
+		lines = maxHeight
+	}
+	ta.SetHeight(lines)
+}
+
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
+	taskInput := newAutoGrowTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
 	branchInput.Width = 50
 	branchInput.CharLimit = 100
 
-	interveneInput := textinput.New()
-	interveneInput.Placeholder = "Type message to send to agent..."
-	interveneInput.Width = 60
+	interveneInput := newAutoGrowTextarea("Type message to send to agent...", 60)
 
 	return model{
 		view:           ViewMain,
@@ -307,6 +330,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewNewTaskInput {
 		var cmd tea.Cmd
 		m.taskInput, cmd = m.taskInput.Update(msg)
+		autoResizeTextarea(&m.taskInput, 5)
 		cmds = append(cmds, cmd)
 	}
 
@@ -327,6 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewInterveneInput {
 		var cmd tea.Cmd
 		m.interveneInput, cmd = m.interveneInput.Update(msg)
+		autoResizeTextarea(&m.interveneInput, 5)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -469,8 +494,9 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawnBranch = branch
 		m.view = ViewNewTaskInput
 		m.taskInput.SetValue("")
-		m.taskInput.Focus()
-		return m, textinput.Blink
+		m.taskInput.SetHeight(1)
+		cmd := m.taskInput.Focus()
+		return m, cmd
 	}
 
 	var cmd tea.Cmd
@@ -485,6 +511,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.branchInput.SetValue(m.spawnBranch)
 		m.branchInput.Focus()
 		m.taskInput.SetValue("")
+		m.taskInput.SetHeight(1)
 		return m, textinput.Blink
 	case "enter":
 		task := m.taskInput.Value()
@@ -495,6 +522,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := m.spawnBranch
 		m.view = ViewMain
 		m.taskInput.SetValue("")
+		m.taskInput.SetHeight(1)
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		return m, m.spawnAgentCmd(task, proj, branch)
@@ -502,6 +530,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.taskInput, cmd = m.taskInput.Update(msg)
+	autoResizeTextarea(&m.taskInput, 5)
 	return m, cmd
 }
 
@@ -527,8 +556,9 @@ func (m model) handleInterveneKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.interveneAgent = a
 					m.view = ViewInterveneInput
 					m.interveneInput.SetValue("")
-					m.interveneInput.Focus()
-					return m, textinput.Blink
+					m.interveneInput.SetHeight(1)
+					cmd := m.interveneInput.Focus()
+					return m, cmd
 				}
 			}
 		}
@@ -762,19 +792,23 @@ func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewIntervene
 		m.interveneAgent = nil
+		m.interveneInput.SetValue("")
+		m.interveneInput.SetHeight(1)
 		return m, nil
 	case "enter":
 		text := m.interveneInput.Value()
 		if text == "" {
 			return m, nil
 		}
-		agent := m.interveneAgent
+		a := m.interveneAgent
 		m.interveneInput.SetValue("")
-		return m, m.sendKeysToAgentCmd(agent, text)
+		m.interveneInput.SetHeight(1)
+		return m, m.sendKeysToAgentCmd(a, text)
 	}
 
 	var cmd tea.Cmd
 	m.interveneInput, cmd = m.interveneInput.Update(msg)
+	autoResizeTextarea(&m.interveneInput, 5)
 	return m, cmd
 }
 
