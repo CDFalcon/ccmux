@@ -287,7 +287,7 @@ func (m model) refreshCmd() tea.Cmd {
 
 		now := time.Now()
 		const idleThreshold = 10 * time.Second
-		const readyGracePeriod = 30 * time.Second
+		const readyGracePeriod = 15 * time.Second
 
 		queueItems, _ := m.queueManager.List()
 
