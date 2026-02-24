@@ -294,6 +294,7 @@ func (m model) refreshCmd() tea.Cmd {
 
 		now := time.Now()
 		const idleThreshold = 10 * time.Second
+		const readyGracePeriod = 15 * time.Second
 
 		queueItems, _ := m.queueManager.List()
 
@@ -306,28 +307,46 @@ func (m model) refreshCmd() tea.Cmd {
 
 		changed := false
 		for _, a := range agents {
-			if a.Status != agent.StatusRunning || a.TmuxWindow == "" {
+			if a.TmuxWindow == "" {
 				continue
 			}
 
-			activity, err := m.tmuxManager.GetWindowActivity(a.TmuxWindow)
-			if err != nil {
-				continue
-			}
+			if a.Status == agent.StatusRunning {
+				activity, err := m.tmuxManager.GetWindowActivity(a.TmuxWindow)
+				if err != nil {
+					continue
+				}
 
-			isIdle := now.Sub(activity) > idleThreshold
-			_, hasIdleItem := idleItemByAgent[a.ID]
+				isIdle := now.Sub(activity) > idleThreshold
+				_, hasIdleItem := idleItemByAgent[a.ID]
 
-			if isIdle && !hasIdleItem {
-				m.queueManager.Add(queue.ItemTypeIdle, a.ID, "Agent idle - waiting for input", "")
-				changed = true
-			} else if !isIdle && hasIdleItem {
-				m.queueManager.Remove(idleItemByAgent[a.ID].ID)
-				changed = true
+				if isIdle && !hasIdleItem {
+					m.queueManager.Add(queue.ItemTypeIdle, a.ID, "Agent idle - waiting for input", "")
+					changed = true
+				} else if !isIdle && hasIdleItem {
+					m.queueManager.Remove(idleItemByAgent[a.ID].ID)
+					changed = true
+				}
+			} else if a.Status == agent.StatusReady {
+				if now.Sub(a.UpdatedAt) < readyGracePeriod {
+					continue
+				}
+				activity, err := m.tmuxManager.GetWindowActivity(a.TmuxWindow)
+				if err != nil {
+					continue
+				}
+				if now.Sub(activity) < idleThreshold {
+					m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+						ag.Status = agent.StatusRunning
+					})
+					m.queueManager.RemoveByAgent(a.ID)
+					changed = true
+				}
 			}
 		}
 
 		if changed {
+			agents, _ = m.agentStore.List()
 			queueItems, _ = m.queueManager.List()
 		}
 
