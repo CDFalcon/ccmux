@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
 )
 
@@ -212,38 +213,15 @@ func renderNewTaskBranchView(m model) string {
 		entries = append(entries, branchEntry{tag: "(local)", name: branch})
 	}
 
-	totalItems := len(entries)
-
-	visibleStart := 0
-	visibleEnd := totalItems
-	if totalItems > MaxVisibleBranchItems {
-		half := MaxVisibleBranchItems / 2
-		visibleStart = m.selectedIndex - half
-		if visibleStart < 0 {
-			visibleStart = 0
-		}
-		visibleEnd = visibleStart + MaxVisibleBranchItems
-		if visibleEnd > totalItems {
-			visibleEnd = totalItems
-			visibleStart = visibleEnd - MaxVisibleBranchItems
-		}
-	}
-
-	if visibleStart > 0 {
-		b.WriteString(dimStyle.Render("  ↑ more"))
-		b.WriteString("\n")
-	}
-
-	for i := visibleStart; i < visibleEnd; i++ {
+	renderScrollableList(&b, len(entries), m.selectedIndex, MaxVisibleBranchItems, func(i int, selected bool) string {
 		entry := entries[i]
-		isSelected := i == m.selectedIndex
 		style := queueItemStyle
-		if isSelected {
+		if selected {
 			style = selectedItemStyle
 		}
 		var text string
 		if entry.tag != "" {
-			if isSelected {
+			if selected {
 				text = entry.tag + " " + entry.name
 			} else {
 				text = branchTagStyle.Render(entry.tag) + " " + entry.name
@@ -251,14 +229,8 @@ func renderNewTaskBranchView(m model) string {
 		} else {
 			text = entry.name
 		}
-		b.WriteString(style.Render(text))
-		b.WriteString("\n")
-	}
-
-	if visibleEnd < totalItems {
-		b.WriteString(dimStyle.Render("  ↓ more"))
-		b.WriteString("\n")
-	}
+		return style.Render(text)
+	})
 
 	b.WriteString("\n")
 
@@ -764,6 +736,42 @@ func filterQueueByType(items []*queue.QueueItem, types ...queue.ItemType) []*que
 	return filtered
 }
 
+func renderScrollableList(b *strings.Builder, totalItems, selectedIndex, maxVisible int, renderItem func(index int, selected bool) string) {
+	if totalItems == 0 {
+		return
+	}
+
+	visibleStart := 0
+	visibleEnd := totalItems
+	if totalItems > maxVisible {
+		half := maxVisible / 2
+		visibleStart = selectedIndex - half
+		if visibleStart < 0 {
+			visibleStart = 0
+		}
+		visibleEnd = visibleStart + maxVisible
+		if visibleEnd > totalItems {
+			visibleEnd = totalItems
+			visibleStart = visibleEnd - maxVisible
+		}
+	}
+
+	if visibleStart > 0 {
+		b.WriteString(dimStyle.Render("  ↑ more"))
+		b.WriteString("\n")
+	}
+
+	for i := visibleStart; i < visibleEnd; i++ {
+		b.WriteString(renderItem(i, i == selectedIndex))
+		b.WriteString("\n")
+	}
+
+	if visibleEnd < totalItems {
+		b.WriteString(dimStyle.Render("  ↓ more"))
+		b.WriteString("\n")
+	}
+}
+
 func truncate(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= max {
@@ -851,6 +859,30 @@ func renderJumpToAgentView(m model) string {
 	return b.String()
 }
 
+func renderChangelog(b *strings.Builder, entries []updater.ChangelogEntry, selectedIndex int, loading bool, spinnerFrame int) {
+	if loading {
+		b.WriteString(fmt.Sprintf("\n%s Loading changelog...\n", styledSpinner(spinnerFrame, agentRunningStyle)))
+		return
+	}
+
+	if len(entries) == 0 {
+		return
+	}
+
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("## Changelog"))
+	b.WriteString("\n")
+
+	renderScrollableList(b, len(entries), selectedIndex, MaxVisibleBranchItems, func(i int, selected bool) string {
+		entry := entries[i]
+		style := queueItemStyle
+		if selected {
+			style = selectedItemStyle
+		}
+		return style.Render(fmt.Sprintf("#%d %s", entry.Number, entry.Title))
+	})
+}
+
 func renderUpdateView(m model) string {
 	var b strings.Builder
 
@@ -865,14 +897,17 @@ func renderUpdateView(m model) string {
 		b.WriteString(fmt.Sprintf("\n%s\n", errorStyle.Render(m.updateError)))
 	} else if m.updateDownloading {
 		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
 		b.WriteString(fmt.Sprintf("\n%s Downloading update...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
 	} else if m.updateComplete {
 		b.WriteString(fmt.Sprintf("Updated to:      %s\n", projectStyle.Render(m.updateVersion)))
+		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
 		b.WriteString("\n")
 		b.WriteString(agentReadyStyle.Render("Update complete! Detach and reattach to use the new version."))
 		b.WriteString("\n")
 	} else if m.updateAvailable {
 		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		renderChangelog(&b, m.changelogEntries, m.selectedIndex, m.changelogLoading, m.spinnerFrame)
 		b.WriteString("\nUpdate available. Install it?\n")
 	} else {
 		b.WriteString("\n")
@@ -883,7 +918,7 @@ func renderUpdateView(m model) string {
 	b.WriteString("\n")
 
 	if m.updateAvailable && !m.updateDownloading && !m.updateComplete {
-		help := "[y] install  [n] cancel"
+		help := "[↑/↓/j/k] scroll  [y] install  [n] cancel"
 		b.WriteString(helpStyle.Render(help))
 	} else if !m.updateChecking && !m.updateDownloading {
 		help := "[esc] back"

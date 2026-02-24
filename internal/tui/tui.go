@@ -19,6 +19,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/updater"
+	"github.com/CDFalcon/ccmux/internal/version"
 )
 
 type model struct {
@@ -56,6 +57,8 @@ type model struct {
 	updateDownloading bool
 	updateComplete    bool
 	updateError       string
+	changelogEntries  []updater.ChangelogEntry
+	changelogLoading  bool
 
 	// Ctrl+C confirmation
 	ctrlCPressed bool
@@ -208,6 +211,10 @@ type updateCheckResultMsg struct {
 type updateCompleteMsg struct {
 	err error
 }
+type changelogFetchedMsg struct {
+	entries []updater.ChangelogEntry
+	err     error
+}
 
 func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
@@ -347,6 +354,13 @@ func checkForUpdateCmd() tea.Cmd {
 	}
 }
 
+func fetchChangelogCmd(currentVersion, latestVersion string) tea.Cmd {
+	return func() tea.Msg {
+		entries, err := updater.FetchChangelog(currentVersion, latestVersion)
+		return changelogFetchedMsg{entries: entries, err: err}
+	}
+}
+
 func downloadUpdateCmd(targetVersion string) tea.Cmd {
 	return func() tea.Msg {
 		err := updater.DownloadUpdate(targetVersion)
@@ -399,6 +413,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updateVersion = msg.version
 		m.updateAvailable = msg.available
+		if msg.available {
+			m.changelogLoading = true
+			return m, fetchChangelogCmd(version.Version, msg.version)
+		}
+		return m, nil
+
+	case changelogFetchedMsg:
+		m.changelogLoading = false
+		if msg.err == nil {
+			m.changelogEntries = msg.entries
+		}
 		return m, nil
 
 	case updateCompleteMsg:
@@ -572,6 +597,9 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateDownloading = false
 		m.updateComplete = false
 		m.updateError = ""
+		m.changelogEntries = nil
+		m.changelogLoading = false
+		m.selectedIndex = 0
 		return m, checkForUpdateCmd()
 	}
 	return m, nil
@@ -1012,6 +1040,14 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.updateDownloading = true
 			m.updateError = ""
 			return m, downloadUpdateCmd(m.updateVersion)
+		}
+	case "up", "k":
+		if len(m.changelogEntries) > 0 && m.selectedIndex > 0 {
+			m.selectedIndex--
+		}
+	case "down", "j":
+		if len(m.changelogEntries) > 0 && m.selectedIndex < len(m.changelogEntries)-1 {
+			m.selectedIndex++
 		}
 	}
 	return m, nil

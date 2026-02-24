@@ -1,16 +1,23 @@
 package updater
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/CDFalcon/ccmux/internal/version"
 )
+
+type ChangelogEntry struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
 
 const repo = "colby-duke-ai/ccmux"
 
@@ -79,6 +86,66 @@ func DownloadUpdate(targetVersion string) error {
 	}
 
 	return nil
+}
+
+func FetchChangelog(currentVersion, latestVersion string) ([]ChangelogEntry, error) {
+	if currentVersion == "dev" || latestVersion == "" {
+		return nil, nil
+	}
+
+	compareCmd := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/compare/%s...%s", repo, currentVersion, latestVersion),
+		"--jq", "[.commits[].commit.message]")
+	compareOutput, err := compareCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to compare versions: %w", err)
+	}
+
+	var messages []string
+	if err := json.Unmarshal(compareOutput, &messages); err != nil {
+		return nil, fmt.Errorf("failed to parse compare output: %w", err)
+	}
+
+	includedPRs := make(map[int]bool)
+	for _, msg := range messages {
+		firstLine := strings.Split(msg, "\n")[0]
+		if strings.HasPrefix(firstLine, "Merge pull request #") {
+			rest := strings.TrimPrefix(firstLine, "Merge pull request #")
+			if idx := strings.Index(rest, " "); idx > 0 {
+				if num, err := strconv.Atoi(rest[:idx]); err == nil {
+					includedPRs[num] = true
+				}
+			}
+		}
+	}
+
+	if len(includedPRs) == 0 {
+		return nil, nil
+	}
+
+	listCmd := exec.Command("gh", "pr", "list",
+		"--repo", repo,
+		"--state", "merged",
+		"--json", "number,title",
+		"--limit", "100")
+	listOutput, err := listCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PRs: %w", err)
+	}
+
+	var allPRs []ChangelogEntry
+	if err := json.Unmarshal(listOutput, &allPRs); err != nil {
+		return nil, fmt.Errorf("failed to parse PR list: %w", err)
+	}
+
+	var entries []ChangelogEntry
+	for _, pr := range allPRs {
+		if includedPRs[pr.Number] {
+			entries = append(entries, pr)
+		}
+	}
+
+	return entries, nil
 }
 
 func copyFile(src, dst string) error {
