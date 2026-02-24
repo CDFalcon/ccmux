@@ -44,6 +44,7 @@ type model struct {
 	cleaningUp      bool
 	cleaningUpAgent string
 	spinnerFrame    int
+	marqueeOffset   int
 
 	agentStore   *agent.Store
 	queueManager *queue.Queue
@@ -294,6 +295,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.cleaningUp || hasActiveAgents {
 			m.spinnerFrame = (m.spinnerFrame + 1) % SpinnerFrameCount
+			m.marqueeOffset++
 			m.updateWindowNames()
 		}
 		return m, spinnerTickCmd()

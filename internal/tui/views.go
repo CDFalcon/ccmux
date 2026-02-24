@@ -34,6 +34,8 @@ const (
 	MaxTaskDisplayLen    = 40
 	MaxSummaryDisplayLen = 50
 	SpinnerFrameCount    = 6
+	MarqueeTickRate      = 3
+	MarqueeSeparator     = "  \u00b7\u00b7\u00b7  "
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
@@ -78,19 +80,19 @@ func renderMainView(m model) string {
 			if a.Status == agent.StatusKilling || (m.cleaningUp && a.ID == m.cleaningUpAgent) {
 				spin := styledSpinner(m.spinnerFrame, agentKillingStyle)
 				status := agentKillingStyle.Render("killing")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, truncate(a.Task, MaxTaskDisplayLen), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusSpawning {
 				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
 				status := agentSpawningStyle.Render("spawning")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, truncate(a.Task, MaxTaskDisplayLen), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusRunning {
 				spin := styledSpinner(m.spinnerFrame, agentRunningStyle)
 				status := agentRunningStyle.Render("running")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, truncate(a.Task, MaxTaskDisplayLen), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else {
@@ -571,6 +573,22 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+func marquee(s string, maxWidth int, offset int) string {
+	runes := []rune(s)
+	if len(runes) <= maxWidth {
+		return s
+	}
+	sep := []rune(MarqueeSeparator)
+	combined := append(append(make([]rune, 0, len(runes)+len(sep)), runes...), sep...)
+	totalLen := len(combined)
+	start := (offset / MarqueeTickRate) % totalLen
+	result := make([]rune, maxWidth)
+	for i := 0; i < maxWidth; i++ {
+		result[i] = combined[(start+i)%totalLen]
+	}
+	return string(result)
 }
 
 func formatAge(t time.Time) string {
