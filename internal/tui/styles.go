@@ -85,6 +85,9 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(dimGray)
 
+	branchTagStyle = lipgloss.NewStyle().
+			Foreground(dimGray)
+
 	questionStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorYellow))
 
