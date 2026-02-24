@@ -278,7 +278,7 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-claude --dangerously-skip-permissions --permission-mode dontAsk --system-prompt "You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+claude --dangerously-skip-permissions --system-prompt "You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
