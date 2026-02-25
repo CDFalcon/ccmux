@@ -13,20 +13,20 @@ Each agent gets its own git worktree, branch, and tmux window — so multiple ag
 
 ## Installation
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/CDFalcon/ccmux/releases):
+Download the latest binary for your platform from [GitHub Releases](https://github.com/colby-duke-ai/ccmux/releases):
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/CDFalcon/ccmux/releases/latest/download/ccmux-darwin-arm64 -o ccmux
+curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-darwin-arm64 -o ccmux
 
 # macOS (Intel)
-curl -L https://github.com/CDFalcon/ccmux/releases/latest/download/ccmux-darwin-amd64 -o ccmux
+curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-darwin-amd64 -o ccmux
 
 # Linux (x86_64)
-curl -L https://github.com/CDFalcon/ccmux/releases/latest/download/ccmux-linux-amd64 -o ccmux
+curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-linux-amd64 -o ccmux
 
 # Linux (ARM64)
-curl -L https://github.com/CDFalcon/ccmux/releases/latest/download/ccmux-linux-arm64 -o ccmux
+curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-linux-arm64 -o ccmux
 ```
 
 Then make it executable and move it to your PATH:
