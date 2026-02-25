@@ -13,27 +13,27 @@ Each agent gets its own git worktree, branch, and tmux window — so multiple ag
 
 ## Installation
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/colby-duke-ai/ccmux/releases):
+Download the latest binary for your platform using the GitHub CLI (required since this is a private repo):
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-darwin-arm64 -o ccmux
+gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-arm64'
 
 # macOS (Intel)
-curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-darwin-amd64 -o ccmux
+gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-amd64'
 
 # Linux (x86_64)
-curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-linux-amd64 -o ccmux
+gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-amd64'
 
 # Linux (ARM64)
-curl -L https://github.com/colby-duke-ai/ccmux/releases/latest/download/ccmux-linux-arm64 -o ccmux
+gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-arm64'
 ```
 
 Then make it executable and move it to your PATH:
 
 ```bash
-chmod +x ccmux
-mv ccmux /usr/local/bin/  # or ~/bin/, ~/.local/bin/, etc.
+chmod +x ccmux-*
+mv ccmux-* /usr/local/bin/ccmux  # or ~/bin/, ~/.local/bin/, etc.
 ```
 
 ## Quick Start
