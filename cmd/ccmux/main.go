@@ -328,11 +328,21 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-claude --dangerously-skip-permissions --system-prompt "You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
-2. After creating the PR, run: ccmux pr-ready <pr-url>" \
+2. After creating the PR, run: ccmux pr-ready <pr-url>"
+
+CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD_PATH" ]; then
+  CLAUDE_MD_CONTENT=$(cat "$CLAUDE_MD_PATH")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${CLAUDE_MD_CONTENT}"
+fi
+
+claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
@@ -885,13 +895,23 @@ unset CLAUDECODE
 echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"
 echo ""
 
-claude --continue --dangerously-skip-permissions --system-prompt "You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
 2. After creating the PR, run: ccmux pr-ready <pr-url>"
+
+CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD_PATH" ]; then
+  CLAUDE_MD_CONTENT=$(cat "$CLAUDE_MD_PATH")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${CLAUDE_MD_CONTENT}"
+fi
+
+claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
 `, agentID, worktreePath, sessionID)
