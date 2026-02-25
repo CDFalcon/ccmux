@@ -380,10 +380,12 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
+PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
+
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
+1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. After creating the PR, run: ccmux pr-ready <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
@@ -776,7 +778,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toCleanup = append(toCleanup, a)
 
 		case (a.Status == agent.StatusRunning || a.Status == agent.StatusSpawning) && worktreeExists:
-			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, sessionID)
+			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID)
 			if err != nil {
 				logging.Log("recovery: failed to write recovery script for %s: %v", a.ID, err)
 				continue
@@ -876,7 +878,7 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func writeRecoveryScript(agentID, worktreePath, sessionID string) (string, error) {
+func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -894,6 +896,7 @@ set -e
 
 AGENT_ID="%s"
 WORKTREE_PATH="%s"
+BASE_BRANCH="%s"
 SESSION_ID="%s"
 
 BLUE="\033[38;5;63m"
@@ -962,12 +965,14 @@ unset CLAUDECODE
 echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"
 echo ""
 
+PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
+
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
+1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. After creating the PR, run: ccmux pr-ready <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
@@ -981,7 +986,7 @@ fi
 claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, sessionID)
+`, agentID, worktreePath, baseBranch, sessionID)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
