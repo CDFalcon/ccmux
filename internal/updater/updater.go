@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/CDFalcon/ccmux/internal/version"
 )
@@ -41,7 +42,12 @@ func CheckForUpdate() (latestVersion string, hasUpdate bool, err error) {
 }
 
 func DownloadUpdate(targetVersion string) error {
+	return DownloadUpdateWithProgress(targetVersion, nil)
+}
+
+func DownloadUpdateWithProgress(targetVersion string, onProgress func(pct int)) error {
 	pattern := fmt.Sprintf("ccmux-%s-%s", runtime.GOOS, runtime.GOARCH)
+	expectedSize := getAssetSize(targetVersion, pattern)
 
 	currentBinary, err := os.Executable()
 	if err != nil {
@@ -59,32 +65,83 @@ func DownloadUpdate(targetVersion string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	cmd := exec.Command("gh", "release", "download", targetVersion,
-		"--repo", repo,
-		"--pattern", pattern,
-		"--dir", tmpDir,
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to download update: %s: %w", string(output), err)
+	downloadedFile := filepath.Join(tmpDir, pattern)
+
+	errCh := make(chan error, 1)
+	go func() {
+		cmd := exec.Command("gh", "release", "download", targetVersion,
+			"--repo", repo,
+			"--pattern", pattern,
+			"--dir", tmpDir,
+		)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			errCh <- fmt.Errorf("failed to download update: %s: %w", string(output), err)
+		} else {
+			errCh <- nil
+		}
+	}()
+
+	if expectedSize > 0 && onProgress != nil {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case err := <-errCh:
+				if err != nil {
+					return err
+				}
+				onProgress(100)
+				return installBinary(downloadedFile, currentBinary)
+			case <-ticker.C:
+				if info, statErr := os.Stat(downloadedFile); statErr == nil {
+					pct := int(info.Size() * 100 / expectedSize)
+					if pct > 99 {
+						pct = 99
+					}
+					onProgress(pct)
+				}
+			}
+		}
 	}
 
-	downloadedFile := filepath.Join(tmpDir, pattern)
-	tmpPath := currentBinary + ".tmp"
+	if err := <-errCh; err != nil {
+		return err
+	}
+	if onProgress != nil {
+		onProgress(100)
+	}
+	return installBinary(downloadedFile, currentBinary)
+}
 
-	if err := copyFile(downloadedFile, tmpPath); err != nil {
+func getAssetSize(targetVersion, pattern string) int64 {
+	cmd := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/releases/tags/%s", repo, targetVersion),
+		"--jq", fmt.Sprintf(`.assets[] | select(.name == "%s") | .size`, pattern))
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return size
+}
+
+func installBinary(src, dst string) error {
+	tmpPath := dst + ".tmp"
+	if err := copyFile(src, tmpPath); err != nil {
 		return fmt.Errorf("failed to stage downloaded file: %w", err)
 	}
-
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to set permissions: %w", err)
 	}
-
-	if err := os.Rename(tmpPath, currentBinary); err != nil {
+	if err := os.Rename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to replace binary: %w", err)
 	}
-
 	return nil
 }
 

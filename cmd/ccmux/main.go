@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/logging"
@@ -140,7 +141,18 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	return tui.Run(agentStore, queueManager, projectStore, tmuxManager, sessionID)
+	restart, err := tui.Run(agentStore, queueManager, projectStore, tmuxManager, sessionID)
+	if err != nil {
+		return err
+	}
+	if restart {
+		exePath, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable for restart: %w", err)
+		}
+		return syscall.Exec(exePath, []string{exePath, sessionID}, os.Environ())
+	}
+	return nil
 }
 
 func spawnCmd() *cobra.Command {

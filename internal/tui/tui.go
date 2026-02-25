@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -36,10 +37,9 @@ type model struct {
 	taskInput             textarea.Model
 	branchInput           textinput.Model
 	branchOptions         []string
-	branchAllEntries      []branchEntry
-	branchFilteredEntries []branchEntry
-	branchSearchIndex     int
-	spawnBranch           string
+	branchFilter     textinput.Model
+	filteredBranches []string
+	spawnBranch      string
 
 	// Project form inputs
 	projectForm    projectFormModel
@@ -67,8 +67,9 @@ type model struct {
 	spinnerFrame  int
 	marqueeOffset int
 
-	// Periodic update check
-	lastUpdateCheck time.Time
+	// Download progress
+	downloadProgress *int64
+	restartRequested bool
 
 	agentStore   *agent.Store
 	queueManager *queue.Queue
@@ -78,9 +79,10 @@ type model struct {
 }
 
 type branchEntry struct {
-	tag            string
-	name           string
-	matchedIndexes []int
+	tag      string
+	name     string
+	value    string
+	isManual bool
 }
 
 type projectFormModel struct {
@@ -165,30 +167,55 @@ func getLocalBranches(repoPath string) []string {
 	return branches
 }
 
-func getAllBranches(repoPath string) []branchEntry {
+func (m model) branchEntries() []branchEntry {
 	var entries []branchEntry
+	entries = append(entries, branchEntry{tag: "(default)", name: "origin/master", value: "origin/master"})
+	entries = append(entries, branchEntry{name: "Manually specify branch...", isManual: true})
 
-	localCmd := exec.Command("git", "-C", repoPath, "branch", "--format=%(refname:short)")
-	if localOutput, err := localCmd.Output(); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(localOutput)), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				entries = append(entries, branchEntry{tag: "(local)", name: line})
+	if m.branchFilter.Value() != "" {
+		for _, name := range m.filteredBranches {
+			tag := "(local)"
+			if strings.Contains(name, "/") {
+				tag = "(remote)"
 			}
+			entries = append(entries, branchEntry{tag: tag, name: name, value: name})
 		}
-	}
-
-	remoteCmd := exec.Command("git", "-C", repoPath, "branch", "-r", "--format=%(refname:short)")
-	if remoteOutput, err := remoteCmd.Output(); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(remoteOutput)), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.Contains(line, "HEAD") {
-				entries = append(entries, branchEntry{tag: "(remote)", name: line})
-			}
+	} else {
+		for _, name := range m.branchOptions {
+			entries = append(entries, branchEntry{tag: "(local)", name: name, value: name})
 		}
 	}
 
 	return entries
+}
+
+func (m *model) fuzzyFilterBranches() {
+	query := m.branchFilter.Value()
+	if query == "" {
+		m.filteredBranches = nil
+		return
+	}
+
+	allBranches := make([]string, len(m.branchOptions))
+	copy(allBranches, m.branchOptions)
+
+	if m.selectedProj != nil {
+		remoteCmd := exec.Command("git", "-C", m.selectedProj.Path, "branch", "-r", "--format=%(refname:short)")
+		if remoteOutput, err := remoteCmd.Output(); err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(remoteOutput)), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.Contains(line, "HEAD") {
+					allBranches = append(allBranches, line)
+				}
+			}
+		}
+	}
+
+	matches := fuzzy.Find(query, allBranches)
+	m.filteredBranches = make([]string, len(matches))
+	for i, match := range matches {
+		m.filteredBranches[i] = allBranches[match.Index]
+	}
 }
 
 type tickMsg time.Time
@@ -249,20 +276,28 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	branchInput.Width = 50
 	branchInput.CharLimit = 100
 
+	branchFilter := textinput.New()
+	branchFilter.Placeholder = "Type to search branches..."
+	branchFilter.Width = 50
+	branchFilter.CharLimit = 100
+
 	interveneInput := newAutoGrowTextarea("Type message to send to agent...", 60)
 
+	progress := new(int64)
+
 	return model{
-		view:            ViewMain,
-		taskInput:       taskInput,
-		branchInput:     branchInput,
-		interveneInput:  interveneInput,
-		projectForm:     newProjectForm(),
-		agentStore:      agentStore,
-		queueManager:    queueManager,
-		projectStore:    projectStore,
-		tmuxManager:     tmuxManager,
-		sessionID:       sessionID,
-		lastUpdateCheck: time.Now(),
+		view:             ViewMain,
+		taskInput:        taskInput,
+		branchInput:      branchInput,
+		branchFilter:     branchFilter,
+		interveneInput:   interveneInput,
+		projectForm:      newProjectForm(),
+		downloadProgress: progress,
+		agentStore:       agentStore,
+		queueManager:     queueManager,
+		projectStore:     projectStore,
+		tmuxManager:      tmuxManager,
+		sessionID:        sessionID,
 	}
 }
 
@@ -380,9 +415,11 @@ func fetchChangelogCmd(currentVersion, latestVersion string) tea.Cmd {
 	}
 }
 
-func downloadUpdateCmd(targetVersion string) tea.Cmd {
+func downloadUpdateCmd(targetVersion string, progress *int64) tea.Cmd {
 	return func() tea.Msg {
-		err := updater.DownloadUpdate(targetVersion)
+		err := updater.DownloadUpdateWithProgress(targetVersion, func(pct int) {
+			atomic.StoreInt64(progress, int64(pct))
+		})
 		return updateCompleteMsg{err: err}
 	}
 }
@@ -392,22 +429,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tickMsg:
-		cmds := []tea.Cmd{tickCmd(), m.refreshCmd()}
-		if time.Since(m.lastUpdateCheck) > 5*time.Minute {
-			m.lastUpdateCheck = time.Now()
-			cmds = append(cmds, checkForUpdateCmd())
-		}
-		return m, tea.Batch(cmds...)
+		return m, tea.Batch(tickCmd(), m.refreshCmd())
 
 	case spinnerTickMsg:
-		hasAnimatedAgents := false
-		for _, a := range m.agents {
-			if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp {
-				hasAnimatedAgents = true
-				break
+		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading
+		if !shouldAnimate {
+			for _, a := range m.agents {
+				if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp {
+					shouldAnimate = true
+					break
+				}
 			}
 		}
-		if hasAnimatedAgents {
+		if shouldAnimate {
 			m.spinnerFrame = (m.spinnerFrame + 1) % SpinnerFrameCount
 			m.marqueeOffset++
 			m.updateWindowNames()
@@ -425,7 +459,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateCheckResultMsg:
 		m.updateChecking = false
-		m.lastUpdateCheck = time.Now()
 		if msg.err != nil {
 			m.updateError = fmt.Sprintf("Update check failed: %s", msg.err.Error())
 			return m, nil
@@ -475,6 +508,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs for blink cursor
+	if m.view == ViewNewTaskBranch {
+		var cmd tea.Cmd
+		m.branchFilter, cmd = m.branchFilter.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if m.view == ViewNewTaskBranchInput {
 		var cmd tea.Cmd
 		m.branchInput, cmd = m.branchInput.Update(msg)
@@ -619,6 +657,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.changelogEntries = nil
 		m.changelogLoading = false
 		m.selectedIndex = 0
+		atomic.StoreInt64(m.downloadProgress, 0)
 		return m, checkForUpdateCmd()
 	}
 	return m, nil
@@ -641,60 +680,69 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
 			m.selectedProj = m.projects[m.selectedIndex]
 			m.branchOptions = getLocalBranches(m.selectedProj.Path)
-			m.branchAllEntries = getAllBranches(m.selectedProj.Path)
+			m.branchFilter.SetValue("")
+			m.filteredBranches = nil
 			m.view = ViewNewTaskBranch
 			m.selectedIndex = 0
-			return m, nil
+			m.branchFilter.Focus()
+			return m, textinput.Blink
 		}
 	}
 	return m, nil
 }
 
 func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	totalItems := 2 + len(m.branchOptions)
+	entries := m.branchEntries()
+	totalItems := len(entries)
 
 	switch msg.String() {
 	case "esc":
+		if m.branchFilter.Value() != "" {
+			m.branchFilter.SetValue("")
+			m.filteredBranches = nil
+			m.selectedIndex = 0
+			return m, nil
+		}
 		m.view = ViewSelectProject
 		m.selectedIndex = 0
 		return m, nil
-	case "up", "k":
+	case "up":
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
 		}
-	case "down", "j":
+		return m, nil
+	case "down":
 		if m.selectedIndex < totalItems-1 {
 			m.selectedIndex++
 		}
+		return m, nil
 	case "enter":
-		if m.selectedIndex == 0 {
-			m.spawnBranch = "origin/master"
+		if m.selectedIndex >= 0 && m.selectedIndex < totalItems {
+			entry := entries[m.selectedIndex]
+			if entry.isManual {
+				m.view = ViewNewTaskBranchInput
+				m.branchInput.SetValue("")
+				m.branchInput.Focus()
+				return m, textinput.Blink
+			}
+			m.spawnBranch = entry.value
 			m.view = ViewNewTaskInput
 			m.taskInput.SetValue("")
 			m.taskInput.SetHeight(1)
 			m.selectedIndex = 0
+			m.branchFilter.SetValue("")
+			m.filteredBranches = nil
 			cmd := m.taskInput.Focus()
 			return m, cmd
 		}
-		if m.selectedIndex == 1 {
-			m.view = ViewNewTaskBranchInput
-			m.branchInput.SetValue("")
-			m.branchInput.Focus()
-			m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-			copy(m.branchFilteredEntries, m.branchAllEntries)
-			m.branchSearchIndex = 0
-			return m, textinput.Blink
-		}
-		branch := m.branchOptions[m.selectedIndex-2]
-		m.spawnBranch = branch
-		m.view = ViewNewTaskInput
-		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
-		m.selectedIndex = 0
-		cmd := m.taskInput.Focus()
-		return m, cmd
+		return m, nil
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.branchFilter, cmd = m.branchFilter.Update(msg)
+	m.fuzzyFilterBranches()
+	m.selectedIndex = 0
+	return m, cmd
 }
 
 func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -703,26 +751,12 @@ func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		m.view = ViewNewTaskBranch
 		m.branchInput.SetValue("")
 		return m, nil
-	case "up":
-		if m.branchSearchIndex > 0 {
-			m.branchSearchIndex--
-		}
-		return m, nil
-	case "down":
-		if m.branchSearchIndex < len(m.branchFilteredEntries)-1 {
-			m.branchSearchIndex++
-		}
-		return m, nil
 	case "enter":
-		if len(m.branchFilteredEntries) > 0 && m.branchSearchIndex >= 0 && m.branchSearchIndex < len(m.branchFilteredEntries) {
-			m.spawnBranch = m.branchFilteredEntries[m.branchSearchIndex].name
-		} else {
-			branch := m.branchInput.Value()
-			if branch == "" {
-				branch = "origin/master"
-			}
-			m.spawnBranch = branch
+		branch := m.branchInput.Value()
+		if branch == "" {
+			branch = "origin/master"
 		}
+		m.spawnBranch = branch
 		m.view = ViewNewTaskInput
 		m.taskInput.SetValue("")
 		m.taskInput.SetHeight(1)
@@ -733,33 +767,7 @@ func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 
 	var cmd tea.Cmd
 	m.branchInput, cmd = m.branchInput.Update(msg)
-	m.updateBranchFilter()
 	return m, cmd
-}
-
-func (m *model) updateBranchFilter() {
-	query := m.branchInput.Value()
-	if query == "" {
-		m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-		copy(m.branchFilteredEntries, m.branchAllEntries)
-		m.branchSearchIndex = 0
-		return
-	}
-
-	names := make([]string, len(m.branchAllEntries))
-	for i, e := range m.branchAllEntries {
-		names[i] = e.name
-	}
-	matches := fuzzy.Find(query, names)
-	m.branchFilteredEntries = make([]branchEntry, len(matches))
-	for i, match := range matches {
-		entry := m.branchAllEntries[match.Index]
-		entry.matchedIndexes = match.MatchedIndexes
-		m.branchFilteredEntries[i] = entry
-	}
-	if m.branchSearchIndex >= len(m.branchFilteredEntries) {
-		m.branchSearchIndex = 0
-	}
 }
 
 func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -769,6 +777,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedIndex = 0
 		m.taskInput.SetValue("")
 		m.taskInput.SetHeight(1)
+		m.taskInput.Blur()
 		return m, nil
 	case "enter":
 		task := m.taskInput.Value()
@@ -1052,13 +1061,23 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "esc", "n":
+	case "esc":
 		m.view = ViewMain
+	case "n":
+		if !m.updateComplete {
+			m.view = ViewMain
+		}
 	case "y":
 		if m.updateAvailable && !m.updateComplete {
 			m.updateDownloading = true
 			m.updateError = ""
-			return m, downloadUpdateCmd(m.updateVersion)
+			atomic.StoreInt64(m.downloadProgress, 0)
+			return m, downloadUpdateCmd(m.updateVersion, m.downloadProgress)
+		}
+	case "r":
+		if m.updateComplete {
+			m.restartRequested = true
+			return m, tea.Quit
 		}
 	case "up", "k":
 		if len(m.changelogEntries) > 0 && m.selectedIndex > 0 {
@@ -1402,9 +1421,15 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) error {
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
 	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	finalModel, err := p.Run()
+	if err != nil {
+		return false, err
+	}
+	if fm, ok := finalModel.(model); ok && fm.restartRequested {
+		return true, nil
+	}
+	return false, nil
 }

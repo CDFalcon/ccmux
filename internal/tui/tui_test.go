@@ -1,269 +1,82 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func newTestModelWithBranches(allEntries []branchEntry) model {
+func newTestModel() model {
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
 	branchInput.Width = 50
 	branchInput.CharLimit = 100
 
+	branchFilter := textinput.New()
+	branchFilter.Placeholder = "Type to search branches..."
+	branchFilter.Width = 50
+	branchFilter.CharLimit = 100
+
 	taskInput := newAutoGrowTextarea("Describe the task...", 60)
 
+	progress := new(int64)
+
 	return model{
-		view:             ViewNewTaskBranchInput,
+		view:             ViewNewTaskBranch,
 		branchInput:      branchInput,
+		branchFilter:     branchFilter,
 		taskInput:        taskInput,
-		branchAllEntries: allEntries,
+		downloadProgress: progress,
 	}
 }
 
-func TestUpdateBranchFilter_ShouldReturnAllEntries_GivenEmptyQuery(t *testing.T) {
+func TestBranchEntries_ShouldIncludeDefaultAndManual_GivenNoFilter(t *testing.T) {
 	// Setup.
-	entries := []branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "feature-auth"},
-		{tag: "(remote)", name: "origin/main"},
-	}
-	m := newTestModelWithBranches(entries)
-	m.branchInput.SetValue("")
+	m := newTestModel()
+	m.branchOptions = []string{"main", "develop"}
 
 	// Execute.
-	m.updateBranchFilter()
+	entries := m.branchEntries()
 
 	// Assert.
-	if len(m.branchFilteredEntries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(m.branchFilteredEntries))
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
 	}
-	if m.branchSearchIndex != 0 {
-		t.Errorf("expected search index 0, got %d", m.branchSearchIndex)
+	if entries[0].value != "origin/master" {
+		t.Errorf("expected first entry 'origin/master', got '%s'", entries[0].value)
+	}
+	if !entries[1].isManual {
+		t.Error("expected second entry to be manual")
+	}
+	if entries[2].value != "main" {
+		t.Errorf("expected third entry 'main', got '%s'", entries[2].value)
 	}
 }
 
-func TestUpdateBranchFilter_ShouldFilterByFuzzyMatch_GivenQuery(t *testing.T) {
+func TestBranchEntries_ShouldShowFilteredResults_GivenFilter(t *testing.T) {
 	// Setup.
-	entries := []branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "feature-auth"},
-		{tag: "(remote)", name: "origin/main"},
-		{tag: "(remote)", name: "origin/feature-deploy"},
-	}
-	m := newTestModelWithBranches(entries)
-	m.branchInput.SetValue("auth")
+	m := newTestModel()
+	m.branchOptions = []string{"main", "develop"}
+	m.branchFilter.SetValue("dev")
+	m.filteredBranches = []string{"develop"}
 
 	// Execute.
-	m.updateBranchFilter()
+	entries := m.branchEntries()
 
 	// Assert.
-	if len(m.branchFilteredEntries) != 1 {
-		t.Fatalf("expected 1 match, got %d", len(m.branchFilteredEntries))
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (default + manual + 1 filtered), got %d", len(entries))
 	}
-	if m.branchFilteredEntries[0].name != "feature-auth" {
-		t.Errorf("expected 'feature-auth', got '%s'", m.branchFilteredEntries[0].name)
-	}
-	if m.branchFilteredEntries[0].tag != "(local)" {
-		t.Errorf("expected '(local)' tag, got '%s'", m.branchFilteredEntries[0].tag)
-	}
-	if len(m.branchFilteredEntries[0].matchedIndexes) == 0 {
-		t.Error("expected matchedIndexes to be populated")
+	if entries[2].value != "develop" {
+		t.Errorf("expected filtered entry 'develop', got '%s'", entries[2].value)
 	}
 }
 
-func TestUpdateBranchFilter_ShouldReturnEmpty_GivenNoMatches(t *testing.T) {
+func TestHandleNewTaskBranchInputKeys_ShouldDefaultToOriginMaster_GivenEmptyInput(t *testing.T) {
 	// Setup.
-	entries := []branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(remote)", name: "origin/main"},
-	}
-	m := newTestModelWithBranches(entries)
-	m.branchInput.SetValue("zzzznotabranch")
-
-	// Execute.
-	m.updateBranchFilter()
-
-	// Assert.
-	if len(m.branchFilteredEntries) != 0 {
-		t.Fatalf("expected 0 matches, got %d", len(m.branchFilteredEntries))
-	}
-}
-
-func TestUpdateBranchFilter_ShouldResetIndex_GivenIndexBeyondResults(t *testing.T) {
-	// Setup.
-	entries := []branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "feature-auth"},
-		{tag: "(local)", name: "feature-deploy"},
-	}
-	m := newTestModelWithBranches(entries)
-	m.branchSearchIndex = 2
-	m.branchInput.SetValue("auth")
-
-	// Execute.
-	m.updateBranchFilter()
-
-	// Assert.
-	if m.branchSearchIndex != 0 {
-		t.Errorf("expected search index reset to 0, got %d", m.branchSearchIndex)
-	}
-}
-
-func TestUpdateBranchFilter_ShouldMatchMultipleBranches_GivenBroadQuery(t *testing.T) {
-	// Setup.
-	entries := []branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "feature-auth"},
-		{tag: "(remote)", name: "origin/main"},
-		{tag: "(remote)", name: "origin/feature-auth"},
-	}
-	m := newTestModelWithBranches(entries)
-	m.branchInput.SetValue("main")
-
-	// Execute.
-	m.updateBranchFilter()
-
-	// Assert.
-	if len(m.branchFilteredEntries) != 2 {
-		t.Fatalf("expected 2 matches, got %d", len(m.branchFilteredEntries))
-	}
-	names := make([]string, len(m.branchFilteredEntries))
-	for i, e := range m.branchFilteredEntries {
-		names[i] = e.name
-	}
-	joined := strings.Join(names, ",")
-	if !strings.Contains(joined, "main") || !strings.Contains(joined, "origin/main") {
-		t.Errorf("expected both 'main' and 'origin/main' in results, got: %s", joined)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldNavigateDown_GivenDownKey(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "develop"},
-		{tag: "(remote)", name: "origin/main"},
-	})
-	m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-	copy(m.branchFilteredEntries, m.branchAllEntries)
-	m.branchSearchIndex = 0
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyDown})
-
-	// Assert.
-	rm := result.(model)
-	if rm.branchSearchIndex != 1 {
-		t.Errorf("expected search index 1, got %d", rm.branchSearchIndex)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldNavigateUp_GivenUpKey(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "develop"},
-	})
-	m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-	copy(m.branchFilteredEntries, m.branchAllEntries)
-	m.branchSearchIndex = 1
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyUp})
-
-	// Assert.
-	rm := result.(model)
-	if rm.branchSearchIndex != 0 {
-		t.Errorf("expected search index 0, got %d", rm.branchSearchIndex)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldNotGoBelowZero_GivenUpAtTop(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-	})
-	m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-	copy(m.branchFilteredEntries, m.branchAllEntries)
-	m.branchSearchIndex = 0
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyUp})
-
-	// Assert.
-	rm := result.(model)
-	if rm.branchSearchIndex != 0 {
-		t.Errorf("expected search index 0, got %d", rm.branchSearchIndex)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldNotExceedMax_GivenDownAtBottom(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(local)", name: "develop"},
-	})
-	m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-	copy(m.branchFilteredEntries, m.branchAllEntries)
-	m.branchSearchIndex = 1
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyDown})
-
-	// Assert.
-	rm := result.(model)
-	if rm.branchSearchIndex != 1 {
-		t.Errorf("expected search index 1, got %d", rm.branchSearchIndex)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldSelectBranch_GivenEnterWithResults(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-		{tag: "(remote)", name: "origin/develop"},
-	})
-	m.branchFilteredEntries = make([]branchEntry, len(m.branchAllEntries))
-	copy(m.branchFilteredEntries, m.branchAllEntries)
-	m.branchSearchIndex = 1
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyEnter})
-
-	// Assert.
-	rm := result.(model)
-	if rm.spawnBranch != "origin/develop" {
-		t.Errorf("expected 'origin/develop', got '%s'", rm.spawnBranch)
-	}
-	if rm.view != ViewNewTaskInput {
-		t.Errorf("expected ViewNewTaskInput, got %d", rm.view)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldFallbackToInput_GivenEnterWithNoResults(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches(nil)
-	m.branchFilteredEntries = nil
-	m.branchInput.SetValue("my-custom-branch")
-
-	// Execute.
-	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyEnter})
-
-	// Assert.
-	rm := result.(model)
-	if rm.spawnBranch != "my-custom-branch" {
-		t.Errorf("expected 'my-custom-branch', got '%s'", rm.spawnBranch)
-	}
-}
-
-func TestHandleNewTaskBranchInputKeys_ShouldDefaultToOriginMaster_GivenEnterWithEmptyInput(t *testing.T) {
-	// Setup.
-	m := newTestModelWithBranches(nil)
-	m.branchFilteredEntries = nil
+	m := newTestModel()
+	m.view = ViewNewTaskBranchInput
 	m.branchInput.SetValue("")
 
 	// Execute.
@@ -276,11 +89,26 @@ func TestHandleNewTaskBranchInputKeys_ShouldDefaultToOriginMaster_GivenEnterWith
 	}
 }
 
+func TestHandleNewTaskBranchInputKeys_ShouldUseCustomBranch_GivenInput(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskBranchInput
+	m.branchInput.SetValue("my-custom-branch")
+
+	// Execute.
+	result, _ := m.handleNewTaskBranchInputKeys(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Assert.
+	rm := result.(model)
+	if rm.spawnBranch != "my-custom-branch" {
+		t.Errorf("expected 'my-custom-branch', got '%s'", rm.spawnBranch)
+	}
+}
+
 func TestHandleNewTaskBranchInputKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 	// Setup.
-	m := newTestModelWithBranches([]branchEntry{
-		{tag: "(local)", name: "main"},
-	})
+	m := newTestModel()
+	m.view = ViewNewTaskBranchInput
 	m.branchInput.SetValue("something")
 
 	// Execute.
@@ -296,45 +124,103 @@ func TestHandleNewTaskBranchInputKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 	}
 }
 
-func TestRenderMatchedName_ShouldReturnUnchanged_GivenNoMatches(t *testing.T) {
+func TestHandleNewTaskBranchKeys_ShouldNavigateDown_GivenDownKey(t *testing.T) {
 	// Setup.
-	name := "feature-auth"
+	m := newTestModel()
+	m.branchOptions = []string{"main", "develop"}
+	m.selectedIndex = 0
 
 	// Execute.
-	result := renderMatchedName(name, nil)
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyDown})
 
 	// Assert.
-	if result != name {
-		t.Errorf("expected unchanged name '%s', got '%s'", name, result)
+	rm := result.(model)
+	if rm.selectedIndex != 1 {
+		t.Errorf("expected selectedIndex 1, got %d", rm.selectedIndex)
 	}
 }
 
-func TestRenderMatchedName_ShouldContainAllCharacters_GivenMatches(t *testing.T) {
+func TestHandleNewTaskBranchKeys_ShouldNavigateUp_GivenUpKey(t *testing.T) {
 	// Setup.
-	name := "feature"
-	indexes := []int{0, 1, 2}
+	m := newTestModel()
+	m.branchOptions = []string{"main", "develop"}
+	m.selectedIndex = 2
 
 	// Execute.
-	result := renderMatchedName(name, indexes)
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyUp})
 
 	// Assert.
-	if !strings.Contains(result, "fea") {
-		t.Error("expected result to contain matched text 'fea'")
-	}
-	if !strings.Contains(result, "ture") {
-		t.Error("expected result to contain unmatched text 'ture'")
+	rm := result.(model)
+	if rm.selectedIndex != 1 {
+		t.Errorf("expected selectedIndex 1, got %d", rm.selectedIndex)
 	}
 }
 
-func TestRenderMatchedName_ShouldReturnUnchanged_GivenEmptyIndexes(t *testing.T) {
+func TestHandleNewTaskBranchKeys_ShouldSelectDefault_GivenEnterOnFirst(t *testing.T) {
 	// Setup.
-	name := "main"
+	m := newTestModel()
+	m.branchOptions = []string{"main"}
+	m.selectedIndex = 0
 
 	// Execute.
-	result := renderMatchedName(name, []int{})
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Assert.
-	if result != name {
-		t.Errorf("expected unchanged name '%s', got '%s'", name, result)
+	rm := result.(model)
+	if rm.spawnBranch != "origin/master" {
+		t.Errorf("expected 'origin/master', got '%s'", rm.spawnBranch)
+	}
+	if rm.view != ViewNewTaskInput {
+		t.Errorf("expected ViewNewTaskInput, got %d", rm.view)
+	}
+}
+
+func TestHandleNewTaskBranchKeys_ShouldGoToManualInput_GivenEnterOnSecond(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.branchOptions = []string{"main"}
+	m.selectedIndex = 1
+
+	// Execute.
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewNewTaskBranchInput {
+		t.Errorf("expected ViewNewTaskBranchInput, got %d", rm.view)
+	}
+}
+
+func TestHandleNewTaskBranchKeys_ShouldClearFilter_GivenEscWithFilter(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.branchFilter.SetValue("something")
+	m.filteredBranches = []string{"something"}
+
+	// Execute.
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Assert.
+	rm := result.(model)
+	if rm.branchFilter.Value() != "" {
+		t.Errorf("expected filter cleared, got '%s'", rm.branchFilter.Value())
+	}
+	if rm.view != ViewNewTaskBranch {
+		t.Errorf("expected to stay on ViewNewTaskBranch, got %d", rm.view)
+	}
+}
+
+func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.branchFilter.SetValue("")
+
+	// Execute.
+	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewSelectProject {
+		t.Errorf("expected ViewSelectProject, got %d", rm.view)
 	}
 }
