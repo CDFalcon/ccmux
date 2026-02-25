@@ -161,7 +161,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[q]uick action  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
+	help := "[q]ueue pop (e.g. PR review)  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
