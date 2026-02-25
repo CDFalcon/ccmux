@@ -46,11 +46,14 @@ const (
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
 
-func renderCtrlCIndicator(pressed bool) string {
-	if pressed {
-		return errorStyle.Render("Press Ctrl+C again to detach")
+func renderFooter(help string, ctrlCPressed bool) string {
+	var b strings.Builder
+	b.WriteString(helpStyle.Render(help))
+	if ctrlCPressed {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Press Ctrl+C again to detach"))
 	}
-	return ""
+	return b.String()
 }
 
 func renderLogo() string {
@@ -160,7 +163,7 @@ func renderMainView(m model) string {
 	}
 
 	help := "[q]uick action  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -188,7 +191,7 @@ func renderSelectProjectView(m model) string {
 	}
 
 	help := "[↑/↓/j/k] select  [enter] choose  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -233,7 +236,7 @@ func renderNewTaskBranchView(m model) string {
 	b.WriteString("\n")
 
 	help := "[↑/↓] select  [enter] choose  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -258,7 +261,7 @@ func renderNewTaskBranchInputView(m model) string {
 	b.WriteString("\n\n")
 
 	help := "[enter] confirm  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -281,7 +284,7 @@ func renderNewTaskInputView(m model) string {
 	b.WriteString("\n\n")
 
 	help := "[enter] submit  [shift+enter] new line  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -319,7 +322,7 @@ func renderInterveneView(m model) string {
 	}
 
 	help := "[↑/↓/j/k] select  [enter] focus agent  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -344,7 +347,7 @@ func renderInterveneInputView(m model) string {
 	b.WriteString("\n\n")
 
 	help := "[enter] send  [shift+enter] new line  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -382,7 +385,7 @@ func renderReviewView(m model) string {
 	}
 
 	help := "[↑/↓/j/k] select  [a]ccept  [c]omment  [r]eject  [b]rowser  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -403,7 +406,7 @@ func renderConfirmMergeView(m model) string {
 	}
 
 	help := "[y]es  [n]o"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -416,7 +419,7 @@ func renderConfirmKillView(m model) string {
 	b.WriteString(renderAgentSelector(m, "No agents to kill"))
 
 	help := "[↑/↓/j/k] select  [enter] kill  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -444,7 +447,7 @@ func renderManageProjectsView(m model) string {
 	}
 
 	help := "[a]dd project  [d]elete selected  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -463,7 +466,7 @@ func renderAddProjectNameView(m model) string {
 	b.WriteString("\n\n")
 
 	help := "[enter] next  [esc] cancel"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -484,7 +487,7 @@ func renderAddProjectPathView(m model) string {
 	b.WriteString("\n\n")
 
 	help := "[enter] create project  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -504,7 +507,7 @@ func renderConfirmRemoveProjectView(m model) string {
 	}
 
 	help := "[y]es  [n]o"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -529,7 +532,7 @@ func renderConfirmKillSessionView(m model) string {
 	b.WriteString("Are you sure you want to kill everything?\n\n")
 
 	help := "[y]es, kill everything  [n]o"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -759,7 +762,7 @@ func renderJumpToAgentView(m model) string {
 	b.WriteString(renderAgentSelector(m, "No agents running"))
 
 	help := "[↑/↓/j/k] select  [enter] jump  [esc] back"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
@@ -825,13 +828,13 @@ func renderUpdateView(m model) string {
 
 	if m.updateComplete {
 		help := "[r]estart  [esc] back"
-		b.WriteString(helpStyle.Render(help))
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	} else if m.updateAvailable && !m.updateDownloading {
 		help := "[↑/↓/j/k] scroll  [y] install  [n] cancel"
-		b.WriteString(helpStyle.Render(help))
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	} else if !m.updateChecking && !m.updateDownloading {
 		help := "[esc] back"
-		b.WriteString(helpStyle.Render(help))
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	}
 
 	return b.String()

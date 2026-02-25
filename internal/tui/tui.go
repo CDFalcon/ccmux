@@ -1413,11 +1413,6 @@ func (m model) View() string {
 		content = renderMainView(m)
 	}
 
-	// Add Ctrl+C indicator at bottom
-	if m.ctrlCPressed {
-		content += "\n\n" + renderCtrlCIndicator(m.ctrlCPressed)
-	}
-
 	return content
 }
 
