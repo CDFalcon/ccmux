@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -222,5 +223,85 @@ func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T)
 	rm := result.(model)
 	if rm.view != ViewSelectProject {
 		t.Errorf("expected ViewSelectProject, got %d", rm.view)
+	}
+}
+
+func TestHandleKeyPress_ShouldShowHelp_GivenHOnMainView(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewMain
+
+	// Execute.
+	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewHelp {
+		t.Errorf("expected ViewHelp, got %d", rm.view)
+	}
+	if rm.previousView != ViewMain {
+		t.Errorf("expected previousView ViewMain, got %d", rm.previousView)
+	}
+}
+
+func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnInputView(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskBranch
+
+	// Execute.
+	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view == ViewHelp {
+		t.Error("expected view NOT to be ViewHelp on an input view")
+	}
+}
+
+func TestHandleHelpKeys_ShouldReturnToPreviousView_GivenEsc(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewHelp
+	m.previousView = ViewReview
+
+	// Execute.
+	result, _ := m.handleHelpKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewReview {
+		t.Errorf("expected ViewReview, got %d", rm.view)
+	}
+}
+
+func TestHelpFooter_ShouldIncludeHelpOption_GivenNonInputView(t *testing.T) {
+	// Setup/Execute.
+	footer := helpFooter(ViewMain)
+
+	// Assert.
+	if !strings.Contains(footer, "[h]elp") {
+		t.Errorf("expected footer to contain '[h]elp', got '%s'", footer)
+	}
+}
+
+func TestHelpFooter_ShouldNotIncludeHelpOption_GivenInputView(t *testing.T) {
+	// Setup/Execute.
+	footer := helpFooter(ViewNewTaskInput)
+
+	// Assert.
+	if strings.Contains(footer, "[h]elp") {
+		t.Errorf("expected footer NOT to contain '[h]elp', got '%s'", footer)
+	}
+}
+
+func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.T) {
+	// Setup/Execute.
+	footer := helpFooter(ViewSelectProject)
+
+	// Assert.
+	expected := "[↑/↓/j/k] select  [enter] choose  [esc] back  [h]elp"
+	if footer != expected {
+		t.Errorf("expected '%s', got '%s'", expected, footer)
 	}
 }
