@@ -48,11 +48,11 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
 
 func renderFooter(help string, ctrlCPressed bool) string {
 	var b strings.Builder
-	if ctrlCPressed {
-		b.WriteString(dimStyle.Render("  Press Ctrl+C again to detach"))
-		b.WriteString("\n")
-	}
 	b.WriteString(helpStyle.Render(help))
+	if ctrlCPressed {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Press Ctrl+C again to detach"))
+	}
 	return b.String()
 }
 
