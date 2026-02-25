@@ -312,6 +312,16 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
+cat > .claude/hooks/ask-user.sh << 'HOOKEOF'
+#!/bin/bash
+INPUT=$(cat)
+QUESTIONS=$(echo "$INPUT" | jq -r '.tool_input.questions[]?.question // empty' 2>/dev/null | head -5 | tr '\n' ' ')
+if [ -n "$QUESTIONS" ]; then
+  ccmux need-help "$QUESTIONS" 2>/dev/null || true
+fi
+HOOKEOF
+chmod +x .claude/hooks/ask-user.sh
+
 cat > .claude/settings.json << SETTINGSEOF
 {
   "hooks": {
@@ -321,6 +331,17 @@ cat > .claude/settings.json << SETTINGSEOF
           {
             "type": "command",
             "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/ask-user.sh"
           }
         ]
       }
@@ -895,6 +916,16 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
+cat > .claude/hooks/ask-user.sh << 'HOOKEOF'
+#!/bin/bash
+INPUT=$(cat)
+QUESTIONS=$(echo "$INPUT" | jq -r '.tool_input.questions[]?.question // empty' 2>/dev/null | head -5 | tr '\n' ' ')
+if [ -n "$QUESTIONS" ]; then
+  ccmux need-help "$QUESTIONS" 2>/dev/null || true
+fi
+HOOKEOF
+chmod +x .claude/hooks/ask-user.sh
+
 cat > .claude/settings.json << SETTINGSEOF
 {
   "hooks": {
@@ -904,6 +935,17 @@ cat > .claude/settings.json << SETTINGSEOF
           {
             "type": "command",
             "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/ask-user.sh"
           }
         ]
       }
