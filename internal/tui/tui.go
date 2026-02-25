@@ -1413,9 +1413,9 @@ func (m model) View() string {
 		content = renderMainView(m)
 	}
 
-	// Add Ctrl+C indicator at bottom
+	// Add Ctrl+C indicator inline with the help bar
 	if m.ctrlCPressed {
-		content += "\n\n" + renderCtrlCIndicator(m.ctrlCPressed)
+		content += renderCtrlCIndicator(m.ctrlCPressed)
 	}
 
 	return content

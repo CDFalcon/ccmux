@@ -48,7 +48,7 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
 
 func renderCtrlCIndicator(pressed bool) string {
 	if pressed {
-		return errorStyle.Render("Press Ctrl+C again to detach")
+		return dimStyle.Render("  Press Ctrl+C again to detach")
 	}
 	return ""
 }
