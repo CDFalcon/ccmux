@@ -1074,9 +1074,8 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = ViewMain
 		}
 	case "y":
-		if m.updateAvailable && !m.updateComplete {
+		if m.updateAvailable && !m.updateComplete && m.updateError == "" {
 			m.updateDownloading = true
-			m.updateError = ""
 			atomic.StoreInt64(m.downloadProgress, 0)
 			return m, downloadUpdateCmd(m.updateVersion, m.downloadProgress)
 		}

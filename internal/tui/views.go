@@ -827,6 +827,9 @@ func renderUpdateView(m model) string {
 	if m.updateComplete {
 		help := "[r]estart  [esc] back"
 		b.WriteString(renderFooter(help, m.ctrlCPressed))
+	} else if m.updateError != "" {
+		help := "[esc] back"
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	} else if m.updateAvailable && !m.updateDownloading {
 		help := "[↑/↓/j/k] scroll  [y] install  [n] cancel"
 		b.WriteString(renderFooter(help, m.ctrlCPressed))
