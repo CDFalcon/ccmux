@@ -16,6 +16,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
+	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
 	"github.com/CDFalcon/ccmux/internal/worktree"
 	"github.com/spf13/cobra"
@@ -51,6 +52,7 @@ Examples:
 
 	rootCmd.AddCommand(
 		versionCmd(),
+		updateCmd(),
 		spawnCmd(),
 		registerAgentCmd(),
 		queueAddCmd(),
@@ -75,6 +77,35 @@ func versionCmd() *cobra.Command {
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("ccmux %s (%s) built %s\n", version.Version, version.GitCommit, version.BuildDate)
+		},
+	}
+}
+
+func updateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update",
+		Short: "Update ccmux to the latest version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Printf("Current version: %s\n", version.Version)
+			fmt.Println("Checking for updates...")
+
+			latest, available, err := updater.CheckForUpdate()
+			if err != nil {
+				return fmt.Errorf("failed to check for updates: %w", err)
+			}
+
+			if !available {
+				fmt.Println("Already on the latest version.")
+				return nil
+			}
+
+			fmt.Printf("Downloading %s...\n", latest)
+			if err := updater.DownloadUpdate(latest); err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+
+			fmt.Printf("Updated to %s. Restart ccmux to use the new version.\n", latest)
+			return nil
 		},
 	}
 }
