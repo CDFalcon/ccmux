@@ -98,15 +98,127 @@ func TestFormatResourceLine_ShouldFormatAll_GivenResources(t *testing.T) {
 	}
 }
 
+func TestFormatResourceLine_ShouldIncludeTokens_GivenNonZeroTokens(t *testing.T) {
+	// Setup.
+	r := &AgentResources{
+		CPUPercent:  45,
+		MemBytes:    int64(1.5 * 1024 * 1024 * 1024),
+		MemPercent:  3,
+		DiskBytes:   int64(156 * 1024 * 1024),
+		TotalTokens: 2_340_000,
+	}
+
+	// Execute.
+	result := formatResourceLine(r)
+
+	// Assert.
+	expected := "CPU: 45%  Mem: 1.5Gb (3%)  Disk: 156Mb  Tokens: 2.3M"
+	if result != expected {
+		t.Errorf("expected '%s', got '%s'", expected, result)
+	}
+}
+
+func TestFormatTokens_ShouldReturnMillions_GivenLargeValue(t *testing.T) {
+	// Execute.
+	result := formatTokens(5_500_000)
+
+	// Assert.
+	if result != "5.5M" {
+		t.Errorf("expected '5.5M', got '%s'", result)
+	}
+}
+
+func TestFormatTokens_ShouldReturnThousands_GivenMediumValue(t *testing.T) {
+	// Execute.
+	result := formatTokens(42_000)
+
+	// Assert.
+	if result != "42k" {
+		t.Errorf("expected '42k', got '%s'", result)
+	}
+}
+
+func TestFormatTokens_ShouldReturnEmpty_GivenZero(t *testing.T) {
+	// Execute.
+	result := formatTokens(0)
+
+	// Assert.
+	if result != "" {
+		t.Errorf("expected empty string, got '%s'", result)
+	}
+}
+
+func TestComputeCPUPercent_ShouldReturnCorrectPct_GivenDelta(t *testing.T) {
+	// Setup.
+	prevTicks := int64(1000)
+	currTicks := int64(1200)
+	deltaSeconds := 2.0
+	clkTck := int64(100)
+	numCPU := 1
+
+	// Execute.
+	result := computeCPUPercent(prevTicks, currTicks, deltaSeconds, clkTck, numCPU)
+
+	// Assert.
+	if result != 100.0 {
+		t.Errorf("expected 100.0, got %.2f", result)
+	}
+}
+
+func TestComputeCPUPercent_ShouldNormalizeByNCPU_GivenMultipleCPUs(t *testing.T) {
+	// Setup.
+	prevTicks := int64(1000)
+	currTicks := int64(1200)
+	deltaSeconds := 2.0
+	clkTck := int64(100)
+	numCPU := 4
+
+	// Execute.
+	result := computeCPUPercent(prevTicks, currTicks, deltaSeconds, clkTck, numCPU)
+
+	// Assert.
+	expected := 25.0
+	if result != expected {
+		t.Errorf("expected %.2f, got %.2f", expected, result)
+	}
+}
+
+func TestComputeCPUPercent_ShouldClampToZero_GivenNegativeDelta(t *testing.T) {
+	// Setup.
+	prevTicks := int64(1200)
+	currTicks := int64(1000)
+	deltaSeconds := 2.0
+	clkTck := int64(100)
+	numCPU := 1
+
+	// Execute.
+	result := computeCPUPercent(prevTicks, currTicks, deltaSeconds, clkTck, numCPU)
+
+	// Assert.
+	if result != 0.0 {
+		t.Errorf("expected 0.0, got %.2f", result)
+	}
+}
+
+func TestComputeCPUPercent_ShouldReturnZero_GivenZeroClkTck(t *testing.T) {
+	// Execute.
+	result := computeCPUPercent(0, 100, 2.0, 0, 1)
+
+	// Assert.
+	if result != 0.0 {
+		t.Errorf("expected 0.0, got %.2f", result)
+	}
+}
+
 func TestFindDescendants_ShouldReturnAllDescendants_GivenProcessTree(t *testing.T) {
 	// Setup.
 	procs := map[int]*procInfo{
-		1:   {pid: 1, ppid: 0, cpu: 0, rss: 0},
-		100: {pid: 100, ppid: 1, cpu: 10, rss: 1000},
-		200: {pid: 200, ppid: 100, cpu: 20, rss: 2000},
-		300: {pid: 300, ppid: 100, cpu: 5, rss: 500},
-		400: {pid: 400, ppid: 200, cpu: 15, rss: 1500},
-		999: {pid: 999, ppid: 1, cpu: 50, rss: 5000},
+		1:   {pid: 1, ppid: 0, rss: 0},
+		100: {pid: 100, ppid: 1, rss: 1000},
+		200: {pid: 200, ppid: 100, rss: 2000},
+		300: {pid: 300, ppid: 100, rss: 500},
+		400: {pid: 400, ppid: 200, rss: 1500},
+		999: {pid: 999, ppid: 1, rss: 5000},
 	}
 
 	// Execute.

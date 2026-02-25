@@ -44,7 +44,7 @@ var viewTitles = map[ViewState]string{
 
 var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewMain: {
-		{FooterText: "[q]uick action", Description: "Respond to an idle agent or review a PR"},
+		{FooterText: "[q]uick action", Description: "Pop and act on the next quick action in the queue (e.g. PR review)"},
 		{FooterText: "[n]ew task", Description: "Spawn a new Claude agent"},
 		{FooterText: "[j]ump to agent", Description: "Switch to an agent's tmux window"},
 		{FooterText: "[k]ill agent", Description: "Terminate a running agent"},

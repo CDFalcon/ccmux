@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=00429417 /home/colby/ccmux-00429417/.claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=00429417 /home/colby/ccmux-00429417/.claude/hooks/ask-user.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
