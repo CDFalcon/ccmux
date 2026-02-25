@@ -663,12 +663,6 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
 	}
 
-	queueManager, err := queue.NewQueue(sessionID)
-	if err != nil {
-		return err
-	}
-	queueManager.RemoveByAgent(agentID)
-
 	agentStore.Delete(agentID)
 
 	fmt.Printf("%s agent %s\n", action, agentID)

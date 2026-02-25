@@ -1239,6 +1239,7 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 	m.agentStore.Update(agentID, func(ag *agent.Agent) {
 		ag.Status = agent.StatusCleaningUp
 	})
+	m.queueManager.RemoveByAgent(agentID)
 	return func() tea.Msg {
 		go func() {
 			exePath, _ := os.Executable()
@@ -1252,6 +1253,8 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	return func() tea.Msg {
+		m.queueManager.RemoveByAgent(agentID)
+
 		go func() {
 			exePath, _ := os.Executable()
 			exec.Command(exePath, "cleanup", agentID).Run()
@@ -1298,6 +1301,8 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	agentID := a.ID
 	return func() tea.Msg {
+		m.queueManager.RemoveByAgent(agentID)
+
 		closeCmd := exec.Command("gh", "pr", "close", prURL, "--delete-branch")
 		if output, err := closeCmd.CombinedOutput(); err != nil {
 			return errMsg{fmt.Errorf("close PR failed: %s: %w", string(output), err)}
@@ -1363,6 +1368,7 @@ func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {
 	m.agentStore.Update(agentID, func(ag *agent.Agent) {
 		ag.Status = agent.StatusKilling
 	})
+	m.queueManager.RemoveByAgent(agentID)
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
