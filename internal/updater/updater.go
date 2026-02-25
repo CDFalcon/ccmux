@@ -59,7 +59,7 @@ func DownloadUpdateWithProgress(targetVersion string, onProgress func(pct int)) 
 		return fmt.Errorf("failed to resolve binary path: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp(filepath.Dir(currentBinary), ".ccmux-update-*")
+	tmpDir, err := os.MkdirTemp("", "ccmux-update-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
@@ -130,6 +130,9 @@ func getAssetSize(targetVersion, pattern string) int64 {
 }
 
 func installBinary(src, dst string) error {
+	if needsElevation(dst) {
+		return installBinaryElevated(src, dst)
+	}
 	tmpPath := dst + ".tmp"
 	if err := copyFile(src, tmpPath); err != nil {
 		return fmt.Errorf("failed to stage downloaded file: %w", err)
@@ -141,6 +144,28 @@ func installBinary(src, dst string) error {
 	if err := os.Rename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to replace binary: %w", err)
+	}
+	return nil
+}
+
+func needsElevation(binaryPath string) bool {
+	dir := filepath.Dir(binaryPath)
+	testFile := filepath.Join(dir, ".ccmux-write-test")
+	f, err := os.Create(testFile)
+	if err != nil {
+		return true
+	}
+	f.Close()
+	os.Remove(testFile)
+	return false
+}
+
+func installBinaryElevated(src, dst string) error {
+	if err := exec.Command("sudo", "-n", "cp", src, dst).Run(); err != nil {
+		return fmt.Errorf("permission denied installing to %s (try: sudo ccmux update)", dst)
+	}
+	if err := exec.Command("sudo", "-n", "chmod", "755", dst).Run(); err != nil {
+		return fmt.Errorf("failed to set permissions with sudo: %w", err)
 	}
 	return nil
 }
