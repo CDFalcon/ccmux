@@ -318,6 +318,8 @@ echo ""
 echo "→ Installing Claude Code hooks..."
 mkdir -p .claude/hooks
 
+OTEL_PORT="%s"
+
 cat > .claude/hooks/stop.sh << 'HOOKEOF'
 #!/bin/bash
 ccmux agent-stopped "$CCMUX_AGENT_ID"
@@ -336,6 +338,11 @@ chmod +x .claude/hooks/ask-user.sh
 
 cat > .claude/settings.json << SETTINGSEOF
 {
+  "env": {
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:$OTEL_PORT/v1/metrics",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/json",
+    "OTEL_RESOURCE_ATTRIBUTES": "ccmux.agent_id=$AGENT_ID"
+  },
   "hooks": {
     "Stop": [
       {
@@ -392,12 +399,11 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-OTEL_PORT="%s"
 if [ -n "$OTEL_PORT" ] && [ "$OTEL_PORT" != "0" ]; then
   export CLAUDE_CODE_ENABLE_TELEMETRY=1
   export OTEL_METRICS_EXPORTER=otlp
-  export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-  export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$OTEL_PORT"
+  export OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/json
+  export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://127.0.0.1:$OTEL_PORT/v1/metrics"
   export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent_id=$AGENT_ID"
 fi
 
@@ -950,8 +956,15 @@ fi
 HOOKEOF
 chmod +x .claude/hooks/ask-user.sh
 
+OTEL_PORT="%s"
+
 cat > .claude/settings.json << SETTINGSEOF
 {
+  "env": {
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:$OTEL_PORT/v1/metrics",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/json",
+    "OTEL_RESOURCE_ATTRIBUTES": "ccmux.agent_id=$AGENT_ID"
+  },
   "hooks": {
     "Stop": [
       {
@@ -983,12 +996,11 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-OTEL_PORT="%s"
 if [ -n "$OTEL_PORT" ] && [ "$OTEL_PORT" != "0" ]; then
   export CLAUDE_CODE_ENABLE_TELEMETRY=1
   export OTEL_METRICS_EXPORTER=otlp
-  export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-  export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$OTEL_PORT"
+  export OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/json
+  export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://127.0.0.1:$OTEL_PORT/v1/metrics"
   export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent_id=$AGENT_ID"
 fi
 

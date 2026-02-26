@@ -7,8 +7,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/CDFalcon/ccmux/internal/logging"
 )
 
 type otlpExportRequest struct {
@@ -37,9 +41,33 @@ type sumData struct {
 	DataPoints []dataPoint `json:"dataPoints"`
 }
 
+type flexInt64 struct {
+	Value int64
+	Set   bool
+}
+
+func (f flexInt64) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatInt(f.Value, 10)), nil
+}
+
+func (f *flexInt64) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	if s == "null" {
+		return nil
+	}
+	f.Set = true
+	s = strings.Trim(s, "\"")
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("flexInt64: cannot parse %q: %w", string(data), err)
+	}
+	f.Value = v
+	return nil
+}
+
 type dataPoint struct {
 	AsDouble   *float64    `json:"asDouble"`
-	AsInt      *int64      `json:"asInt"`
+	AsInt      *flexInt64  `json:"asInt"`
 	Attributes []attribute `json:"attributes"`
 }
 
@@ -80,7 +108,9 @@ func (r *Receiver) Start() (int, error) {
 	r.server = &http.Server{Handler: mux}
 	go r.server.Serve(ln)
 
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	port := ln.Addr().(*net.TCPAddr).Port
+	logging.Log("otel: receiver started on port %d", port)
+	return port, nil
 }
 
 func (r *Receiver) Stop(ctx context.Context) error {
@@ -125,6 +155,7 @@ func (r *Receiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
 
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
+		logging.Log("otel: failed to read request body: %v", err)
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -132,6 +163,7 @@ func (r *Receiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
 
 	var export otlpExportRequest
 	if err := json.Unmarshal(body, &export); err != nil {
+		logging.Log("otel: failed to parse JSON (content-type: %s, body length: %d): %v", req.Header.Get("Content-Type"), len(body), err)
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -147,6 +179,11 @@ func (r *Receiver) processExport(export *otlpExportRequest) {
 	for _, rm := range export.ResourceMetrics {
 		agentID := extractAgentID(rm.Resource.Attributes)
 		if agentID == "" {
+			var attrKeys []string
+			for _, a := range rm.Resource.Attributes {
+				attrKeys = append(attrKeys, a.Key)
+			}
+			logging.Log("otel: skipping metrics export with no ccmux.agent_id (resource attrs: %v)", attrKeys)
 			continue
 		}
 
@@ -155,6 +192,7 @@ func (r *Receiver) processExport(export *otlpExportRequest) {
 		if !ok {
 			am = &AgentMetrics{}
 			r.metrics[agentID] = am
+			logging.Log("otel: first metrics received for agent %s", agentID)
 		}
 
 		for _, sm := range rm.ScopeMetrics {
@@ -222,8 +260,8 @@ func getAttributeString(attrs []attribute, key string) string {
 }
 
 func getDataPointInt(dp dataPoint) int64 {
-	if dp.AsInt != nil {
-		return *dp.AsInt
+	if dp.AsInt != nil && dp.AsInt.Set {
+		return dp.AsInt.Value
 	}
 	if dp.AsDouble != nil {
 		return int64(*dp.AsDouble)

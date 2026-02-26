@@ -41,7 +41,7 @@ func postMetrics(t *testing.T, port int, payload *otlpExportRequest) {
 
 func strPtr(s string) *string    { return &s }
 func floatPtr(f float64) *float64 { return &f }
-func intPtr(i int64) *int64       { return &i }
+func flexIntPtr(i int64) *flexInt64 { return &flexInt64{Value: i, Set: true} }
 
 func buildPayload(agentID string, metrics []metric) *otlpExportRequest {
 	return &otlpExportRequest{
@@ -117,9 +117,9 @@ func TestReceiver_ShouldParseTokenMetrics_GivenTypedDataPoints(t *testing.T) {
 		{
 			Name: "claude_code.token.usage",
 			Sum: &sumData{DataPoints: []dataPoint{
-				{AsInt: intPtr(5000), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("input")}}}},
-				{AsInt: intPtr(1200), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("output")}}}},
-				{AsInt: intPtr(8000), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("cacheRead")}}}},
+				{AsInt: flexIntPtr(5000), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("input")}}}},
+				{AsInt: flexIntPtr(1200), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("output")}}}},
+				{AsInt: flexIntPtr(8000), Attributes: []attribute{{Key: "type", Value: attributeValue{StringValue: strPtr("cacheRead")}}}},
 			}},
 		},
 	})
@@ -240,6 +240,56 @@ func TestReceiver_ShouldHandleConcurrentAccess_GivenParallelPosts(t *testing.T) 
 		if m.CostUSD < 0.01 {
 			t.Errorf("agent %s: expected cost >= 0.01, got %f", id, m.CostUSD)
 		}
+	}
+}
+
+func TestReceiver_ShouldParseTokens_GivenStringEncodedInt64(t *testing.T) {
+	// Setup.
+	r, port := setupReceiver(t)
+
+	rawJSON := `{
+		"resourceMetrics": [{
+			"resource": {
+				"attributes": [{"key": "ccmux.agent_id", "value": {"stringValue": "agent-str"}}]
+			},
+			"scopeMetrics": [{
+				"metrics": [{
+					"name": "claude_code.token.usage",
+					"sum": {
+						"dataPoints": [
+							{"asInt": "7500", "attributes": [{"key": "type", "value": {"stringValue": "input"}}]},
+							{"asInt": "2000", "attributes": [{"key": "type", "value": {"stringValue": "output"}}]}
+						]
+					}
+				}]
+			}]
+		}]
+	}`
+
+	// Execute.
+	resp, err := http.Post(
+		fmt.Sprintf("http://127.0.0.1:%d/v1/metrics", port),
+		"application/json",
+		bytes.NewBufferString(rawJSON),
+	)
+	if err != nil {
+		t.Fatalf("failed to post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Assert.
+	m := r.GetMetrics("agent-str")
+	if m == nil {
+		t.Fatal("expected metrics for agent-str")
+	}
+	if m.TokensIn != 7500 {
+		t.Errorf("expected TokensIn 7500, got %d", m.TokensIn)
+	}
+	if m.TokensOut != 2000 {
+		t.Errorf("expected TokensOut 2000, got %d", m.TokensOut)
 	}
 }
 
