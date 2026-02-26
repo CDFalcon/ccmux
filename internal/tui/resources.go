@@ -277,9 +277,13 @@ type claudeUsage struct {
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 }
 
-type claudeMessage struct {
-	Type  string      `json:"type"`
+type claudeAPIMessage struct {
 	Usage claudeUsage `json:"usage"`
+}
+
+type claudeMessage struct {
+	Type    string           `json:"type"`
+	Message claudeAPIMessage `json:"message"`
 }
 
 func getAgentSessionTokens(worktreePath string) int64 {
@@ -337,10 +341,10 @@ func getAgentSessionTokens(worktreePath string) int64 {
 		if msg.Type != "assistant" {
 			continue
 		}
-		total += msg.Usage.InputTokens
-		total += msg.Usage.OutputTokens
-		total += msg.Usage.CacheCreationInputTokens
-		total += msg.Usage.CacheReadInputTokens
+		total += msg.Message.Usage.InputTokens
+		total += msg.Message.Usage.OutputTokens
+		total += msg.Message.Usage.CacheCreationInputTokens
+		total += msg.Message.Usage.CacheReadInputTokens
 	}
 
 	return total
