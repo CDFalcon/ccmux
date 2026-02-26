@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/otel"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
@@ -95,7 +94,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n")
 	} else {
 		for _, a := range m.agents {
-			statsStr := formatAgentOneLiner(m.agentResources[a.ID], m.agentMetrics[a.ID])
+			statsStr := formatAgentOneLiner(m.agentResources[a.ID])
 
 			if a.Status == agent.StatusCleaningUp {
 				spin := styledSpinner(m.spinnerFrame, agentCleaningUpStyle)
@@ -716,20 +715,13 @@ func renderAgentSelector(m model, emptyMsg string) string {
 			b.WriteString(fmt.Sprintf("CPU:      %s\n", fmt.Sprintf("%.0f%%", r.CPUPercent)))
 			b.WriteString(fmt.Sprintf("Memory:   %s (%.0f%%)\n", formatBytes(r.MemBytes), r.MemPercent))
 			b.WriteString(fmt.Sprintf("Disk:     %s\n", formatBytes(r.DiskBytes)))
-			if r.TotalTokens > 0 {
-				b.WriteString(fmt.Sprintf("Tokens:   %s\n", formatTokens(r.TotalTokens)))
+			costLine := formatCost(r.CostUSD)
+			if costLine != "" {
+				b.WriteString(fmt.Sprintf("Cost:     %s (est.)\n", costLine))
 			}
-		}
-		if am, ok := m.agentMetrics[selected.ID]; ok {
-			cost, tokens, activeTime := otel.FormatMetricsDetail(am)
-			if cost != "" {
-				b.WriteString(fmt.Sprintf("Cost:     %s\n", cost))
-			}
-			if tokens != "" {
-				b.WriteString(fmt.Sprintf("Tokens:   %s\n", tokens))
-			}
-			if activeTime != "" {
-				b.WriteString(fmt.Sprintf("Active:   %s\n", activeTime))
+			tokenDetail := formatTokenDetail(r)
+			if tokenDetail != "" {
+				b.WriteString(fmt.Sprintf("Tokens:   %s\n", tokenDetail))
 			}
 		}
 		b.WriteString("\n")
@@ -738,15 +730,17 @@ func renderAgentSelector(m model, emptyMsg string) string {
 	return b.String()
 }
 
-func formatAgentOneLiner(r *AgentResources, am *otel.AgentMetrics) string {
+func formatAgentOneLiner(r *AgentResources) string {
 	var parts []string
 	resLine := formatResourceLine(r)
 	if resLine != "" {
 		parts = append(parts, resLine)
 	}
-	costLine := otel.FormatCostLine(am)
-	if costLine != "" {
-		parts = append(parts, "Cost: "+costLine)
+	if r != nil {
+		costLine := formatCost(r.CostUSD)
+		if costLine != "" {
+			parts = append(parts, "Cost: "+costLine)
+		}
 	}
 	if len(parts) == 0 {
 		return ""

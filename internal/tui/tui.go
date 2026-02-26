@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/otel"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
@@ -74,11 +73,6 @@ type model struct {
 	totalMemKB     int64
 	clkTck         int64
 	prevCPUTicks   map[int]int64
-
-	// OTel cost/token monitoring
-	otelReceiver *otel.Receiver
-	otelPort     int
-	agentMetrics map[string]*otel.AgentMetrics
 
 	// Download progress
 	downloadProgress *int64
@@ -239,7 +233,6 @@ type refreshMsg struct {
 	projects     []*project.Project
 	resources    map[string]*AgentResources
 	prevCPUTicks map[int]int64
-	metrics      map[string]*otel.AgentMetrics
 }
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
@@ -260,34 +253,23 @@ type changelogFetchedMsg struct {
 	err     error
 }
 
-func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
+func newFixedTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = placeholder
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.EndOfBufferCharacter = ' '
 	ta.SetWidth(width)
-	ta.SetHeight(1)
+	ta.SetHeight(5)
 	ta.CharLimit = 0
-	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+	ta.KeyMap.InsertNewline.SetEnabled(false)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	return ta
 }
 
-func autoResizeTextarea(ta *textarea.Model, maxHeight int) {
-	lines := ta.LineCount()
-	if lines < 1 {
-		lines = 1
-	}
-	if lines > maxHeight {
-		lines = maxHeight
-	}
-	ta.SetHeight(lines)
-}
-
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string, otelReceiver *otel.Receiver, otelPort int) model {
-	taskInput := newAutoGrowTextarea("Describe the task...", 60)
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
+	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
 	branchInput.Width = 50
@@ -298,7 +280,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	branchFilter.Width = 50
 	branchFilter.CharLimit = 100
 
-	interveneInput := newAutoGrowTextarea("Type message to send to agent...", 60)
+	interveneInput := newFixedTextarea("Type message to send to agent...", 60)
 
 	progress := new(int64)
 
@@ -318,8 +300,6 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		projectStore:     projectStore,
 		tmuxManager:      tmuxManager,
 		sessionID:        sessionID,
-		otelReceiver:     otelReceiver,
-		otelPort:         otelPort,
 	}
 }
 
@@ -418,18 +398,12 @@ func (m model) refreshCmd() tea.Cmd {
 			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks,
 		)
 
-		var metrics map[string]*otel.AgentMetrics
-		if m.otelReceiver != nil {
-			metrics = m.otelReceiver.GetAllMetrics()
-		}
-
 		return refreshMsg{
 			agents:       agents,
 			queueItems:   queueItems,
 			projects:     projects,
 			resources:    resources,
 			prevCPUTicks: newCPUTicks,
-			metrics:      metrics,
 		}
 	}
 }
@@ -505,7 +479,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.projects
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
-		m.agentMetrics = msg.metrics
 		return m, nil
 
 	case spawnStartedMsg:
@@ -582,7 +555,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewNewTaskInput {
 		var cmd tea.Cmd
 		m.taskInput, cmd = m.taskInput.Update(msg)
-		autoResizeTextarea(&m.taskInput, 5)
 		cmds = append(cmds, cmd)
 	}
 
@@ -603,7 +575,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewInterveneInput {
 		var cmd tea.Cmd
 		m.interveneInput, cmd = m.interveneInput.Update(msg)
-		autoResizeTextarea(&m.interveneInput, 5)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -845,7 +816,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewNewTaskBranch
 		m.selectedIndex = 0
 		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
 		m.taskInput.Blur()
 		return m, nil
 	case "enter":
@@ -857,7 +827,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := m.spawnBranch
 		m.view = ViewMain
 		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		return m, m.spawnAgentCmd(task, proj, branch)
@@ -865,7 +834,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.taskInput, cmd = m.taskInput.Update(msg)
-	autoResizeTextarea(&m.taskInput, 5)
 	return m, cmd
 }
 
@@ -1165,7 +1133,6 @@ func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewIntervene
 		m.interveneAgent = nil
 		m.interveneInput.SetValue("")
-		m.interveneInput.SetHeight(1)
 		return m, nil
 	case "enter":
 		text := m.interveneInput.Value()
@@ -1174,13 +1141,11 @@ func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a := m.interveneAgent
 		m.interveneInput.SetValue("")
-		m.interveneInput.SetHeight(1)
 		return m, m.sendKeysToAgentCmd(a, text)
 	}
 
 	var cmd tea.Cmd
 	m.interveneInput, cmd = m.interveneInput.Update(msg)
-	autoResizeTextarea(&m.interveneInput, 5)
 	return m, cmd
 }
 
@@ -1311,9 +1276,6 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 		ag.Status = agent.StatusCleaningUp
 	})
 	m.queueManager.RemoveByAgent(agentID)
-	if m.otelReceiver != nil {
-		m.otelReceiver.RemoveAgent(agentID)
-	}
 	return func() tea.Msg {
 		go func() {
 			exePath, _ := os.Executable()
@@ -1349,7 +1311,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL, m.otelPort)
+		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
@@ -1391,7 +1353,7 @@ func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	}
 }
 
-func writeReviewScript(agentID, worktreePath, prURL string, otelPort int) (string, error) {
+func writeReviewScript(agentID, worktreePath, prURL string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1424,20 +1386,11 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-OTEL_PORT="%d"
-if [ "$OTEL_PORT" -gt 0 ] 2>/dev/null; then
-  export CLAUDE_CODE_ENABLE_TELEMETRY=1
-  export OTEL_METRICS_EXPORTER=otlp
-  export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-  export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$OTEL_PORT"
-  export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent_id=$AGENT_ID"
-fi
-
 claude --continue --permission-mode dontAsk \
   "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes, and then run: ccmux pr-ready %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, otelPort, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1452,9 +1405,6 @@ func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {
 		ag.Status = agent.StatusKilling
 	})
 	m.queueManager.RemoveByAgent(agentID)
-	if m.otelReceiver != nil {
-		m.otelReceiver.RemoveAgent(agentID)
-	}
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -1515,8 +1465,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string, otelReceiver *otel.Receiver, otelPort int) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID, otelReceiver, otelPort)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

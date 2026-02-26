@@ -68,7 +68,6 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewNewTaskInput: {
 		{FooterText: "[enter] submit", Description: "Submit the task and spawn an agent"},
-		{FooterText: "[shift+enter] new line", Description: "Add a line break in the description"},
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewIntervene: {
@@ -78,7 +77,6 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewInterveneInput: {
 		{FooterText: "[enter] send", Description: "Send the message to the agent"},
-		{FooterText: "[shift+enter] new line", Description: "Add a line break in the message"},
 		{FooterText: "[esc] back", Description: "Return to agent selection"},
 	},
 	ViewReview: {

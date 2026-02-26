@@ -19,7 +19,7 @@ func newTestModel() model {
 	branchFilter.Width = 50
 	branchFilter.CharLimit = 100
 
-	taskInput := newAutoGrowTextarea("Describe the task...", 60)
+	taskInput := newFixedTextarea("Describe the task...", 60)
 
 	progress := new(int64)
 

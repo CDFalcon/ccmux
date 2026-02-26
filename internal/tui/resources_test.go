@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,7 +101,7 @@ func TestFormatResourceLine_ShouldFormatAll_GivenResources(t *testing.T) {
 	}
 }
 
-func TestFormatResourceLine_ShouldIncludeTokens_GivenNonZeroTokens(t *testing.T) {
+func TestFormatResourceLine_ShouldExcludeTokens_GivenNonZeroTokens(t *testing.T) {
 	// Setup.
 	r := &AgentResources{
 		CPUPercent:  45,
@@ -112,7 +115,7 @@ func TestFormatResourceLine_ShouldIncludeTokens_GivenNonZeroTokens(t *testing.T)
 	result := formatResourceLine(r)
 
 	// Assert.
-	expected := "CPU: 45%  Mem: 1.5Gb (3%)  Disk: 156Mb  Tokens: 2.3M"
+	expected := "CPU: 45%  Mem: 1.5Gb (3%)  Disk: 156Mb"
 	if result != expected {
 		t.Errorf("expected '%s', got '%s'", expected, result)
 	}
@@ -243,6 +246,68 @@ func TestFindDescendants_ShouldReturnAllDescendants_GivenProcessTree(t *testing.
 	}
 	if len(result) != 4 {
 		t.Errorf("expected 4 descendants, got %d", len(result))
+	}
+}
+
+func setupSessionDir(t *testing.T, worktreePath string) string {
+	t.Helper()
+	homeDir, _ := os.UserHomeDir()
+	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
+	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
+	os.MkdirAll(projectDir, 0o755)
+	t.Cleanup(func() { os.RemoveAll(projectDir) })
+	return projectDir
+}
+
+func TestGetAgentSessionTokens_ShouldSumTokens_GivenNestedMessageUsage(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-tokens-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"user","message":{"role":"user","content":"hello"}}
+{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":80,"output_tokens":40,"cache_creation_input_tokens":0,"cache_read_input_tokens":150}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionTokens(worktreePath)
+
+	// Assert.
+	expectedTotal := int64(100 + 50 + 200 + 300 + 80 + 40 + 0 + 150)
+	if result.Total != expectedTotal {
+		t.Errorf("expected total %d, got %d", expectedTotal, result.Total)
+	}
+	if result.In != 180 {
+		t.Errorf("expected In 180, got %d", result.In)
+	}
+	if result.Out != 90 {
+		t.Errorf("expected Out 90, got %d", result.Out)
+	}
+	if result.CacheRead != 450 {
+		t.Errorf("expected CacheRead 450, got %d", result.CacheRead)
+	}
+	if result.CacheCreate != 200 {
+		t.Errorf("expected CacheCreate 200, got %d", result.CacheCreate)
+	}
+}
+
+func TestGetAgentSessionTokens_ShouldReturnZero_GivenNonAssistantMessages(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-noassist-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"user","message":{"role":"user","content":"hello"}}
+{"type":"file-history-snapshot"}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionTokens(worktreePath)
+
+	// Assert.
+	if result.Total != 0 {
+		t.Errorf("expected 0, got %d", result.Total)
 	}
 }
 
