@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/otel"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
@@ -74,11 +73,6 @@ type model struct {
 	totalMemKB     int64
 	clkTck         int64
 	prevCPUTicks   map[int]int64
-
-	// OTel cost/token monitoring
-	otelReceiver *otel.Receiver
-	otelPort     int
-	agentMetrics map[string]*otel.AgentMetrics
 
 	// Download progress
 	downloadProgress *int64
@@ -239,7 +233,6 @@ type refreshMsg struct {
 	projects     []*project.Project
 	resources    map[string]*AgentResources
 	prevCPUTicks map[int]int64
-	metrics      map[string]*otel.AgentMetrics
 }
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
@@ -275,7 +268,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string, otelReceiver *otel.Receiver, otelPort int) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -307,8 +300,6 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		projectStore:     projectStore,
 		tmuxManager:      tmuxManager,
 		sessionID:        sessionID,
-		otelReceiver:     otelReceiver,
-		otelPort:         otelPort,
 	}
 }
 
@@ -407,18 +398,12 @@ func (m model) refreshCmd() tea.Cmd {
 			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks,
 		)
 
-		var metrics map[string]*otel.AgentMetrics
-		if m.otelReceiver != nil {
-			metrics = m.otelReceiver.GetAllMetrics()
-		}
-
 		return refreshMsg{
 			agents:       agents,
 			queueItems:   queueItems,
 			projects:     projects,
 			resources:    resources,
 			prevCPUTicks: newCPUTicks,
-			metrics:      metrics,
 		}
 	}
 }
@@ -494,7 +479,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.projects
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
-		m.agentMetrics = msg.metrics
 		return m, nil
 
 	case spawnStartedMsg:
@@ -1292,9 +1276,6 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 		ag.Status = agent.StatusCleaningUp
 	})
 	m.queueManager.RemoveByAgent(agentID)
-	if m.otelReceiver != nil {
-		m.otelReceiver.RemoveAgent(agentID)
-	}
 	return func() tea.Msg {
 		go func() {
 			exePath, _ := os.Executable()
@@ -1330,7 +1311,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL, m.otelPort)
+		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
@@ -1372,7 +1353,7 @@ func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	}
 }
 
-func writeReviewScript(agentID, worktreePath, prURL string, otelPort int) (string, error) {
+func writeReviewScript(agentID, worktreePath, prURL string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1405,20 +1386,11 @@ export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-OTEL_PORT="%d"
-if [ "$OTEL_PORT" -gt 0 ] 2>/dev/null; then
-  export CLAUDE_CODE_ENABLE_TELEMETRY=1
-  export OTEL_METRICS_EXPORTER=otlp
-  export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-  export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$OTEL_PORT"
-  export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent_id=$AGENT_ID"
-fi
-
 claude --continue --permission-mode dontAsk \
   "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes, and then run: ccmux pr-ready %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, otelPort, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1433,9 +1405,6 @@ func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {
 		ag.Status = agent.StatusKilling
 	})
 	m.queueManager.RemoveByAgent(agentID)
-	if m.otelReceiver != nil {
-		m.otelReceiver.RemoveAgent(agentID)
-	}
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -1496,8 +1465,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string, otelReceiver *otel.Receiver, otelPort int) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID, otelReceiver, otelPort)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
