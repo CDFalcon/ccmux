@@ -18,11 +18,16 @@ import (
 )
 
 type AgentResources struct {
-	CPUPercent float64
-	MemBytes   int64
-	MemPercent float64
+	CPUPercent  float64
+	MemBytes    int64
+	MemPercent  float64
 	DiskBytes   int64
 	TotalTokens int64
+	TokensIn         int64
+	TokensOut        int64
+	TokensCacheRead  int64
+	TokensCacheCreate int64
+	CostUSD     float64
 }
 
 type procInfo struct {
@@ -51,7 +56,7 @@ func queryAllAgentResources(
 	diskCh := make(chan diskResult, len(agents))
 	type tokenResult struct {
 		agentID string
-		tokens  int64
+		tokens  tokenBreakdown
 	}
 	tokenCh := make(chan tokenResult, len(agents))
 
@@ -81,7 +86,7 @@ func queryAllAgentResources(
 		diskMap[r.agentID] = r.bytes
 	}
 
-	tokenMap := make(map[string]int64)
+	tokenMap := make(map[string]tokenBreakdown)
 	for r := range tokenCh {
 		tokenMap[r.agentID] = r.tokens
 	}
@@ -126,7 +131,13 @@ func queryAllAgentResources(
 		}
 
 		res.DiskBytes = diskMap[a.ID]
-		res.TotalTokens = tokenMap[a.ID]
+		tb := tokenMap[a.ID]
+		res.TotalTokens = tb.Total
+		res.TokensIn = tb.In
+		res.TokensOut = tb.Out
+		res.TokensCacheRead = tb.CacheRead
+		res.TokensCacheCreate = tb.CacheCreate
+		res.CostUSD = tb.CostUSD
 		resources[a.ID] = res
 	}
 
@@ -278,6 +289,7 @@ type claudeUsage struct {
 }
 
 type claudeAPIMessage struct {
+	Model string      `json:"model"`
 	Usage claudeUsage `json:"usage"`
 }
 
@@ -286,10 +298,21 @@ type claudeMessage struct {
 	Message claudeAPIMessage `json:"message"`
 }
 
-func getAgentSessionTokens(worktreePath string) int64 {
+type tokenBreakdown struct {
+	In          int64
+	Out         int64
+	CacheRead   int64
+	CacheCreate int64
+	Total       int64
+	CostUSD     float64
+}
+
+func getAgentSessionTokens(worktreePath string) tokenBreakdown {
+	var result tokenBreakdown
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return 0
+		return result
 	}
 
 	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
@@ -300,7 +323,7 @@ func getAgentSessionTokens(worktreePath string) int64 {
 
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
-		return 0
+		return result
 	}
 
 	var jsonlFiles []os.DirEntry
@@ -310,7 +333,7 @@ func getAgentSessionTokens(worktreePath string) int64 {
 		}
 	}
 	if len(jsonlFiles) == 0 {
-		return 0
+		return result
 	}
 
 	sort.Slice(jsonlFiles, func(i, j int) bool {
@@ -325,11 +348,10 @@ func getAgentSessionTokens(worktreePath string) int64 {
 	latestFile := filepath.Join(projectDir, jsonlFiles[0].Name())
 	f, err := os.Open(latestFile)
 	if err != nil {
-		return 0
+		return result
 	}
 	defer f.Close()
 
-	var total int64
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
@@ -341,13 +363,44 @@ func getAgentSessionTokens(worktreePath string) int64 {
 		if msg.Type != "assistant" {
 			continue
 		}
-		total += msg.Message.Usage.InputTokens
-		total += msg.Message.Usage.OutputTokens
-		total += msg.Message.Usage.CacheCreationInputTokens
-		total += msg.Message.Usage.CacheReadInputTokens
+		u := msg.Message.Usage
+		result.In += u.InputTokens
+		result.Out += u.OutputTokens
+		result.CacheRead += u.CacheReadInputTokens
+		result.CacheCreate += u.CacheCreationInputTokens
+		result.CostUSD += estimateCost(msg.Message.Model, u)
 	}
 
-	return total
+	result.Total = result.In + result.Out + result.CacheRead + result.CacheCreate
+	return result
+}
+
+func estimateCost(model string, u claudeUsage) float64 {
+	var inputPer1M, outputPer1M, cacheReadPer1M, cacheCreatePer1M float64
+
+	switch {
+	case strings.Contains(model, "opus"):
+		inputPer1M = 15.0
+		outputPer1M = 75.0
+		cacheReadPer1M = 1.50
+		cacheCreatePer1M = 18.75
+	case strings.Contains(model, "haiku"):
+		inputPer1M = 0.80
+		outputPer1M = 4.0
+		cacheReadPer1M = 0.08
+		cacheCreatePer1M = 1.0
+	default:
+		inputPer1M = 3.0
+		outputPer1M = 15.0
+		cacheReadPer1M = 0.30
+		cacheCreatePer1M = 3.75
+	}
+
+	cost := float64(u.InputTokens) * inputPer1M / 1_000_000
+	cost += float64(u.OutputTokens) * outputPer1M / 1_000_000
+	cost += float64(u.CacheReadInputTokens) * cacheReadPer1M / 1_000_000
+	cost += float64(u.CacheCreationInputTokens) * cacheCreatePer1M / 1_000_000
+	return cost
 }
 
 func formatTokens(tokens int64) string {
@@ -361,6 +414,23 @@ func formatTokens(tokens int64) string {
 		return fmt.Sprintf("%.0fk", float64(tokens)/1_000)
 	}
 	return fmt.Sprintf("%d", tokens)
+}
+
+func formatCost(cost float64) string {
+	if cost <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
+func formatTokenDetail(r *AgentResources) string {
+	if r == nil || (r.TokensIn == 0 && r.TokensOut == 0 && r.TokensCacheRead == 0) {
+		return ""
+	}
+	return fmt.Sprintf("In: %s  Out: %s  Cache: %s",
+		formatTokens(r.TokensIn),
+		formatTokens(r.TokensOut),
+		formatTokens(r.TokensCacheRead))
 }
 
 func formatResourceLine(r *AgentResources) string {

@@ -277,9 +277,21 @@ func TestGetAgentSessionTokens_ShouldSumTokens_GivenNestedMessageUsage(t *testin
 	result := getAgentSessionTokens(worktreePath)
 
 	// Assert.
-	expected := int64(100 + 50 + 200 + 300 + 80 + 40 + 0 + 150)
-	if result != expected {
-		t.Errorf("expected %d, got %d", expected, result)
+	expectedTotal := int64(100 + 50 + 200 + 300 + 80 + 40 + 0 + 150)
+	if result.Total != expectedTotal {
+		t.Errorf("expected total %d, got %d", expectedTotal, result.Total)
+	}
+	if result.In != 180 {
+		t.Errorf("expected In 180, got %d", result.In)
+	}
+	if result.Out != 90 {
+		t.Errorf("expected Out 90, got %d", result.Out)
+	}
+	if result.CacheRead != 450 {
+		t.Errorf("expected CacheRead 450, got %d", result.CacheRead)
+	}
+	if result.CacheCreate != 200 {
+		t.Errorf("expected CacheCreate 200, got %d", result.CacheCreate)
 	}
 }
 
@@ -297,8 +309,8 @@ func TestGetAgentSessionTokens_ShouldReturnZero_GivenNonAssistantMessages(t *tes
 	result := getAgentSessionTokens(worktreePath)
 
 	// Assert.
-	if result != 0 {
-		t.Errorf("expected 0, got %d", result)
+	if result.Total != 0 {
+		t.Errorf("expected 0, got %d", result.Total)
 	}
 }
 
