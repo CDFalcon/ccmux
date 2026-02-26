@@ -434,16 +434,12 @@ func formatResourceLine(r *AgentResources) string {
 	if r == nil {
 		return ""
 	}
-	line := fmt.Sprintf("CPU: %.0f%%  Mem: %s (%.0f%%)  Disk: %s",
+	return fmt.Sprintf("CPU: %.0f%%  Mem: %s (%.0f%%)  Disk: %s",
 		r.CPUPercent,
 		formatBytes(r.MemBytes),
 		r.MemPercent,
 		formatBytes(r.DiskBytes),
 	)
-	if r.TotalTokens > 0 {
-		line += fmt.Sprintf("  Tokens: %s", formatTokens(r.TotalTokens))
-	}
-	return line
 }
 
 func formatBytes(bytes int64) string {

@@ -101,7 +101,7 @@ func TestFormatResourceLine_ShouldFormatAll_GivenResources(t *testing.T) {
 	}
 }
 
-func TestFormatResourceLine_ShouldIncludeTokens_GivenNonZeroTokens(t *testing.T) {
+func TestFormatResourceLine_ShouldExcludeTokens_GivenNonZeroTokens(t *testing.T) {
 	// Setup.
 	r := &AgentResources{
 		CPUPercent:  45,
@@ -115,7 +115,7 @@ func TestFormatResourceLine_ShouldIncludeTokens_GivenNonZeroTokens(t *testing.T)
 	result := formatResourceLine(r)
 
 	// Assert.
-	expected := "CPU: 45%  Mem: 1.5Gb (3%)  Disk: 156Mb  Tokens: 2.3M"
+	expected := "CPU: 45%  Mem: 1.5Gb (3%)  Disk: 156Mb"
 	if result != expected {
 		t.Errorf("expected '%s', got '%s'", expected, result)
 	}

@@ -739,7 +739,7 @@ func formatAgentOneLiner(r *AgentResources) string {
 	if r != nil {
 		costLine := formatCost(r.CostUSD)
 		if costLine != "" {
-			parts = append(parts, costLine)
+			parts = append(parts, "Cost: "+costLine)
 		}
 	}
 	if len(parts) == 0 {
