@@ -253,9 +253,6 @@ func setupSessionDir(t *testing.T, worktreePath string) string {
 	t.Helper()
 	homeDir, _ := os.UserHomeDir()
 	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
-	if strings.HasPrefix(projectKey, "-") {
-		projectKey = projectKey[1:]
-	}
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
 	os.MkdirAll(projectDir, 0o755)
 	t.Cleanup(func() { os.RemoveAll(projectDir) })

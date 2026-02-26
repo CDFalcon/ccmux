@@ -316,9 +316,6 @@ func getAgentSessionTokens(worktreePath string) tokenBreakdown {
 	}
 
 	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
-	if strings.HasPrefix(projectKey, "-") {
-		projectKey = projectKey[1:]
-	}
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
 
 	entries, err := os.ReadDir(projectDir)
