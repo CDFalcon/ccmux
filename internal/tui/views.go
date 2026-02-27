@@ -120,6 +120,12 @@ func renderMainView(m model) string {
 				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
+			} else if a.Status == agent.StatusWaitingCI {
+				icon := agentWaitingCIStyle.Render("⏳")
+				status := agentWaitingCIStyle.Render("waiting on CI")
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				b.WriteString(line)
+				b.WriteString("\n")
 			} else {
 				status := renderAgentStatus(a.Status)
 				line := fmt.Sprintf("  - %s: %s [%s]%s", a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
@@ -549,6 +555,8 @@ func renderAgentStatus(status agent.Status) string {
 		return agentKillingStyle.Render("killing")
 	case agent.StatusReady:
 		return agentReadyStyle.Render("ready")
+	case agent.StatusWaitingCI:
+		return agentWaitingCIStyle.Render("waiting on CI")
 	case agent.StatusMerged:
 		return agentMergedStyle.Render("merged")
 	case agent.StatusFailed:
@@ -570,6 +578,8 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 		return agentKillingStyle
 	case agent.StatusReady:
 		return agentReadyStyle
+	case agent.StatusWaitingCI:
+		return agentWaitingCIStyle
 	case agent.StatusMerged:
 		return agentMergedStyle
 	case agent.StatusFailed:

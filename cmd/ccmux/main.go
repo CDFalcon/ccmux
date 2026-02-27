@@ -57,6 +57,7 @@ Examples:
 		registerAgentCmd(),
 		queueAddCmd(),
 		prReadyCmd(),
+		ciWaitCmd(),
 		needHelpCmd(),
 		agentStoppedCmd(),
 		focusCmd(),
@@ -389,7 +390,9 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-2. After creating the PR, run: ccmux pr-ready <pr-url>"
+2. Check CI status with: gh pr checks <pr-url>
+3. If all checks passed, run: ccmux pr-ready <pr-url>
+4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -521,6 +524,34 @@ func prReadyCmd() *cobra.Command {
 	}
 }
 
+func ciWaitCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "ci-wait <pr-url>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prURL := args[0]
+
+			agentID := os.Getenv("CCMUX_AGENT_ID")
+			if agentID == "" {
+				return fmt.Errorf("CCMUX_AGENT_ID environment variable not set")
+			}
+
+			sessionID := getCurrentSessionID()
+
+			agentStore, err := agent.NewStore(sessionID)
+			if err != nil {
+				return err
+			}
+
+			return agentStore.Update(agentID, func(a *agent.Agent) {
+				a.Status = agent.StatusWaitingCI
+				a.PRURL = prURL
+			})
+		},
+	}
+}
+
 func getPRTitle(prURL string) string {
 	// Extract PR number from URL
 	parts := strings.Split(prURL, "/")
@@ -589,6 +620,8 @@ func agentStoppedCmd() *cobra.Command {
 			switch a.Status {
 			case agent.StatusReady:
 				// Agent made a PR - it's already in queue, nothing to do
+			case agent.StatusWaitingCI:
+				// Agent is waiting for CI - timer will handle resume, nothing to do
 			case agent.StatusRunning:
 				// Agent stopped without making a PR - add to queue for review
 				agentStore.Update(agentID, func(ag *agent.Agent) {
@@ -687,6 +720,7 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-ci-check.sh"))
 	}
 
 	agentStore.Delete(agentID)
@@ -731,6 +765,7 @@ func killSessionCmd() *cobra.Command {
 				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
 			}
 
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
@@ -796,6 +831,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			}
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
 
+		case a.Status == agent.StatusWaitingCI && worktreeExists:
+			scriptPath, err := writeCIWaitPlaceholderScript(a.ID, a.WorktreePath, a.Task)
+			if err != nil {
+				logging.Log("recovery: failed to write CI wait placeholder script for %s: %v", a.ID, err)
+				continue
+			}
+			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
+
 		default:
 			toRemove = append(toRemove, a.ID)
 		}
@@ -814,6 +857,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
 		agentStore.Delete(a.ID)
 	}
 
@@ -823,6 +867,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-ci-check.sh"))
 		agentStore.Delete(id)
 	}
 
@@ -976,7 +1021,9 @@ IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux c
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-2. After creating the PR, run: ccmux pr-ready <pr-url>"
+2. Check CI status with: gh pr checks <pr-url>
+3. If all checks passed, run: ccmux pr-ready <pr-url>
+4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1028,6 +1075,50 @@ echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
 echo ""
 echo -e "${GREEN}● Waiting for PR review${RESET}"
 echo -e "${DIM}This agent has a PR up for review. Use the TUI to accept, comment, or reject.${RESET}"
+echo ""
+
+while true; do
+  sleep 3600
+done
+`, agentID, worktreePath, task)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func writeCIWaitPlaceholderScript(agentID, worktreePath, task string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+
+AGENT_ID="%s"
+WORKTREE_PATH="%s"
+TASK=%q
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+GREEN="\033[38;5;46m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Task:${RESET} $TASK"
+echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
+echo ""
+echo -e "${GREEN}⏳ Waiting on CI${RESET}"
+echo -e "${DIM}This agent is waiting for CI to complete. The orchestrator will resume it automatically.${RESET}"
 echo ""
 
 while true; do

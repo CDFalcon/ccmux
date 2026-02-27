@@ -68,6 +68,9 @@ type model struct {
 	spinnerFrame  int
 	marqueeOffset int
 
+	// CI wait tracking
+	ciResumeTriggered map[string]bool
+
 	// Resource monitoring
 	agentResources map[string]*AgentResources
 	totalMemKB     int64
@@ -285,21 +288,22 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	progress := new(int64)
 
 	return model{
-		view:             ViewMain,
-		taskInput:        taskInput,
-		branchInput:      branchInput,
-		branchFilter:     branchFilter,
-		interveneInput:   interveneInput,
-		projectForm:      newProjectForm(),
-		totalMemKB:       getTotalMemoryKB(),
-		clkTck:           getClockTicks(),
-		prevCPUTicks:     make(map[int]int64),
-		downloadProgress: progress,
-		agentStore:       agentStore,
-		queueManager:     queueManager,
-		projectStore:     projectStore,
-		tmuxManager:      tmuxManager,
-		sessionID:        sessionID,
+		view:              ViewMain,
+		taskInput:         taskInput,
+		branchInput:       branchInput,
+		branchFilter:      branchFilter,
+		interveneInput:    interveneInput,
+		projectForm:       newProjectForm(),
+		ciResumeTriggered: make(map[string]bool),
+		totalMemKB:        getTotalMemoryKB(),
+		clkTck:            getClockTicks(),
+		prevCPUTicks:      make(map[int]int64),
+		downloadProgress:  progress,
+		agentStore:        agentStore,
+		queueManager:      queueManager,
+		projectStore:      projectStore,
+		tmuxManager:       tmuxManager,
+		sessionID:         sessionID,
 	}
 }
 
@@ -460,7 +464,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading
 		if !shouldAnimate {
 			for _, a := range m.agents {
-				if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp {
+				if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusWaitingCI {
 					shouldAnimate = true
 					break
 				}
@@ -479,6 +483,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.projects
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
+
+		activeWaiting := make(map[string]bool)
+		var cmds []tea.Cmd
+		for _, a := range m.agents {
+			if a.Status == agent.StatusWaitingCI {
+				activeWaiting[a.ID] = true
+				if time.Since(a.UpdatedAt) >= 15*time.Minute && !m.ciResumeTriggered[a.ID] {
+					m.ciResumeTriggered[a.ID] = true
+					cmds = append(cmds, m.resumeCICheckCmd(a))
+				}
+			}
+		}
+		for id := range m.ciResumeTriggered {
+			if !activeWaiting[id] {
+				delete(m.ciResumeTriggered, id)
+			}
+		}
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
+		}
 		return m, nil
 
 	case spawnStartedMsg:
@@ -1175,6 +1199,8 @@ func (m model) updateWindowNames() {
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusReady:
 			name = "● " + short
+		case agent.StatusWaitingCI:
+			name = "⏳ " + short
 		default:
 			name = short
 		}
@@ -1387,16 +1413,91 @@ export AWS_REGION=us-west-2
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes, and then run: ccmux pr-ready %s"
+  "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes. Then check CI status with: gh pr checks %s -- If all checks passed, run: ccmux pr-ready %s -- If checks failed or are still pending, run: ccmux ci-wait %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
 	}
 
 	return scriptPath, nil
+}
+
+func writeCICheckScript(agentID, worktreePath, prURL string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-ci-check.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID="%s"
+
+cd "%s"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Checking CI status...${RESET}"
+echo ""
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION=us-west-2
+unset CLAUDECODE
+
+claude --continue --dangerously-skip-permissions \
+  "Check the CI status for the PR at %s. Run: gh pr checks %s -- Then: If ALL checks passed, run: ccmux pr-ready %s -- If any checks FAILED, investigate and fix the failures, commit and push, then run: ccmux ci-wait %s -- If checks are still pending/running, run: ccmux ci-wait %s"
+
+ccmux agent-stopped "$AGENT_ID"
+`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func (m model) resumeCICheckCmd(a *agent.Agent) tea.Cmd {
+	agentID := a.ID
+	worktreePath := a.WorktreePath
+	tmuxWindow := a.TmuxWindow
+	prURL := a.PRURL
+	return func() tea.Msg {
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusRunning
+		})
+
+		scriptPath, err := writeCICheckScript(agentID, worktreePath, prURL)
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to write CI check script: %w", err)}
+		}
+
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create CI check window: %w", err)}
+		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
+
+		return successMsg{fmt.Sprintf("Agent %s resumed to check CI", agentID)}
+	}
 }
 
 func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {

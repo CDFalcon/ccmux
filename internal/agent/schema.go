@@ -10,6 +10,7 @@ const (
 	StatusSpawning   Status = "spawning"
 	StatusRunning    Status = "running"
 	StatusReady      Status = "ready"
+	StatusWaitingCI  Status = "waiting_ci"
 	StatusCleaningUp Status = "cleaning_up"
 	StatusKilling    Status = "killing"
 	StatusMerged     Status = "merged"
@@ -23,6 +24,7 @@ type Agent struct {
 	BranchName   string    `json:"branch_name"`
 	BaseBranch   string    `json:"base_branch"`
 	TmuxWindow   string    `json:"tmux_window"`
+	PRURL        string    `json:"pr_url,omitempty"`
 	Status       Status    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

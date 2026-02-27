@@ -66,6 +66,9 @@ var (
 	agentKillingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorRed))
 
+	agentWaitingCIStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(ColorGreen))
+
 	agentCleaningUpStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(ColorLightBlue))
 
