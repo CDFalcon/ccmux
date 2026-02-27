@@ -49,10 +49,10 @@ var (
 				Bold(true)
 
 	agentRunningStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(ColorGreen))
+				Foreground(lipgloss.Color(ColorYellow))
 
 	agentReadyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(ColorYellow))
+			Foreground(lipgloss.Color(ColorGreen))
 
 	agentMergedStyle = lipgloss.NewStyle().
 				Foreground(royalBlue)
@@ -67,7 +67,7 @@ var (
 			Foreground(lipgloss.Color(ColorRed))
 
 	agentWaitingCIStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(ColorGreen))
+				Foreground(lipgloss.Color(ColorYellow))
 
 	agentCleaningUpStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(ColorLightBlue))
