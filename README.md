@@ -1,10 +1,12 @@
-# ccmux — Claude Multiplexer
+# ccmux — Colby's Claude MUltipleXer
 
 A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
-Each agent gets its own git worktree, branch, and tmux window — so multiple agents can work on different tasks in the same repo without conflicts.
+When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up.
 
 ccmux is designed to not interfere with users' current Claude Code setups. Spawned agents will respect existing Claude .MD's and additional agent prompting is kept to a minimum.
+
+This project is in active development, so expect frequent updates. ccmux supports in-session updating, meaning users can update without fear of interrupting their existing agents. ccmux will automatically flag when updates are available. 
 
 ## Setup (Linux x86_64)
 ```bash
