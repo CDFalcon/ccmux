@@ -65,8 +65,9 @@ type model struct {
 	ctrlCPressed bool
 
 	// Animation state
-	spinnerFrame  int
-	marqueeOffset int
+	spinnerFrame    int
+	marqueeOffset   int
+	prevWindowNames map[string]string
 
 	// CI wait tracking
 	ciResumeTriggered map[string]bool
@@ -295,6 +296,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
 		ciResumeTriggered: make(map[string]bool),
+		prevWindowNames:   make(map[string]string),
 		totalMemKB:        getTotalMemoryKB(),
 		clkTck:            getClockTicks(),
 		prevCPUTicks:      make(map[int]int64),
@@ -1204,7 +1206,10 @@ func (m model) updateWindowNames() {
 		default:
 			name = short
 		}
-		m.tmuxManager.RenameWindow(a.TmuxWindow, name)
+		if m.prevWindowNames[a.TmuxWindow] != name {
+			m.prevWindowNames[a.TmuxWindow] = name
+			m.tmuxManager.RenameWindow(a.TmuxWindow, name)
+		}
 	}
 }
 
