@@ -491,7 +491,7 @@ func renderManageProjectsView(m model) string {
 func renderAddProjectNameView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 1/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Name"))
 	b.WriteString("\n\n")
 
 	b.WriteString("Enter project name:\n")
@@ -510,7 +510,7 @@ func renderAddProjectNameView(m model) string {
 func renderAddProjectPathView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 2/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Path"))
 	b.WriteString("\n\n")
 
 	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.newProjectName)))
@@ -531,21 +531,14 @@ func renderAddProjectPathView(m model) string {
 func renderAddProjectFastWTView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 3/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Fast Worktrees"))
 	b.WriteString("\n\n")
 
 	b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.newProjectName)))
 	b.WriteString(fmt.Sprintf("Path:    %s\n\n", dimStyle.Render(m.newProjectPath)))
 
-	b.WriteString("Use Andrew Paon's fast worktrees? (beta)\n\n")
-
-	b.WriteString(dimStyle.Render("Uses 'proj' (github.com/Applied-Shared/proj) to create worktrees via"))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("reflink copy instead of git worktree. Near-instant for large repos."))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("Requires proj to be installed and the project imported with 'proj import'."))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("The path above should point to the proj project directory (containing .repo)."))
+	b.WriteString("Use fast worktrees? (beta)\n\n")
+	b.WriteString(dimStyle.Render("Creates worktrees via reflink copy — near-instant for large repos."))
 	b.WriteString("\n\n")
 
 	help := helpFooter(ViewAddProjectFastWT)

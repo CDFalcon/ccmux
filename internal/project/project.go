@@ -194,6 +194,11 @@ func isGitRepo(path string) bool {
 	return cmd.Run() == nil
 }
 
+func IsProjInstalled() bool {
+	_, err := exec.LookPath("proj")
+	return err == nil
+}
+
 func IsProjDirectory(path string) bool {
 	repoDir := filepath.Join(path, ".repo")
 	info, err := os.Stat(repoDir)

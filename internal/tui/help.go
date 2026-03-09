@@ -118,7 +118,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] cancel", Description: "Cancel and return to project management"},
 	},
 	ViewAddProjectPath: {
-		{FooterText: "[enter] next", Description: "Proceed to fast worktree option"},
+		{FooterText: "[enter] create project", Description: "Create the project registration"},
 		{FooterText: "[esc] back", Description: "Return to name entry"},
 	},
 	ViewAddProjectFastWT: {

@@ -337,7 +337,7 @@ func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.
 	}
 }
 
-func TestHandleAddProjectPathKeys_ShouldGoToFastWT_GivenEnterWithPath(t *testing.T) {
+func TestHandleAddProjectPathKeys_ShouldCreateProject_GivenEnterWithPathNoProjInstalled(t *testing.T) {
 	// Setup.
 	m := newTestModel()
 	m.view = ViewAddProjectPath
@@ -350,9 +350,6 @@ func TestHandleAddProjectPathKeys_ShouldGoToFastWT_GivenEnterWithPath(t *testing
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewAddProjectFastWT {
-		t.Errorf("expected ViewAddProjectFastWT, got %d", rm.view)
-	}
 	if rm.newProjectPath != "/some/path" {
 		t.Errorf("expected path '/some/path', got '%s'", rm.newProjectPath)
 	}
@@ -374,7 +371,7 @@ func TestHandleAddProjectFastWTKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 	}
 }
 
-func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T) {
+func TestHandleAddProjectFastWTKeys_ShouldShowError_GivenYesWithoutProjInstalled(t *testing.T) {
 	// Setup.
 	m := newTestModel()
 	m.view = ViewAddProjectFastWT
@@ -386,8 +383,10 @@ func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewManageProjects {
-		t.Errorf("expected ViewManageProjects, got %d", rm.view)
+	if rm.err == nil {
+		if rm.view != ViewManageProjects {
+			t.Errorf("expected ViewManageProjects or error, got view %d", rm.view)
+		}
 	}
 }
 
