@@ -20,6 +20,7 @@ var inputViews = map[ViewState]bool{
 	ViewInterveneInput:     true,
 	ViewAddProjectName:     true,
 	ViewAddProjectPath:     true,
+	ViewAddProjectFastWT:   false,
 	ViewEditProject:        true,
 }
 
@@ -37,6 +38,7 @@ var viewTitles = map[ViewState]string{
 	ViewManageProjects:       "Manage Projects",
 	ViewAddProjectName:       "Add Project (Name)",
 	ViewAddProjectPath:       "Add Project (Path)",
+	ViewAddProjectFastWT:     "Add Project (Fast Worktrees)",
 	ViewEditProject:          "Edit Project",
 	ViewConfirmRemoveProject: "Remove Project",
 	ViewConfirmKillSession:   "Kill Session",
@@ -116,8 +118,13 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] cancel", Description: "Cancel and return to project management"},
 	},
 	ViewAddProjectPath: {
-		{FooterText: "[enter] create project", Description: "Create the project registration"},
+		{FooterText: "[enter] next", Description: "Proceed to fast worktree option"},
 		{FooterText: "[esc] back", Description: "Return to name entry"},
+	},
+	ViewAddProjectFastWT: {
+		{FooterText: "[y]es", Description: "Enable fast worktrees (proj) for this project"},
+		{FooterText: "[n]o", Description: "Use standard git worktrees"},
+		{FooterText: "[esc] back", Description: "Return to path entry"},
 	},
 	ViewConfirmRemoveProject: {
 		{FooterText: "[y]es", Description: "Confirm project removal"},

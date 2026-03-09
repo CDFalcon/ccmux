@@ -91,7 +91,11 @@ func (s *Store) Add(project *Project) error {
 	}
 	project.Path = absPath
 
-	if !isGitRepo(project.Path) {
+	if project.UseFastWorktrees {
+		if !IsProjDirectory(project.Path) {
+			return fmt.Errorf("path is not a proj directory (missing .repo): %s", project.Path)
+		}
+	} else if !isGitRepo(project.Path) {
 		return fmt.Errorf("path is not a git repository: %s", project.Path)
 	}
 
@@ -188,6 +192,28 @@ func isGitRepo(path string) bool {
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = path
 	return cmd.Run() == nil
+}
+
+func IsProjDirectory(path string) bool {
+	repoDir := filepath.Join(path, ".repo")
+	info, err := os.Stat(repoDir)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func FindProjTemplateDir(projDir string) string {
+	entries, err := os.ReadDir(projDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "00-") {
+			return filepath.Join(projDir, entry.Name())
+		}
+	}
+	return ""
 }
 
 func GetRepoRoot(path string) (string, error) {

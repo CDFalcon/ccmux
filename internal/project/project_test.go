@@ -248,3 +248,136 @@ func TestEffectiveBaseBranch_ShouldReturnCustom_GivenNonEmptyValue(t *testing.T)
 	}
 }
 
+func TestAdd_ShouldStoreProject_GivenFastWorktreesEnabled(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+	tmpDir, _ := os.MkdirTemp("", "proj-dir")
+	defer os.RemoveAll(tmpDir)
+	repoDir := filepath.Join(tmpDir, ".repo")
+	os.MkdirAll(repoDir, 0755)
+
+	project := &Project{
+		Name:             "fast-project",
+		Path:             tmpDir,
+		UseFastWorktrees: true,
+	}
+
+	// Execute.
+	err := store.Add(project)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, err := store.Get("fast-project")
+	if err != nil {
+		t.Fatalf("failed to retrieve project: %v", err)
+	}
+	if !retrieved.UseFastWorktrees {
+		t.Error("expected UseFastWorktrees to be true")
+	}
+}
+
+func TestAdd_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+	tmpDir, _ := os.MkdirTemp("", "no-proj")
+	defer os.RemoveAll(tmpDir)
+
+	project := &Project{
+		Name:             "bad-fast-project",
+		Path:             tmpDir,
+		UseFastWorktrees: true,
+	}
+
+	// Execute.
+	err := store.Add(project)
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for missing .repo directory, got nil")
+	}
+}
+
+func TestIsProjDirectory_ShouldReturnTrue_GivenDirWithRepo(t *testing.T) {
+	// Setup.
+	tmpDir, _ := os.MkdirTemp("", "proj-test")
+	defer os.RemoveAll(tmpDir)
+	os.MkdirAll(filepath.Join(tmpDir, ".repo"), 0755)
+
+	// Execute.
+	result := IsProjDirectory(tmpDir)
+
+	// Assert.
+	if !result {
+		t.Error("expected true for directory with .repo")
+	}
+}
+
+func TestIsProjDirectory_ShouldReturnFalse_GivenDirWithoutRepo(t *testing.T) {
+	// Setup.
+	tmpDir, _ := os.MkdirTemp("", "no-proj-test")
+	defer os.RemoveAll(tmpDir)
+
+	// Execute.
+	result := IsProjDirectory(tmpDir)
+
+	// Assert.
+	if result {
+		t.Error("expected false for directory without .repo")
+	}
+}
+
+func TestFindProjTemplateDir_ShouldReturnPath_GivenTemplateExists(t *testing.T) {
+	// Setup.
+	tmpDir, _ := os.MkdirTemp("", "proj-template-test")
+	defer os.RemoveAll(tmpDir)
+	templateDir := filepath.Join(tmpDir, "00-master")
+	os.MkdirAll(templateDir, 0755)
+
+	// Execute.
+	result := FindProjTemplateDir(tmpDir)
+
+	// Assert.
+	if result != templateDir {
+		t.Errorf("expected '%s', got '%s'", templateDir, result)
+	}
+}
+
+func TestFindProjTemplateDir_ShouldReturnEmpty_GivenNoTemplate(t *testing.T) {
+	// Setup.
+	tmpDir, _ := os.MkdirTemp("", "no-template-test")
+	defer os.RemoveAll(tmpDir)
+
+	// Execute.
+	result := FindProjTemplateDir(tmpDir)
+
+	// Assert.
+	if result != "" {
+		t.Errorf("expected empty string, got '%s'", result)
+	}
+}
+
+func TestUpdate_ShouldToggleFastWorktrees_GivenUpdate(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "toggleable", Path: repoDir})
+
+	// Execute.
+	err := store.Update("toggleable", func(p *Project) {
+		p.UseFastWorktrees = true
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("toggleable")
+	if !retrieved.UseFastWorktrees {
+		t.Error("expected UseFastWorktrees to be true after update")
+	}
+}
+

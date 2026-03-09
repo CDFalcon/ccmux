@@ -336,3 +336,87 @@ func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.
 		t.Errorf("expected '%s', got '%s'", expected, footer)
 	}
 }
+
+func TestHandleAddProjectPathKeys_ShouldGoToFastWT_GivenEnterWithPath(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewAddProjectPath
+	m.newProjectName = "test-proj"
+	m.projectForm = newProjectForm()
+	m.projectForm.pathInput.SetValue("/some/path")
+
+	// Execute.
+	result, _ := m.handleAddProjectPathKeys(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewAddProjectFastWT {
+		t.Errorf("expected ViewAddProjectFastWT, got %d", rm.view)
+	}
+	if rm.newProjectPath != "/some/path" {
+		t.Errorf("expected path '/some/path', got '%s'", rm.newProjectPath)
+	}
+}
+
+func TestHandleAddProjectFastWTKeys_ShouldGoBack_GivenEsc(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewAddProjectFastWT
+	m.projectForm = newProjectForm()
+
+	// Execute.
+	result, _ := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewAddProjectPath {
+		t.Errorf("expected ViewAddProjectPath, got %d", rm.view)
+	}
+}
+
+func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewAddProjectFastWT
+	m.newProjectName = "test"
+	m.newProjectPath = "/some/path"
+
+	// Execute.
+	result, _ := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
+	}
+}
+
+func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenNo(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewAddProjectFastWT
+	m.newProjectName = "test"
+	m.newProjectPath = "/some/path"
+
+	// Execute.
+	result, _ := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
+	}
+}
+
+func TestHelpFooter_ShouldIncludeYesNo_GivenFastWTView(t *testing.T) {
+	// Setup/Execute.
+	footer := helpFooter(ViewAddProjectFastWT)
+
+	// Assert.
+	if !strings.Contains(footer, "[y]es") {
+		t.Errorf("expected footer to contain '[y]es', got '%s'", footer)
+	}
+	if !strings.Contains(footer, "[n]o") {
+		t.Errorf("expected footer to contain '[n]o', got '%s'", footer)
+	}
+}

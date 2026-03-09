@@ -223,7 +223,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-		launcherScript, err := writeLauncherScript(agentID, task, proj.Path, baseBranch, sessionID)
+		launcherScript, err := writeLauncherScript(agentID, task, proj.Path, baseBranch, sessionID, proj.UseFastWorktrees)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -263,7 +263,7 @@ func spawnCmd() *cobra.Command {
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -276,6 +276,11 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string) 
 
 	scriptPath := filepath.Join(launcherDir, agentID+".sh")
 
+	useFastWT := "0"
+	if useFastWorktrees {
+		useFastWT = "1"
+	}
+
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
@@ -284,6 +289,7 @@ TASK=%q
 REPO_PATH="%s"
 BASE_BRANCH="%s"
 SESSION_ID="%s"
+USE_FAST_WT="%s"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -293,19 +299,33 @@ echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
 echo -e "${DIM}Task:${RESET} $TASK"
 echo ""
 
-# Create worktree
-WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
-BRANCH_NAME="ccmux/$AGENT_ID"
+if [ "$USE_FAST_WT" = "1" ]; then
+  # Fast worktree mode using proj (reflink copy)
+  PROJ_DIR="$REPO_PATH"
+  WORKTREE_PATH="$PROJ_DIR/ccmux-$AGENT_ID"
+  BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$AGENT_ID"
 
-echo "→ Creating worktree at $WORKTREE_PATH..."
-cd "$REPO_PATH"
-FETCH_REF="${BASE_BRANCH#origin/}"
-echo "→ Fetching latest $FETCH_REF from origin..."
-git fetch origin "$FETCH_REF"
-git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
-cd "$WORKTREE_PATH"
-echo "✓ Worktree created"
-echo ""
+  echo "→ Creating fast worktree at $WORKTREE_PATH..."
+  cd "$PROJ_DIR"
+  proj new "ccmux-$AGENT_ID"
+  cd "$WORKTREE_PATH"
+  echo "✓ Fast worktree created (proj)"
+  echo ""
+else
+  # Standard git worktree mode
+  WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
+  BRANCH_NAME="ccmux/$AGENT_ID"
+
+  echo "→ Creating worktree at $WORKTREE_PATH..."
+  cd "$REPO_PATH"
+  FETCH_REF="${BASE_BRANCH#origin/}"
+  echo "→ Fetching latest $FETCH_REF from origin..."
+  git fetch origin "$FETCH_REF"
+  git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
+  cd "$WORKTREE_PATH"
+  echo "✓ Worktree created"
+  echo ""
+fi
 
 # Install hooks
 echo "→ Installing Claude Code hooks..."
@@ -405,7 +425,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

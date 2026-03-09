@@ -1,6 +1,6 @@
 package project
 
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 const DefaultCIWaitMinutes = 5
 
@@ -9,6 +9,7 @@ type Project struct {
 	Path              string `json:"path"`
 	DefaultBaseBranch string `json:"default_base_branch,omitempty"`
 	CIWaitMinutes     int    `json:"ci_wait_minutes,omitempty"`
+	UseFastWorktrees  bool   `json:"use_fast_worktrees,omitempty"`
 }
 
 func (p *Project) EffectiveCIWaitMinutes() int {
