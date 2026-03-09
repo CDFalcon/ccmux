@@ -977,10 +977,6 @@ func renderUpdateView(m model) string {
 		b.WriteString("\n")
 		b.WriteString(agentReadyStyle.Render("Update complete!"))
 		b.WriteString("\n")
-	} else if m.updateAvailable {
-		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
-		renderChangelog(&b, m.changelogEntries, m.selectedIndex, m.changelogLoading, m.spinnerFrame)
-		b.WriteString("\nUpdate available. Install it?\n")
 	} else {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("You are on the latest version."))
@@ -990,11 +986,9 @@ func renderUpdateView(m model) string {
 	b.WriteString("\n")
 
 	if m.updateComplete {
-		b.WriteString(renderFooter(withHelpKey("[r]estart  [esc] back"), m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[r]estart"), m.ctrlCPressed))
 	} else if m.updateError != "" {
 		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
-	} else if m.updateAvailable && !m.updateDownloading {
-		b.WriteString(renderFooter(withHelpKey("[↑/↓/j/k] scroll  [y] install  [n] cancel"), m.ctrlCPressed))
 	} else if !m.updateChecking && !m.updateDownloading {
 		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	}

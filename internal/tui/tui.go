@@ -655,8 +655,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateVersion = msg.version
 		m.updateAvailable = msg.available
 		if msg.available {
+			m.updateDownloading = true
+			atomic.StoreInt64(m.downloadProgress, 0)
 			m.changelogLoading = true
-			return m, fetchChangelogCmd(version.Version, msg.version)
+			return m, tea.Batch(
+				fetchChangelogCmd(version.Version, msg.version),
+				downloadUpdateCmd(msg.version, m.downloadProgress),
+			)
 		}
 		return m, nil
 
@@ -1404,16 +1409,8 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc":
-		m.view = ViewMain
-	case "n":
 		if !m.updateComplete {
 			m.view = ViewMain
-		}
-	case "y":
-		if m.updateAvailable && !m.updateComplete && m.updateError == "" {
-			m.updateDownloading = true
-			atomic.StoreInt64(m.downloadProgress, 0)
-			return m, downloadUpdateCmd(m.updateVersion, m.downloadProgress)
 		}
 	case "r":
 		if m.updateComplete {
