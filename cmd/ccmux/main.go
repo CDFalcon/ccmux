@@ -312,6 +312,13 @@ if [ "$USE_FAST_WT" = "1" ]; then
   cd "$WORKTREE_PATH"
   echo "✓ Fast worktree created (proj)"
   echo ""
+
+  FETCH_REF="${BASE_BRANCH#origin/}"
+  echo "→ Fetching latest $FETCH_REF from origin..."
+  git fetch origin "$FETCH_REF"
+  git reset --hard "$BASE_BRANCH"
+  echo "✓ Reset to latest $BASE_BRANCH"
+  echo ""
 else
   # Standard git worktree mode
   WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
