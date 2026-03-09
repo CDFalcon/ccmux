@@ -33,7 +33,7 @@ func (m *Manager) SessionExists() bool {
 }
 
 func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", m.sessionName, "-c", workingDir, "-x", DefaultSessionWidth, "-y", DefaultSessionHeight, command)
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", m.sessionName, "-c", workingDir, "-x", DefaultSessionWidth, "-y", DefaultSessionHeight)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create tmux session: %s: %w", string(output), err)
@@ -41,6 +41,9 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
 	m.ForwardEnv()
 	m.SourceUserConfig()
+	if err := m.RespawnPane(m.sessionName+":0", command); err != nil {
+		return fmt.Errorf("failed to start command in session: %w", err)
+	}
 	return nil
 }
 
