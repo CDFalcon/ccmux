@@ -1408,8 +1408,6 @@ echo -e "${DIM}Reviewing PR comments...${RESET}"
 echo ""
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \

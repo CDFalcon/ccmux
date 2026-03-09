@@ -380,8 +380,6 @@ echo ""
 cd "$WORKTREE_PATH"
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
 
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
