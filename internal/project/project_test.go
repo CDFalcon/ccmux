@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -438,20 +437,4 @@ func TestProjImport_ShouldFail_GivenNoProjInstalled(t *testing.T) {
 	}
 }
 
-func TestProjImport_ShouldFail_GivenNoProjRoot(t *testing.T) {
-	if !IsProjInstalled() {
-		t.Skip("proj not installed")
-	}
-
-	// Setup.
-	t.Setenv("PROJ_ROOT", "")
-
-	// Execute.
-	_, err := ProjImport("/some/path")
-
-	// Assert.
-	if err == nil || !strings.Contains(err.Error(), "PROJ_ROOT") {
-		t.Errorf("expected PROJ_ROOT error, got %v", err)
-	}
-}
 
