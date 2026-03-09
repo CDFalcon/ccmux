@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -91,7 +92,11 @@ func (s *Store) Add(project *Project) error {
 	}
 	project.Path = absPath
 
-	if !isGitRepo(project.Path) {
+	if project.UseFastWorktrees {
+		if !IsProjDirectory(project.Path) {
+			return fmt.Errorf("path is not a proj directory (missing .repo): %s", project.Path)
+		}
+	} else if !isGitRepo(project.Path) {
 		return fmt.Errorf("path is not a git repository: %s", project.Path)
 	}
 
@@ -147,6 +152,33 @@ func (s *Store) List() ([]*Project, error) {
 	return projects, nil
 }
 
+func (s *Store) Update(name string, fn func(p *Project)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.load()
+	if err != nil {
+		return err
+	}
+
+	p, exists := data.Projects[name]
+	if !exists {
+		return fmt.Errorf("project %s not found", name)
+	}
+
+	fn(p)
+
+	if p.UseFastWorktrees {
+		if !IsProjDirectory(p.Path) {
+			return fmt.Errorf("path is not a proj directory (missing .repo): %s", p.Path)
+		}
+	} else if !isGitRepo(p.Path) {
+		return fmt.Errorf("path is not a git repository: %s", p.Path)
+	}
+
+	return s.save(data)
+}
+
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,6 +201,87 @@ func isGitRepo(path string) bool {
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = path
 	return cmd.Run() == nil
+}
+
+func IsProjInstalled() bool {
+	_, err := exec.LookPath("proj")
+	return err == nil
+}
+
+func IsProjDirectory(path string) bool {
+	repoDir := filepath.Join(path, ".repo")
+	info, err := os.Stat(repoDir)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func FindProjTemplateDir(projDir string) string {
+	entries, err := os.ReadDir(projDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "00-") {
+			return filepath.Join(projDir, entry.Name())
+		}
+	}
+	return ""
+}
+
+func DetectDefaultBranch(repoPath string) string {
+	for _, branch := range []string{"master", "main"} {
+		cmd := exec.Command("git", "rev-parse", "--verify", branch)
+		cmd.Dir = repoPath
+		if cmd.Run() == nil {
+			return branch
+		}
+	}
+	return "master"
+}
+
+func ProjImport(repoPath string, onLine func(string)) (string, error) {
+	if !IsProjInstalled() {
+		return "", fmt.Errorf("proj is not installed")
+	}
+	projRoot := os.Getenv("PROJ_ROOT")
+	if projRoot == "" {
+		return "", fmt.Errorf("PROJ_ROOT is not set — see github.com/Applied-Shared/proj for setup")
+	}
+	branch := DetectDefaultBranch(repoPath)
+	repoName := filepath.Base(repoPath)
+	projDir := filepath.Join(projRoot, "projects", repoName)
+	cmd := exec.Command("proj", "import", "--local", repoPath, "--branch", branch)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("proj import failed to start: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return "", fmt.Errorf("proj import failed: %w", err)
+	}
+	if !IsProjDirectory(projDir) {
+		return "", fmt.Errorf("proj import completed but %s is missing .repo directory", projDir)
+	}
+	if FindProjTemplateDir(projDir) == "" {
+		return "", fmt.Errorf("proj import completed but %s has no template worktree", projDir)
+	}
+	return projDir, nil
 }
 
 func GetRepoRoot(path string) (string, error) {
