@@ -137,16 +137,22 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 }
 
+func withHelpKey(help string) string {
+	if help == "" {
+		return "[F1] help"
+	}
+	return help + "  [F1] help"
+}
+
 func helpFooter(view ViewState) string {
 	commands := viewHelpCommands[view]
-	parts := make([]string, 0, len(commands)+1)
+	parts := make([]string, 0, len(commands))
 	for _, cmd := range commands {
 		if !cmd.HideFromFooter {
 			parts = append(parts, cmd.FooterText)
 		}
 	}
-	parts = append(parts, "[F1] help")
-	return strings.Join(parts, "  ")
+	return withHelpKey(strings.Join(parts, "  "))
 }
 
 func renderHelpView(m model) string {

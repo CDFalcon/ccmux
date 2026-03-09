@@ -955,17 +955,13 @@ func renderUpdateView(m model) string {
 	b.WriteString("\n")
 
 	if m.updateComplete {
-		help := "[r]estart  [esc] back  [h]elp"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[r]estart  [esc] back"), m.ctrlCPressed))
 	} else if m.updateError != "" {
-		help := "[esc] back"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	} else if m.updateAvailable && !m.updateDownloading {
-		help := "[↑/↓/j/k] scroll  [y] install  [n] cancel  [h]elp"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[↑/↓/j/k] scroll  [y] install  [n] cancel"), m.ctrlCPressed))
 	} else if !m.updateChecking && !m.updateDownloading {
-		help := "[esc] back  [h]elp"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	}
 
 	return b.String()
