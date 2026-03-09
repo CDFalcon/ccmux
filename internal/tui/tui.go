@@ -498,7 +498,7 @@ func (m model) refreshCmd() tea.Cmd {
 }
 
 func clearMessageCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 		return clearMessageMsg{}
 	})
 }
@@ -721,6 +721,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.err = nil
+
 	// Global two-stage detach with Ctrl+C
 	if msg.String() == "ctrl+c" {
 		if m.ctrlCPressed {
@@ -1171,7 +1173,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parsed, err := strconv.Atoi(ciWaitStr)
 			if err != nil || parsed < 0 {
 				m.err = fmt.Errorf("CI wait must be a positive number")
-				return m, nil
+				return m, clearMessageCmd()
 			}
 			ciWait = parsed
 		}
