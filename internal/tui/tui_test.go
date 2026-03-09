@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -29,6 +30,7 @@ func newTestModel() model {
 		branchFilter:     branchFilter,
 		taskInput:        taskInput,
 		downloadProgress: progress,
+		projImportLines:  &projImportBuffer{},
 	}
 }
 
@@ -346,7 +348,7 @@ func TestHandleAddProjectFastWTKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 	}
 }
 
-func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T) {
+func TestHandleAddProjectFastWTKeys_ShouldGoToProjImporting_GivenYes(t *testing.T) {
 	// Setup.
 	m := newTestModel()
 	m.view = ViewAddProjectFastWT
@@ -358,8 +360,11 @@ func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewManageProjects {
-		t.Errorf("expected ViewManageProjects, got %d", rm.view)
+	if rm.view != ViewProjImporting {
+		t.Errorf("expected ViewProjImporting, got %d", rm.view)
+	}
+	if !rm.projImporting {
+		t.Error("expected projImporting to be true")
 	}
 	if cmd == nil {
 		t.Error("expected a command to be returned")
@@ -393,5 +398,113 @@ func TestHelpFooter_ShouldIncludeYesNo_GivenFastWTView(t *testing.T) {
 	}
 	if !strings.Contains(footer, "[n]o") {
 		t.Errorf("expected footer to contain '[n]o', got '%s'", footer)
+	}
+}
+
+func TestHandleProjImportingKeys_ShouldCancel_GivenEsc(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewProjImporting
+	m.projImporting = true
+	m.projImportLines.addLine("line 1")
+	cancelled := false
+	m.projImportCancel = func() { cancelled = true }
+
+	// Execute.
+	result, _ := m.handleProjImportingKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
+	}
+	if rm.projImporting {
+		t.Error("expected projImporting to be false")
+	}
+	if !cancelled {
+		t.Error("expected cancel function to be called")
+	}
+}
+
+func TestHandleProjImportingKeys_ShouldIgnore_GivenOtherKeys(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewProjImporting
+	m.projImporting = true
+
+	// Execute.
+	result, _ := m.handleProjImportingKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewProjImporting {
+		t.Errorf("expected ViewProjImporting, got %d", rm.view)
+	}
+	if !rm.projImporting {
+		t.Error("expected projImporting to remain true")
+	}
+}
+
+func TestProjImportBuffer_ShouldReturnLastN_GivenMoreLines(t *testing.T) {
+	// Setup.
+	buf := &projImportBuffer{}
+	for i := 0; i < 10; i++ {
+		buf.addLine(fmt.Sprintf("line %d", i))
+	}
+
+	// Execute.
+	lines := buf.lastN(5)
+
+	// Assert.
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d", len(lines))
+	}
+	if lines[0] != "line 5" {
+		t.Errorf("expected 'line 5', got '%s'", lines[0])
+	}
+	if lines[4] != "line 9" {
+		t.Errorf("expected 'line 9', got '%s'", lines[4])
+	}
+}
+
+func TestProjImportBuffer_ShouldReturnAll_GivenFewerLines(t *testing.T) {
+	// Setup.
+	buf := &projImportBuffer{}
+	buf.addLine("only line")
+
+	// Execute.
+	lines := buf.lastN(5)
+
+	// Assert.
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if lines[0] != "only line" {
+		t.Errorf("expected 'only line', got '%s'", lines[0])
+	}
+}
+
+func TestProjImportBuffer_ShouldReturnEmpty_GivenReset(t *testing.T) {
+	// Setup.
+	buf := &projImportBuffer{}
+	buf.addLine("something")
+	buf.reset()
+
+	// Execute.
+	lines := buf.lastN(5)
+
+	// Assert.
+	if len(lines) != 0 {
+		t.Errorf("expected 0 lines after reset, got %d", len(lines))
+	}
+}
+
+func TestHelpFooter_ShouldIncludeEscCancel_GivenProjImportingView(t *testing.T) {
+	// Setup/Execute.
+	footer := helpFooter(ViewProjImporting)
+
+	// Assert.
+	if !strings.Contains(footer, "[esc] cancel") {
+		t.Errorf("expected footer to contain '[esc] cancel', got '%s'", footer)
 	}
 }

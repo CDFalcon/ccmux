@@ -466,7 +466,7 @@ func TestProjImport_ShouldFail_GivenNoProjInstalled(t *testing.T) {
 	defer os.Setenv("PATH", origPath)
 
 	// Execute.
-	_, err := ProjImport("/some/path")
+	_, err := ProjImport("/some/path", nil)
 
 	// Assert.
 	if err == nil {

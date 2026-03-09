@@ -33,6 +33,7 @@ var viewTitles = map[ViewState]string{
 	ViewConfirmKillSession:   "Kill Session",
 	ViewAgentInfo:            "Info on Agent",
 	ViewUpdate:               "Update",
+	ViewProjImporting:        "Importing Project",
 }
 
 var viewHelpCommands = map[ViewState][]helpCommand{
@@ -118,6 +119,9 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewConfirmRemoveProject: {
 		{FooterText: "[y]es", Description: "Confirm project removal"},
 		{FooterText: "[n]o", Description: "Cancel and go back"},
+	},
+	ViewProjImporting: {
+		{FooterText: "[esc] cancel", Description: "Cancel the import and go back"},
 	},
 	ViewConfirmKillSession: {
 		{FooterText: "[y]es, kill everything", Description: "Kill all agents and the tmux session"},

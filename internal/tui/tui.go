@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -54,7 +55,9 @@ type model struct {
 	interveneAgent *agent.Agent
 
 	// Project import state
-	projImporting bool
+	projImporting    bool
+	projImportLines  *projImportBuffer
+	projImportCancel func()
 
 	// Update state
 	updateChecking    bool
@@ -92,6 +95,36 @@ type model struct {
 	projectStore *project.Store
 	tmuxManager  *tmux.Manager
 	sessionID    string
+}
+
+type projImportBuffer struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (b *projImportBuffer) addLine(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = append(b.lines, line)
+}
+
+func (b *projImportBuffer) lastN(n int) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.lines) <= n {
+		result := make([]string, len(b.lines))
+		copy(result, b.lines)
+		return result
+	}
+	result := make([]string, n)
+	copy(result, b.lines[len(b.lines)-n:])
+	return result
+}
+
+func (b *projImportBuffer) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = nil
 }
 
 type branchEntry struct {
@@ -387,6 +420,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		clkTck:            getClockTicks(),
 		prevCPUTicks:      make(map[int]int64),
 		downloadProgress:  progress,
+		projImportLines:   &projImportBuffer{},
 		agentStore:        agentStore,
 		queueManager:      queueManager,
 		projectStore:      projectStore,
@@ -644,12 +678,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
-		m.projImporting = false
+		if m.projImporting {
+			m.projImporting = false
+			m.projImportLines.reset()
+			m.projImportCancel = nil
+			m.view = ViewManageProjects
+		}
 		return m, tea.Batch(clearMessageCmd(), m.refreshCmd())
 
 	case successMsg:
 		m.err = nil
-		m.projImporting = false
+		if m.projImporting {
+			m.projImporting = false
+			m.projImportLines.reset()
+			m.projImportCancel = nil
+			m.view = ViewManageProjects
+		}
 		return m, m.refreshCmd()
 
 	case clearMessageMsg:
@@ -777,6 +821,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddProjectPathKeys(msg)
 	case ViewAddProjectFastWT:
 		return m.handleAddProjectFastWTKeys(msg)
+	case ViewProjImporting:
+		return m.handleProjImportingKeys(msg)
 	case ViewEditProject:
 		return m.handleEditProjectKeys(msg)
 	case ViewConfirmRemoveProject:
@@ -1184,9 +1230,17 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
 		projName := m.selectedProj.Name
 		m.editProjectForm.blurAll()
-		m.view = ViewManageProjects
 		m.selectedProj = nil
-		m.projImporting = useFastWT
+		if useFastWT {
+			m.view = ViewProjImporting
+			m.projImporting = true
+			m.projImportLines.reset()
+			m.newProjectName = projName
+			m.newProjectPath = path
+		} else {
+			m.view = ViewManageProjects
+			m.projImporting = false
+		}
 		return m, m.updateProjectCmd(projName, path, baseBranch, ciWait, useFastWT)
 	}
 
@@ -1269,12 +1323,27 @@ func (m model) handleAddProjectFastWTKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projectForm.pathInput.Focus()
 		return m, textinput.Blink
 	case "y":
-		m.view = ViewManageProjects
+		m.view = ViewProjImporting
 		m.projImporting = true
+		m.projImportLines.reset()
 		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 	case "n":
 		m.view = ViewManageProjects
 		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
+	}
+	return m, nil
+}
+
+func (m model) handleProjImportingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		if m.projImportCancel != nil {
+			m.projImportCancel()
+		}
+		m.projImporting = false
+		m.projImportLines.reset()
+		m.projImportCancel = nil
+		m.view = ViewManageProjects
 	}
 	return m, nil
 }
@@ -1446,9 +1515,10 @@ func (m model) detachCmd() tea.Cmd {
 }
 
 func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
+	buf := m.projImportLines
 	return func() tea.Msg {
 		if useFastWT && !project.IsProjDirectory(path) {
-			projDir, err := project.ProjImport(path)
+			projDir, err := project.ProjImport(path, buf.addLine)
 			if err != nil {
 				return errMsg{err}
 			}
@@ -1467,9 +1537,10 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 }
 
 func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool) tea.Cmd {
+	buf := m.projImportLines
 	return func() tea.Msg {
 		if useFastWT && path != "" && !project.IsProjDirectory(path) {
-			projDir, err := project.ProjImport(path)
+			projDir, err := project.ProjImport(path, buf.addLine)
 			if err != nil {
 				return errMsg{err}
 			}
@@ -1794,6 +1865,8 @@ func (m model) View() string {
 		content = renderAddProjectPathView(m)
 	case ViewAddProjectFastWT:
 		content = renderAddProjectFastWTView(m)
+	case ViewProjImporting:
+		content = renderProjImportingView(m)
 	case ViewEditProject:
 		content = renderEditProjectView(m)
 	case ViewConfirmRemoveProject:

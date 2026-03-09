@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -240,7 +241,7 @@ func DetectDefaultBranch(repoPath string) string {
 	return "master"
 }
 
-func ProjImport(repoPath string) (string, error) {
+func ProjImport(repoPath string, onLine func(string)) (string, error) {
 	if !IsProjInstalled() {
 		return "", fmt.Errorf("proj is not installed")
 	}
@@ -252,9 +253,27 @@ func ProjImport(repoPath string) (string, error) {
 	repoName := filepath.Base(repoPath)
 	projDir := filepath.Join(projRoot, "projects", repoName)
 	cmd := exec.Command("proj", "import", "--local", repoPath, "--branch", branch)
-	output, err := cmd.CombinedOutput()
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("proj import failed: %s: %w", strings.TrimSpace(string(output)), err)
+		return "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("proj import failed to start: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return "", fmt.Errorf("proj import failed: %w", err)
 	}
 	if !IsProjDirectory(projDir) {
 		return "", fmt.Errorf("proj import completed but %s is missing .repo directory", projDir)

@@ -35,6 +35,7 @@ const (
 	ViewConfirmKillSession
 	ViewAgentInfo
 	ViewUpdate
+	ViewProjImporting
 	ViewHelp
 )
 
@@ -482,10 +483,6 @@ func renderManageProjectsView(m model) string {
 		}
 	}
 
-	if m.projImporting {
-		b.WriteString(fmt.Sprintf("%s Importing project (this may take a while)...\n\n", spinner(m.spinnerFrame)))
-	}
-
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err.Error())))
 		b.WriteString("\n\n")
@@ -548,6 +545,40 @@ func renderAddProjectFastWTView(m model) string {
 	b.WriteString("\n\n")
 
 	help := helpFooter(ViewAddProjectFastWT)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderProjImportingView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Importing Project"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.newProjectName)))
+	b.WriteString(fmt.Sprintf("Path: %s\n\n", dimStyle.Render(m.newProjectPath)))
+
+	b.WriteString(fmt.Sprintf("%s Importing project (this may take a while)...\n\n", spinner(m.spinnerFrame)))
+
+	lines := m.projImportLines.lastN(5)
+	if len(lines) > 0 {
+		box := lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(dimGray).
+			Padding(0, 1).
+			Width(60)
+		content := strings.Join(lines, "\n")
+		b.WriteString(box.Render(content))
+		b.WriteString("\n\n")
+	}
+
+	if m.err != nil {
+		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err.Error())))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewProjImporting)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
