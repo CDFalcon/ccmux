@@ -30,11 +30,11 @@ npm install -g @anthropic-ai/claude-code
 gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-amd64'
 chmod +x ccmux-linux-amd64
 sudo mv ccmux-linux-amd64 /usr/local/bin/ccmux
+
+# Optional: install proj for near-instant worktree creation on large repos
+# Requires an XFS filesystem with reflink support (see proj README for setup)
+# git clone git@github.com:Applied-Shared/proj.git && export PATH="$PATH:$(pwd)/proj/src"
 ```
-
-## Optional: Fast Worktrees
-
-For large repos, worktree creation can be slow. Install [proj](https://github.com/Applied-Shared/proj) to enable near-instant worktree creation via reflink copy. Once `proj` is on your PATH, ccmux will offer to set up fast worktrees automatically when adding a project. For repos already imported with `proj import`, ccmux auto-detects and enables fast worktrees.
 
 ## Quick Start
 
