@@ -226,25 +226,6 @@ func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T)
 	}
 }
 
-func TestHandleKeyPress_ShouldShowHelp_GivenHOnMainView(t *testing.T) {
-	// Setup.
-	m := newTestModel()
-	m.view = ViewMain
-
-	// Execute.
-	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
-
-	// Assert.
-	rm := result.(model)
-	if rm.view != ViewHelp {
-		t.Errorf("expected ViewHelp, got %d", rm.view)
-	}
-	if rm.previousView != ViewMain {
-		t.Errorf("expected previousView ViewMain, got %d", rm.previousView)
-	}
-}
-
-
 func TestHandleHelpKeys_ShouldReturnToPreviousView_GivenEsc(t *testing.T) {
 	// Setup.
 	m := newTestModel()
@@ -261,23 +242,17 @@ func TestHandleHelpKeys_ShouldReturnToPreviousView_GivenEsc(t *testing.T) {
 	}
 }
 
-func TestHelpFooter_ShouldIncludeHelpOption_GivenNonInputView(t *testing.T) {
+func TestHelpFooter_ShouldIncludeF1Help_GivenAnyView(t *testing.T) {
 	// Setup/Execute.
-	footer := helpFooter(ViewMain)
+	mainFooter := helpFooter(ViewMain)
+	inputFooter := helpFooter(ViewNewTaskInput)
 
 	// Assert.
-	if !strings.Contains(footer, "[h]elp") {
-		t.Errorf("expected footer to contain '[h]elp', got '%s'", footer)
+	if !strings.Contains(mainFooter, "[F1] help") {
+		t.Errorf("expected footer to contain '[F1] help', got '%s'", mainFooter)
 	}
-}
-
-func TestHelpFooter_ShouldIncludeF1Help_GivenInputView(t *testing.T) {
-	// Setup/Execute.
-	footer := helpFooter(ViewNewTaskInput)
-
-	// Assert.
-	if !strings.Contains(footer, "[F1] help") {
-		t.Errorf("expected footer to contain '[F1] help', got '%s'", footer)
+	if !strings.Contains(inputFooter, "[F1] help") {
+		t.Errorf("expected footer to contain '[F1] help', got '%s'", inputFooter)
 	}
 }
 
@@ -296,10 +271,10 @@ func TestHandleKeyPress_ShouldShowHelp_GivenF1OnInputView(t *testing.T) {
 	}
 }
 
-func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnInputView(t *testing.T) {
+func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnAnyView(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewNewTaskInput
+	m.view = ViewMain
 
 	// Execute.
 	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
@@ -307,7 +282,7 @@ func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnInputView(t *testing.T) {
 	// Assert.
 	rm := result.(model)
 	if rm.view == ViewHelp {
-		t.Error("expected 'h' key NOT to open help on input view")
+		t.Error("expected 'h' key NOT to open help")
 	}
 }
 
@@ -331,7 +306,7 @@ func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.
 	footer := helpFooter(ViewSelectProject)
 
 	// Assert.
-	expected := "[↑/↓/j/k] select  [enter] choose  [esc] back  [h]elp"
+	expected := "[↑/↓/j/k] select  [enter] choose  [esc] back  [F1] help"
 	if footer != expected {
 		t.Errorf("expected '%s', got '%s'", expected, footer)
 	}

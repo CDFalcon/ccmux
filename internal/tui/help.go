@@ -13,17 +13,6 @@ type helpCommand struct {
 	HideFromFooter bool
 }
 
-var inputViews = map[ViewState]bool{
-	ViewNewTaskBranch:      true,
-	ViewNewTaskBranchInput: true,
-	ViewNewTaskInput:       true,
-	ViewInterveneInput:     true,
-	ViewAddProjectName:     true,
-	ViewAddProjectPath:     true,
-	ViewAddProjectFastWT:   false,
-	ViewEditProject:        true,
-}
-
 var viewTitles = map[ViewState]string{
 	ViewMain:                 "Main",
 	ViewSelectProject:        "Select Project",
@@ -148,10 +137,6 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 }
 
-func isInputView(v ViewState) bool {
-	return inputViews[v]
-}
-
 func helpFooter(view ViewState) string {
 	commands := viewHelpCommands[view]
 	parts := make([]string, 0, len(commands)+1)
@@ -160,11 +145,7 @@ func helpFooter(view ViewState) string {
 			parts = append(parts, cmd.FooterText)
 		}
 	}
-	if isInputView(view) {
-		parts = append(parts, "[F1] help")
-	} else {
-		parts = append(parts, "[h]elp")
-	}
+	parts = append(parts, "[F1] help")
 	return strings.Join(parts, "  ")
 }
 
@@ -189,10 +170,7 @@ func renderHelpView(m model) string {
 				maxWidth = w
 			}
 		}
-		helpEntry := "[h]elp"
-		if isInputView(m.previousView) {
-			helpEntry = "[F1] help"
-		}
+		helpEntry := "[F1] help"
 		if w := lipgloss.Width(helpEntry); w > maxWidth {
 			maxWidth = w
 		}
