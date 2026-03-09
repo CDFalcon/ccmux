@@ -1651,7 +1651,7 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes. Then check CI status with: gh pr checks %s -- If all checks passed, run: ccmux pr-ready %s -- If checks failed or are still pending, run: ccmux ci-wait %s"
+  "The GitHub PR at %s has received comments. Please review ALL comments — both conversation-level comments (gh pr view %s --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes. Then check CI status with: gh pr checks %s -- If all checks passed, run: ccmux pr-ready %s -- If checks failed or are still pending, run: ccmux ci-wait %s"
 
 ccmux agent-stopped "$AGENT_ID"
 `, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
