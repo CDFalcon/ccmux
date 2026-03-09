@@ -167,7 +167,7 @@ func renderMainView(m model) string {
 				extras += "  " + dimStyle.Render("base:"+p.DefaultBaseBranch)
 			}
 			if p.UseFastWorktrees {
-				extras += "  " + dimStyle.Render("fast-wt")
+				extras += "  " + dimStyle.Render("fast-worktrees")
 			}
 			b.WriteString(fmt.Sprintf("  - %s %s\n", projectStyle.Render(p.Name), extras))
 		}
@@ -477,7 +477,7 @@ func renderManageProjectsView(m model) string {
 			if selected.UseFastWorktrees {
 				fastWtStatus = "yes (proj)"
 			}
-			b.WriteString(fmt.Sprintf("  Fast wt:     %s\n", dimStyle.Render(fastWtStatus)))
+			b.WriteString(fmt.Sprintf("  Fast worktrees: %s\n", dimStyle.Render(fastWtStatus)))
 			b.WriteString("\n")
 		}
 	}

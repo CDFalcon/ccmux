@@ -721,8 +721,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	m.err = nil
-
 	// Global two-stage detach with Ctrl+C
 	if msg.String() == "ctrl+c" {
 		if m.ctrlCPressed {
