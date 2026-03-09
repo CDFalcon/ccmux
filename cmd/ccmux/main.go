@@ -57,6 +57,7 @@ Examples:
 		registerAgentCmd(),
 		queueAddCmd(),
 		prReadyCmd(),
+		ciWaitCmd(),
 		needHelpCmd(),
 		agentStoppedCmd(),
 		focusCmd(),
@@ -143,6 +144,7 @@ func runSession(sessionID string) error {
 				}
 			}
 		} else {
+			tmuxManager.ForwardEnv()
 			tmuxManager.SourceUserConfig()
 			tmuxManager.EnsureRemainOnExit()
 
@@ -222,7 +224,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.Path, baseBranch, sessionID, proj.UseFastWorktrees)
+		launcherScript, err := writeLauncherScript(agentID, task, proj.Path, baseBranch, sessionID, proj.UseFastWorktrees)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -239,11 +241,12 @@ func spawnCmd() *cobra.Command {
 				return err
 			}
 			a := &agent.Agent{
-				ID:         agentID,
-				Task:       task,
-				TmuxWindow: windowID,
-				BaseBranch: baseBranch,
-				Status:     agent.StatusSpawning,
+				ID:          agentID,
+				Task:        task,
+				ProjectName: projectName,
+				TmuxWindow:  windowID,
+				BaseBranch:  baseBranch,
+				Status:      agent.StatusSpawning,
 			}
 			if err := agentStore.Create(a); err != nil {
 				return err
@@ -274,30 +277,9 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, 
 
 	scriptPath := filepath.Join(launcherDir, agentID+".sh")
 
-	var worktreeBlock string
+	useFastWT := "0"
 	if useFastWorktrees {
-		worktreeBlock = `# Create fast worktree via proj
-WORKTREE_PATH="$REPO_PATH/ccmux-$AGENT_ID"
-BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$AGENT_ID"
-
-echo "→ Creating fast worktree at $WORKTREE_PATH..."
-cd "$REPO_PATH"
-proj new "ccmux-$AGENT_ID"
-cd "$WORKTREE_PATH"
-git checkout -b "$BRANCH_NAME" "$BASE_BRANCH" 2>/dev/null || git checkout -B "$BRANCH_NAME" "$BASE_BRANCH"
-echo "✓ Worktree created (fast)"
-echo ""`
-	} else {
-		worktreeBlock = `# Create worktree
-WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
-BRANCH_NAME="ccmux/$AGENT_ID"
-
-echo "→ Creating worktree at $WORKTREE_PATH..."
-cd "$REPO_PATH"
-git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
-cd "$WORKTREE_PATH"
-echo "✓ Worktree created"
-echo ""`
+		useFastWT = "1"
 	}
 
 	script := fmt.Sprintf(`#!/bin/bash
@@ -308,6 +290,7 @@ TASK=%q
 REPO_PATH="%s"
 BASE_BRANCH="%s"
 SESSION_ID="%s"
+USE_FAST_WT="%s"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -317,7 +300,40 @@ echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
 echo -e "${DIM}Task:${RESET} $TASK"
 echo ""
 
-%s
+if [ "$USE_FAST_WT" = "1" ]; then
+  # Fast worktree mode using proj (reflink copy)
+  PROJ_DIR="$REPO_PATH"
+  WORKTREE_PATH="$PROJ_DIR/ccmux-$AGENT_ID"
+  BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$AGENT_ID"
+
+  echo "→ Creating fast worktree at $WORKTREE_PATH..."
+  cd "$PROJ_DIR"
+  proj new "ccmux-$AGENT_ID"
+  cd "$WORKTREE_PATH"
+  echo "✓ Fast worktree created (proj)"
+  echo ""
+
+  FETCH_REF="${BASE_BRANCH#origin/}"
+  echo "→ Fetching latest $FETCH_REF from origin..."
+  git fetch origin "$FETCH_REF"
+  git reset --hard "$BASE_BRANCH"
+  echo "✓ Reset to latest $BASE_BRANCH"
+  echo ""
+else
+  # Standard git worktree mode
+  WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
+  BRANCH_NAME="ccmux/$AGENT_ID"
+
+  echo "→ Creating worktree at $WORKTREE_PATH..."
+  cd "$REPO_PATH"
+  FETCH_REF="${BASE_BRANCH#origin/}"
+  echo "→ Fetching latest $FETCH_REF from origin..."
+  git fetch origin "$FETCH_REF"
+  git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
+  cd "$WORKTREE_PATH"
+  echo "✓ Worktree created"
+  echo ""
+fi
 
 # Install hooks
 echo "→ Installing Claude Code hooks..."
@@ -329,6 +345,16 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
+cat > .claude/hooks/ask-user.sh << 'HOOKEOF'
+#!/bin/bash
+INPUT=$(cat)
+QUESTIONS=$(echo "$INPUT" | jq -r '.tool_input.questions[]?.question // empty' 2>/dev/null | head -5 | tr '\n' ' ')
+if [ -n "$QUESTIONS" ]; then
+  ccmux need-help "$QUESTIONS" 2>/dev/null || true
+fi
+HOOKEOF
+chmod +x .claude/hooks/ask-user.sh
+
 cat > .claude/settings.json << SETTINGSEOF
 {
   "hooks": {
@@ -338,6 +364,17 @@ cat > .claude/settings.json << SETTINGSEOF
           {
             "type": "command",
             "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/ask-user.sh"
           }
         ]
       }
@@ -372,15 +409,17 @@ echo ""
 cd "$WORKTREE_PATH"
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
+
+PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
-2. After creating the PR, run: ccmux pr-ready <pr-url>"
+1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+2. Check CI status with: gh pr checks <pr-url>
+3. If all checks passed, run: ccmux pr-ready <pr-url>
+4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -394,7 +433,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, worktreeBlock)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -512,6 +551,34 @@ func prReadyCmd() *cobra.Command {
 	}
 }
 
+func ciWaitCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "ci-wait <pr-url>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prURL := args[0]
+
+			agentID := os.Getenv("CCMUX_AGENT_ID")
+			if agentID == "" {
+				return fmt.Errorf("CCMUX_AGENT_ID environment variable not set")
+			}
+
+			sessionID := getCurrentSessionID()
+
+			agentStore, err := agent.NewStore(sessionID)
+			if err != nil {
+				return err
+			}
+
+			return agentStore.Update(agentID, func(a *agent.Agent) {
+				a.Status = agent.StatusWaitingCI
+				a.PRURL = prURL
+			})
+		},
+	}
+}
+
 func getPRTitle(prURL string) string {
 	// Extract PR number from URL
 	parts := strings.Split(prURL, "/")
@@ -580,6 +647,8 @@ func agentStoppedCmd() *cobra.Command {
 			switch a.Status {
 			case agent.StatusReady:
 				// Agent made a PR - it's already in queue, nothing to do
+			case agent.StatusWaitingCI:
+				// Agent is waiting for CI - timer will handle resume, nothing to do
 			case agent.StatusRunning:
 				// Agent stopped without making a PR - add to queue for review
 				agentStore.Update(agentID, func(ag *agent.Agent) {
@@ -661,24 +730,14 @@ func doCleanup(agentID, action string) error {
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
 
-	os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-	parentDir := filepath.Dir(a.WorktreePath)
-	if project.IsProjDirectory(parentDir) {
-		worktreeName := filepath.Base(a.WorktreePath)
-		rmCmd := exec.Command("proj", "rm", worktreeName)
-		rmCmd.Dir = parentDir
-		if output, err := rmCmd.CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove proj worktree: %s: %v\n", string(output), err)
+	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+	if err == nil {
+		wtManager := worktree.NewManager(repoRoot)
+		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+		if err := wtManager.Remove(a.WorktreePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
 		}
-	} else {
-		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-		if err == nil {
-			wtManager := worktree.NewManager(repoRoot)
-			if err := wtManager.Remove(a.WorktreePath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
-			}
-			wtManager.DeleteBranch(a.BranchName)
-		}
+		wtManager.DeleteBranch(a.BranchName)
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -688,13 +747,8 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-ci-check.sh"))
 	}
-
-	queueManager, err := queue.NewQueue(sessionID)
-	if err != nil {
-		return err
-	}
-	queueManager.RemoveByAgent(agentID)
 
 	agentStore.Delete(agentID)
 
@@ -727,25 +781,18 @@ func killSessionCmd() *cobra.Command {
 
 			agents, _ := agentStore.List()
 			for _, a := range agents {
-				os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-				parentDir := filepath.Dir(a.WorktreePath)
-				if project.IsProjDirectory(parentDir) {
-					worktreeName := filepath.Base(a.WorktreePath)
-					rmCmd := exec.Command("proj", "rm", worktreeName)
-					rmCmd.Dir = parentDir
-					rmCmd.CombinedOutput()
-				} else {
-					repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-					if err == nil {
-						wtManager := worktree.NewManager(repoRoot)
-						wtManager.Remove(a.WorktreePath)
-						wtManager.DeleteBranch(a.BranchName)
-					}
+				repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+				if err == nil {
+					wtManager := worktree.NewManager(repoRoot)
+					os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+					wtManager.Remove(a.WorktreePath)
+					wtManager.DeleteBranch(a.BranchName)
 				}
 				os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
 			}
 
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
@@ -796,7 +843,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toCleanup = append(toCleanup, a)
 
 		case (a.Status == agent.StatusRunning || a.Status == agent.StatusSpawning) && worktreeExists:
-			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, sessionID)
+			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID)
 			if err != nil {
 				logging.Log("recovery: failed to write recovery script for %s: %v", a.ID, err)
 				continue
@@ -811,6 +858,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			}
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
 
+		case a.Status == agent.StatusWaitingCI && worktreeExists:
+			scriptPath, err := writeCIWaitPlaceholderScript(a.ID, a.WorktreePath, a.Task)
+			if err != nil {
+				logging.Log("recovery: failed to write CI wait placeholder script for %s: %v", a.ID, err)
+				continue
+			}
+			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
+
 		default:
 			toRemove = append(toRemove, a.ID)
 		}
@@ -818,25 +873,18 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 
 	for _, a := range toCleanup {
 		logging.Log("recovery: cleaning up stale agent %s", a.ID)
-		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-		parentDir := filepath.Dir(a.WorktreePath)
-		if project.IsProjDirectory(parentDir) {
-			worktreeName := filepath.Base(a.WorktreePath)
-			rmCmd := exec.Command("proj", "rm", worktreeName)
-			rmCmd.Dir = parentDir
-			rmCmd.CombinedOutput()
-		} else {
-			repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-			if err == nil {
-				wtManager := worktree.NewManager(repoRoot)
-				wtManager.Remove(a.WorktreePath)
-				wtManager.DeleteBranch(a.BranchName)
-			}
+		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+		if err == nil {
+			wtManager := worktree.NewManager(repoRoot)
+			os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+			wtManager.Remove(a.WorktreePath)
+			wtManager.DeleteBranch(a.BranchName)
 		}
 		os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
 		agentStore.Delete(a.ID)
 	}
 
@@ -846,6 +894,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-ci-check.sh"))
 		agentStore.Delete(id)
 	}
 
@@ -904,7 +953,7 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func writeRecoveryScript(agentID, worktreePath, sessionID string) (string, error) {
+func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -922,6 +971,7 @@ set -e
 
 AGENT_ID="%s"
 WORKTREE_PATH="%s"
+BASE_BRANCH="%s"
 SESSION_ID="%s"
 
 BLUE="\033[38;5;63m"
@@ -944,6 +994,16 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
+cat > .claude/hooks/ask-user.sh << 'HOOKEOF'
+#!/bin/bash
+INPUT=$(cat)
+QUESTIONS=$(echo "$INPUT" | jq -r '.tool_input.questions[]?.question // empty' 2>/dev/null | head -5 | tr '\n' ' ')
+if [ -n "$QUESTIONS" ]; then
+  ccmux need-help "$QUESTIONS" 2>/dev/null || true
+fi
+HOOKEOF
+chmod +x .claude/hooks/ask-user.sh
+
 cat > .claude/settings.json << SETTINGSEOF
 {
   "hooks": {
@@ -956,26 +1016,39 @@ cat > .claude/settings.json << SETTINGSEOF
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/ask-user.sh"
+          }
+        ]
+      }
     ]
   }
 }
 SETTINGSEOF
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
 
 echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"
 echo ""
+
+PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --title \"...\" --body \"...\"
-2. After creating the PR, run: ccmux pr-ready <pr-url>"
+1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+2. Check CI status with: gh pr checks <pr-url>
+3. If all checks passed, run: ccmux pr-ready <pr-url>
+4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -988,7 +1061,7 @@ fi
 claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, sessionID)
+`, agentID, worktreePath, baseBranch, sessionID)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1027,6 +1100,50 @@ echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
 echo ""
 echo -e "${GREEN}● Waiting for PR review${RESET}"
 echo -e "${DIM}This agent has a PR up for review. Use the TUI to accept, comment, or reject.${RESET}"
+echo ""
+
+while true; do
+  sleep 3600
+done
+`, agentID, worktreePath, task)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func writeCIWaitPlaceholderScript(agentID, worktreePath, task string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+
+AGENT_ID="%s"
+WORKTREE_PATH="%s"
+TASK=%q
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+GREEN="\033[38;5;46m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Task:${RESET} $TASK"
+echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
+echo ""
+echo -e "${GREEN}⏳ Waiting on CI${RESET}"
+echo -e "${DIM}This agent is waiting for CI to complete. The orchestrator will resume it automatically.${RESET}"
 echo ""
 
 while true; do

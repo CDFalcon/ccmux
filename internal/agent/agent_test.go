@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setupTestStore(t *testing.T) (*Store, func()) {
@@ -112,6 +113,39 @@ func TestUpdate_ShouldModifyAgent_GivenValidID(t *testing.T) {
 	}
 	if agent.Task != "Updated task" {
 		t.Errorf("expected task 'Updated task', got '%s'", agent.Task)
+	}
+}
+
+func TestList_ShouldReturnAgentsSortedByCreatedAt_GivenMultipleAgents(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	now := time.Now()
+	data := &storeData{
+		Version: CurrentSchemaVersion,
+		Agents: map[string]*Agent{
+			"agent-c": {ID: "agent-c", Task: "Third", CreatedAt: now.Add(2 * time.Second)},
+			"agent-a": {ID: "agent-a", Task: "First", CreatedAt: now},
+			"agent-b": {ID: "agent-b", Task: "Second", CreatedAt: now.Add(1 * time.Second)},
+		},
+	}
+	store.save(data)
+
+	// Execute.
+	agents, err := store.List()
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(agents) != 3 {
+		t.Fatalf("expected 3 agents, got %d", len(agents))
+	}
+	expectedOrder := []string{"agent-a", "agent-b", "agent-c"}
+	for i, expected := range expectedOrder {
+		if agents[i].ID != expected {
+			t.Errorf("expected agents[%d].ID = %s, got %s", i, expected, agents[i].ID)
+		}
 	}
 }
 

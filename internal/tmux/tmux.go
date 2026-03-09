@@ -33,14 +33,31 @@ func (m *Manager) SessionExists() bool {
 }
 
 func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", m.sessionName, "-c", workingDir, "-x", DefaultSessionWidth, "-y", DefaultSessionHeight, command)
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", m.sessionName, "-c", workingDir, "-x", DefaultSessionWidth, "-y", DefaultSessionHeight)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create tmux session: %s: %w", string(output), err)
 	}
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
+	m.ForwardEnv()
 	m.SourceUserConfig()
+	if err := m.RespawnPane(m.sessionName+":0", command); err != nil {
+		return fmt.Errorf("failed to start command in session: %w", err)
+	}
 	return nil
+}
+
+// ForwardEnv sets environment variables from the current process into the tmux
+// session so they are available to commands spawned inside it. This is necessary
+// because the tmux server may have been started in a different environment.
+func (m *Manager) ForwardEnv() {
+	for _, entry := range os.Environ() {
+		if idx := strings.Index(entry, "="); idx > 0 {
+			key := entry[:idx]
+			val := entry[idx+1:]
+			exec.Command("tmux", "set-environment", "-t", m.sessionName, key, val).Run()
+		}
+	}
 }
 
 func (m *Manager) SourceUserConfig() error {
@@ -134,6 +151,19 @@ func (m *Manager) GetWindowActivity(windowID string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("failed to parse window activity timestamp: %w", err)
 	}
 	return time.Unix(epoch, 0), nil
+}
+
+func (m *Manager) GetPanePID(windowID string) (int, error) {
+	cmd := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_pid}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get pane pid: %s: %w", string(output), err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse pane pid: %w", err)
+	}
+	return pid, nil
 }
 
 func (m *Manager) RenameWindow(windowID, name string) error {

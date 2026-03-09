@@ -2,11 +2,11 @@
 package tui
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,8 +26,9 @@ import (
 )
 
 type model struct {
-	view          ViewState
-	agents        []*agent.Agent
+	view         ViewState
+	previousView ViewState
+	agents       []*agent.Agent
 	queueItems    []*queue.QueueItem
 	projects      []*project.Project
 	selectedIndex int
@@ -44,16 +45,19 @@ type model struct {
 	spawnBranch      string
 
 	// Project form inputs
-	projectForm    projectFormModel
-	newProjectName string
-	newProjectPath string
+	projectForm     projectFormModel
+	editProjectForm editProjectFormModel
+	newProjectName  string
+	newProjectPath  string
 
 	// Intervention input
 	interveneInput textarea.Model
 	interveneAgent *agent.Agent
 
 	// Project import state
-	projectImports map[string]*projImportProcess
+	projImporting    bool
+	projImportLines  *projImportBuffer
+	projImportCancel func()
 
 	// Update state
 	updateChecking    bool
@@ -69,8 +73,18 @@ type model struct {
 	ctrlCPressed bool
 
 	// Animation state
-	spinnerFrame  int
-	marqueeOffset int
+	spinnerFrame    int
+	marqueeOffset   int
+	prevWindowNames map[string]string
+
+	// CI wait tracking
+	ciResumeTriggered map[string]bool
+
+	// Resource monitoring
+	agentResources map[string]*AgentResources
+	totalMemKB     int64
+	clkTck         int64
+	prevCPUTicks   map[int]int64
 
 	// Download progress
 	downloadProgress *int64
@@ -81,6 +95,36 @@ type model struct {
 	projectStore *project.Store
 	tmuxManager  *tmux.Manager
 	sessionID    string
+}
+
+type projImportBuffer struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (b *projImportBuffer) addLine(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = append(b.lines, line)
+}
+
+func (b *projImportBuffer) lastN(n int) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.lines) <= n {
+		result := make([]string, len(b.lines))
+		copy(result, b.lines)
+		return result
+	}
+	result := make([]string, n)
+	copy(result, b.lines[len(b.lines)-n:])
+	return result
+}
+
+func (b *projImportBuffer) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = nil
 }
 
 type branchEntry struct {
@@ -94,6 +138,14 @@ type projectFormModel struct {
 	nameInput  textinput.Model
 	pathInput  textinput.Model
 	focusIndex int // 0=name, 1=path
+}
+
+type editProjectFormModel struct {
+	pathInput       textinput.Model
+	baseBranchInput textinput.Model
+	ciWaitInput     textinput.Model
+	fastWTInput     textinput.Model
+	focusIndex      int // 0=path, 1=baseBranch, 2=ciWait, 3=fastWT
 }
 
 func newProjectForm() projectFormModel {
@@ -114,15 +166,6 @@ func newProjectForm() projectFormModel {
 	}
 }
 
-func (m model) isProjectImporting(name string) bool {
-	proc, ok := m.projectImports[name]
-	if !ok {
-		return false
-	}
-	done, _ := proc.isDone()
-	return !done
-}
-
 func (pf *projectFormModel) blurAll() {
 	pf.nameInput.Blur()
 	pf.pathInput.Blur()
@@ -134,6 +177,74 @@ func (pf *projectFormModel) reset() {
 	pf.focusIndex = 0
 	pf.blurAll()
 	pf.nameInput.Focus()
+}
+
+func newEditProjectForm() editProjectFormModel {
+	pathInput := textinput.New()
+	pathInput.Placeholder = "/home/user/projects/my-project"
+	pathInput.Width = 50
+	pathInput.CharLimit = 200
+
+	baseBranchInput := textinput.New()
+	baseBranchInput.Placeholder = "origin/master"
+	baseBranchInput.Width = 50
+	baseBranchInput.CharLimit = 100
+
+	ciWaitInput := textinput.New()
+	ciWaitInput.Placeholder = "5"
+	ciWaitInput.Width = 10
+	ciWaitInput.CharLimit = 5
+
+	fastWTInput := textinput.New()
+	fastWTInput.Placeholder = "no"
+	fastWTInput.Width = 10
+	fastWTInput.CharLimit = 5
+
+	return editProjectFormModel{
+		pathInput:       pathInput,
+		baseBranchInput: baseBranchInput,
+		ciWaitInput:     ciWaitInput,
+		fastWTInput:     fastWTInput,
+		focusIndex:      0,
+	}
+}
+
+func (ef *editProjectFormModel) blurAll() {
+	ef.pathInput.Blur()
+	ef.baseBranchInput.Blur()
+	ef.ciWaitInput.Blur()
+	ef.fastWTInput.Blur()
+}
+
+func (ef *editProjectFormModel) focusCurrent() {
+	ef.blurAll()
+	switch ef.focusIndex {
+	case 0:
+		ef.pathInput.Focus()
+	case 1:
+		ef.baseBranchInput.Focus()
+	case 2:
+		ef.ciWaitInput.Focus()
+	case 3:
+		ef.fastWTInput.Focus()
+	}
+}
+
+func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
+	ef.pathInput.SetValue(p.Path)
+	ef.baseBranchInput.SetValue(p.DefaultBaseBranch)
+	if p.CIWaitMinutes > 0 {
+		ef.ciWaitInput.SetValue(fmt.Sprintf("%d", p.CIWaitMinutes))
+	} else {
+		ef.ciWaitInput.SetValue("")
+	}
+	if p.UseFastWorktrees {
+		ef.fastWTInput.SetValue("yes")
+	} else {
+		ef.fastWTInput.SetValue("")
+	}
+	ef.focusIndex = 0
+	ef.focusCurrent()
 }
 
 func findProjectPath(name string) string {
@@ -183,7 +294,11 @@ func getLocalBranches(repoPath string) []string {
 
 func (m model) branchEntries() []branchEntry {
 	var entries []branchEntry
-	entries = append(entries, branchEntry{tag: "(default)", name: "origin/master", value: "origin/master"})
+	defaultBranch := "origin/master"
+	if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+		defaultBranch = m.selectedProj.DefaultBaseBranch
+	}
+	entries = append(entries, branchEntry{tag: "(default)", name: defaultBranch, value: defaultBranch})
 	entries = append(entries, branchEntry{name: "Manually specify branch...", isManual: true})
 
 	if m.branchFilter.Value() != "" {
@@ -235,15 +350,18 @@ func (m *model) fuzzyFilterBranches() {
 type tickMsg time.Time
 type spinnerTickMsg time.Time
 type refreshMsg struct {
-	agents     []*agent.Agent
-	queueItems []*queue.QueueItem
-	projects   []*project.Project
+	agents       []*agent.Agent
+	queueItems   []*queue.QueueItem
+	projects     []*project.Project
+	resources    map[string]*AgentResources
+	prevCPUTicks map[int]int64
 }
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
 type clearMessageMsg struct{}
 type clearCtrlCMsg struct{}
 type spawnStartedMsg struct{}
+type updateCheckTickMsg struct{}
 type updateCheckResultMsg struct {
 	version   string
 	available bool
@@ -256,73 +374,24 @@ type changelogFetchedMsg struct {
 	entries []updater.ChangelogEntry
 	err     error
 }
-type projImportDoneMsg struct {
-	projectName string
-	err         error
-}
 
-type projImportProcess struct {
-	mu    sync.Mutex
-	lines []string
-	done  bool
-	err   error
-}
-
-func (p *projImportProcess) appendLine(line string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.lines = append(p.lines, line)
-}
-
-func (p *projImportProcess) getLines() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := make([]string, len(p.lines))
-	copy(result, p.lines)
-	return result
-}
-
-func (p *projImportProcess) finish(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.done = true
-	p.err = err
-}
-
-func (p *projImportProcess) isDone() (bool, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.done, p.err
-}
-
-func newAutoGrowTextarea(placeholder string, width int) textarea.Model {
+func newFixedTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = placeholder
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.EndOfBufferCharacter = ' '
 	ta.SetWidth(width)
-	ta.SetHeight(1)
+	ta.SetHeight(5)
 	ta.CharLimit = 0
-	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+	ta.KeyMap.InsertNewline.SetEnabled(false)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	return ta
 }
 
-func autoResizeTextarea(ta *textarea.Model, maxHeight int) {
-	lines := ta.LineCount()
-	if lines < 1 {
-		lines = 1
-	}
-	if lines > maxHeight {
-		lines = maxHeight
-	}
-	ta.SetHeight(lines)
-}
-
 func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
-	taskInput := newAutoGrowTextarea("Describe the task...", 60)
+	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
 	branchInput.Width = 50
@@ -333,24 +402,30 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	branchFilter.Width = 50
 	branchFilter.CharLimit = 100
 
-	interveneInput := newAutoGrowTextarea("Type message to send to agent...", 60)
+	interveneInput := newFixedTextarea("Type message to send to agent...", 60)
 
 	progress := new(int64)
 
 	return model{
-		view:             ViewMain,
-		taskInput:        taskInput,
-		branchInput:      branchInput,
-		branchFilter:     branchFilter,
-		interveneInput:   interveneInput,
-		projectForm:      newProjectForm(),
-		projectImports:   make(map[string]*projImportProcess),
-		downloadProgress: progress,
-		agentStore:       agentStore,
-		queueManager:     queueManager,
-		projectStore:     projectStore,
-		tmuxManager:      tmuxManager,
-		sessionID:        sessionID,
+		view:              ViewMain,
+		taskInput:         taskInput,
+		branchInput:       branchInput,
+		branchFilter:      branchFilter,
+		interveneInput:    interveneInput,
+		projectForm:       newProjectForm(),
+		editProjectForm:   newEditProjectForm(),
+		ciResumeTriggered: make(map[string]bool),
+		prevWindowNames:   make(map[string]string),
+		totalMemKB:        getTotalMemoryKB(),
+		clkTck:            getClockTicks(),
+		prevCPUTicks:      make(map[int]int64),
+		downloadProgress:  progress,
+		projImportLines:   &projImportBuffer{},
+		agentStore:        agentStore,
+		queueManager:      queueManager,
+		projectStore:      projectStore,
+		tmuxManager:       tmuxManager,
+		sessionID:         sessionID,
 	}
 }
 
@@ -360,6 +435,7 @@ func (m model) Init() tea.Cmd {
 		spinnerTickCmd(),
 		m.refreshCmd(),
 		checkForUpdateCmd(),
+		updateCheckTickCmd(),
 	)
 }
 
@@ -444,12 +520,22 @@ func (m model) refreshCmd() tea.Cmd {
 			queueItems, _ = m.queueManager.List()
 		}
 
-		return refreshMsg{agents: agents, queueItems: queueItems, projects: projects}
+		resources, newCPUTicks := queryAllAgentResources(
+			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks,
+		)
+
+		return refreshMsg{
+			agents:       agents,
+			queueItems:   queueItems,
+			projects:     projects,
+			resources:    resources,
+			prevCPUTicks: newCPUTicks,
+		}
 	}
 }
 
 func clearMessageCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 		return clearMessageMsg{}
 	})
 }
@@ -465,6 +551,12 @@ func checkForUpdateCmd() tea.Cmd {
 		latest, available, err := updater.CheckForUpdate()
 		return updateCheckResultMsg{version: latest, available: available, err: err}
 	}
+}
+
+func updateCheckTickCmd() tea.Cmd {
+	return tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {
+		return updateCheckTickMsg{}
+	})
 }
 
 func fetchChangelogCmd(currentVersion, latestVersion string) tea.Cmd {
@@ -491,18 +583,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tickCmd(), m.refreshCmd())
 
 	case spinnerTickMsg:
-		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading
+		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading || m.projImporting
 		if !shouldAnimate {
 			for _, a := range m.agents {
-				if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp {
-					shouldAnimate = true
-					break
-				}
-			}
-		}
-		if !shouldAnimate {
-			for _, proc := range m.projectImports {
-				if done, _ := proc.isDone(); !done {
+				if a.Status == agent.StatusSpawning || a.Status == agent.StatusRunning || a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusWaitingCI {
 					shouldAnimate = true
 					break
 				}
@@ -519,10 +603,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agents = msg.agents
 		m.queueItems = msg.queueItems
 		m.projects = msg.projects
+		m.agentResources = msg.resources
+		m.prevCPUTicks = msg.prevCPUTicks
+
+		projectMap := make(map[string]*project.Project)
+		for _, p := range m.projects {
+			projectMap[p.Name] = p
+		}
+
+		activeWaiting := make(map[string]bool)
+		var cmds []tea.Cmd
+		for _, a := range m.agents {
+			if a.Status == agent.StatusWaitingCI {
+				activeWaiting[a.ID] = true
+				waitMinutes := project.DefaultCIWaitMinutes
+				if p, ok := projectMap[a.ProjectName]; ok {
+					waitMinutes = p.EffectiveCIWaitMinutes()
+				}
+				if time.Since(a.UpdatedAt) >= time.Duration(waitMinutes)*time.Minute && !m.ciResumeTriggered[a.ID] {
+					m.ciResumeTriggered[a.ID] = true
+					cmds = append(cmds, m.resumeCICheckCmd(a))
+				}
+			}
+		}
+		for id := range m.ciResumeTriggered {
+			if !activeWaiting[id] {
+				delete(m.ciResumeTriggered, id)
+			}
+		}
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
+		}
 		return m, nil
 
 	case spawnStartedMsg:
 		return m, nil
+
+	case updateCheckTickMsg:
+		if !m.updateChecking && !m.updateDownloading {
+			m.updateChecking = true
+			return m, tea.Batch(checkForUpdateCmd(), updateCheckTickCmd())
+		}
+		return m, updateCheckTickCmd()
 
 	case updateCheckResultMsg:
 		m.updateChecking = false
@@ -533,8 +655,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateVersion = msg.version
 		m.updateAvailable = msg.available
 		if msg.available {
+			m.updateDownloading = true
+			atomic.StoreInt64(m.downloadProgress, 0)
 			m.changelogLoading = true
-			return m, fetchChangelogCmd(version.Version, msg.version)
+			return m, tea.Batch(
+				fetchChangelogCmd(version.Version, msg.version),
+				downloadUpdateCmd(msg.version, m.downloadProgress),
+			)
 		}
 		return m, nil
 
@@ -554,19 +681,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateComplete = true
 		return m, nil
 
-	case projImportDoneMsg:
-		if msg.err != nil {
-			m.err = fmt.Errorf("proj import failed for '%s': %s", msg.projectName, msg.err)
-			return m, clearMessageCmd()
-		}
-		return m, m.refreshCmd()
-
 	case errMsg:
 		m.err = msg.err
+		if m.projImporting {
+			m.projImporting = false
+			m.projImportLines.reset()
+			m.projImportCancel = nil
+			m.view = ViewManageProjects
+		}
 		return m, tea.Batch(clearMessageCmd(), m.refreshCmd())
 
 	case successMsg:
 		m.err = nil
+		if m.projImporting {
+			m.projImporting = false
+			m.projImportLines.reset()
+			m.projImportCancel = nil
+			m.view = ViewManageProjects
+		}
 		return m, m.refreshCmd()
 
 	case clearMessageMsg:
@@ -595,7 +727,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.view == ViewNewTaskInput {
 		var cmd tea.Cmd
 		m.taskInput, cmd = m.taskInput.Update(msg)
-		autoResizeTextarea(&m.taskInput, 5)
 		cmds = append(cmds, cmd)
 	}
 
@@ -613,10 +744,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
+	if m.view == ViewEditProject {
+		var cmd tea.Cmd
+		switch m.editProjectForm.focusIndex {
+		case 0:
+			m.editProjectForm.pathInput, cmd = m.editProjectForm.pathInput.Update(msg)
+		case 1:
+			m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
+		case 2:
+			m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
+		case 3:
+			m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+		}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	if m.view == ViewInterveneInput {
 		var cmd tea.Cmd
 		m.interveneInput, cmd = m.interveneInput.Update(msg)
-		autoResizeTextarea(&m.interveneInput, 5)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -641,6 +787,14 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Any other key clears the Ctrl+C state
 	if m.ctrlCPressed {
 		m.ctrlCPressed = false
+	}
+
+	if m.view != ViewHelp {
+		if msg.Type == tea.KeyF1 {
+			m.previousView = m.view
+			m.view = ViewHelp
+			return m, nil
+		}
 	}
 
 	switch m.view {
@@ -672,16 +826,20 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddProjectPathKeys(msg)
 	case ViewAddProjectFastWT:
 		return m.handleAddProjectFastWTKeys(msg)
-	case ViewProjImportOutput:
-		return m.handleProjImportOutputKeys(msg)
+	case ViewProjImporting:
+		return m.handleProjImportingKeys(msg)
+	case ViewEditProject:
+		return m.handleEditProjectKeys(msg)
 	case ViewConfirmRemoveProject:
 		return m.handleConfirmRemoveProjectKeys(msg)
 	case ViewConfirmKillSession:
 		return m.handleConfirmKillSessionKeys(msg)
-	case ViewJumpToAgent:
-		return m.handleJumpToAgentKeys(msg)
+	case ViewAgentInfo:
+		return m.handleAgentInfoKeys(msg)
 	case ViewUpdate:
 		return m.handleUpdateKeys(msg)
+	case ViewHelp:
+		return m.handleHelpKeys(msg)
 	}
 	return m, nil
 }
@@ -716,8 +874,8 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k":
 		m.view = ViewConfirmKill
 		m.selectedIndex = 0
-	case "j":
-		m.view = ViewJumpToAgent
+	case "i":
+		m.view = ViewAgentInfo
 		m.selectedIndex = 0
 	case "K":
 		m.view = ViewConfirmKillSession
@@ -756,14 +914,8 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
-			selected := m.projects[m.selectedIndex]
-			if m.isProjectImporting(selected.Name) {
-				m.err = fmt.Errorf("project '%s' is still importing", selected.Name)
-				return m, clearMessageCmd()
-			}
-			m.selectedProj = selected
-			repoPath := project.EffectiveRepoPath(selected)
-			m.branchOptions = getLocalBranches(repoPath)
+			m.selectedProj = m.projects[m.selectedIndex]
+			m.branchOptions = getLocalBranches(m.selectedProj.Path)
 			m.branchFilter.SetValue("")
 			m.filteredBranches = nil
 			m.view = ViewNewTaskBranch
@@ -812,7 +964,7 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.spawnBranch = entry.value
 			m.view = ViewNewTaskInput
 			m.taskInput.SetValue("")
-			m.taskInput.SetHeight(1)
+			m.taskInput.SetHeight(5)
 			m.selectedIndex = 0
 			m.branchFilter.SetValue("")
 			m.filteredBranches = nil
@@ -839,11 +991,14 @@ func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		branch := m.branchInput.Value()
 		if branch == "" {
 			branch = "origin/master"
+			if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+				branch = m.selectedProj.DefaultBaseBranch
+			}
 		}
 		m.spawnBranch = branch
 		m.view = ViewNewTaskInput
 		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
+		m.taskInput.SetHeight(5)
 		m.selectedIndex = 0
 		cmd := m.taskInput.Focus()
 		return m, cmd
@@ -860,7 +1015,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewNewTaskBranch
 		m.selectedIndex = 0
 		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
 		m.taskInput.Blur()
 		return m, nil
 	case "enter":
@@ -872,7 +1026,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := m.spawnBranch
 		m.view = ViewMain
 		m.taskInput.SetValue("")
-		m.taskInput.SetHeight(1)
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		return m, m.spawnAgentCmd(task, proj, branch)
@@ -880,7 +1033,6 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.taskInput, cmd = m.taskInput.Update(msg)
-	autoResizeTextarea(&m.taskInput, 5)
 	return m, cmd
 }
 
@@ -1025,8 +1177,6 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex < len(m.projects)-1 {
 			m.selectedIndex++
 		}
-	case "enter":
-		return m.handleManageProjectsEnter()
 	case "a":
 		m.view = ViewAddProjectName
 		m.projectForm.reset()
@@ -1034,6 +1184,13 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newProjectPath = ""
 		m.projectForm.nameInput.Focus()
 		return m, textinput.Blink
+	case "enter":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			m.selectedProj = m.projects[m.selectedIndex]
+			m.view = ViewEditProject
+			m.editProjectForm.loadFromProject(m.selectedProj)
+			return m, textinput.Blink
+		}
 	case "d":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
 			m.selectedProj = m.projects[m.selectedIndex]
@@ -1041,6 +1198,69 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.editProjectForm.blurAll()
+		m.view = ViewManageProjects
+		m.selectedProj = nil
+		return m, nil
+	case "tab":
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 4
+		m.editProjectForm.focusCurrent()
+		return m, textinput.Blink
+	case "shift+tab":
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 3) % 4
+		m.editProjectForm.focusCurrent()
+		return m, textinput.Blink
+	case "enter":
+		if m.selectedProj == nil {
+			return m, nil
+		}
+		path := m.editProjectForm.pathInput.Value()
+		baseBranch := m.editProjectForm.baseBranchInput.Value()
+		ciWaitStr := m.editProjectForm.ciWaitInput.Value()
+		ciWait := 0
+		if ciWaitStr != "" {
+			parsed, err := strconv.Atoi(ciWaitStr)
+			if err != nil || parsed < 0 {
+				m.err = fmt.Errorf("CI wait must be a positive number")
+				return m, clearMessageCmd()
+			}
+			ciWait = parsed
+		}
+		fastWTStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.fastWTInput.Value()))
+		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
+		projName := m.selectedProj.Name
+		m.editProjectForm.blurAll()
+		m.selectedProj = nil
+		if useFastWT {
+			m.view = ViewProjImporting
+			m.projImporting = true
+			m.projImportLines.reset()
+			m.newProjectName = projName
+			m.newProjectPath = path
+		} else {
+			m.view = ViewManageProjects
+			m.projImporting = false
+		}
+		return m, m.updateProjectCmd(projName, path, baseBranch, ciWait, useFastWT)
+	}
+
+	var cmd tea.Cmd
+	switch m.editProjectForm.focusIndex {
+	case 0:
+		m.editProjectForm.pathInput, cmd = m.editProjectForm.pathInput.Update(msg)
+	case 1:
+		m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
+	case 2:
+		m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
+	case 3:
+		m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m model) handleAddProjectNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1084,6 +1304,14 @@ func (m model) handleAddProjectPathKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.newProjectPath = path
+		if project.IsProjDirectory(path) && project.IsProjInstalled() {
+			m.view = ViewManageProjects
+			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
+		}
+		if !project.IsProjInstalled() {
+			m.view = ViewManageProjects
+			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
+		}
 		m.view = ViewAddProjectFastWT
 		return m, nil
 	}
@@ -1099,50 +1327,28 @@ func (m model) handleAddProjectFastWTKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewAddProjectPath
 		m.projectForm.pathInput.Focus()
 		return m, textinput.Blink
+	case "y":
+		m.view = ViewProjImporting
+		m.projImporting = true
+		m.projImportLines.reset()
+		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 	case "n":
 		m.view = ViewManageProjects
-		m.selectedIndex = 0
 		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
-	case "y":
-		if _, err := exec.LookPath("proj"); err != nil {
-			m.err = fmt.Errorf("'proj' not found in PATH. Install proj first: https://github.com/Applied-Shared/proj")
-			m.view = ViewManageProjects
-			m.selectedIndex = 0
-			return m, clearMessageCmd()
-		}
-		needsImport := !project.IsProjDirectory(m.newProjectPath)
-		m.view = ViewManageProjects
-		m.selectedIndex = 0
-		if needsImport {
-			proc := &projImportProcess{}
-			m.projectImports[m.newProjectName] = proc
-			return m, tea.Batch(
-				m.addProjectCmd(m.newProjectName, m.newProjectPath, true),
-				m.runProjImportCmd(m.newProjectName, m.newProjectPath, proc),
-			)
-		}
-		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 	}
 	return m, nil
 }
 
-func (m model) handleProjImportOutputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleProjImportingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.selectedProj = nil
-		m.view = ViewManageProjects
-	}
-	return m, nil
-}
-
-func (m model) handleManageProjectsEnter() (tea.Model, tea.Cmd) {
-	if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
-		proj := m.projects[m.selectedIndex]
-		if _, ok := m.projectImports[proj.Name]; ok {
-			m.selectedProj = proj
-			m.view = ViewProjImportOutput
-			return m, nil
+		if m.projImportCancel != nil {
+			m.projImportCancel()
 		}
+		m.projImporting = false
+		m.projImportLines.reset()
+		m.projImportCancel = nil
+		m.view = ViewManageProjects
 	}
 	return m, nil
 }
@@ -1174,7 +1380,7 @@ func (m model) handleConfirmKillSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
-func (m model) handleJumpToAgentKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleAgentInfoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewMain
@@ -1182,11 +1388,11 @@ func (m model) handleJumpToAgentKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
 		}
-	case "down", "j":
+	case "down":
 		if m.selectedIndex < len(m.agents)-1 {
 			m.selectedIndex++
 		}
-	case "enter":
+	case "j":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
 			selected := m.agents[m.selectedIndex]
 			m.view = ViewMain
@@ -1203,16 +1409,8 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc":
-		m.view = ViewMain
-	case "n":
 		if !m.updateComplete {
 			m.view = ViewMain
-		}
-	case "y":
-		if m.updateAvailable && !m.updateComplete && m.updateError == "" {
-			m.updateDownloading = true
-			atomic.StoreInt64(m.downloadProgress, 0)
-			return m, downloadUpdateCmd(m.updateVersion, m.downloadProgress)
 		}
 	case "r":
 		if m.updateComplete {
@@ -1237,7 +1435,6 @@ func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewIntervene
 		m.interveneAgent = nil
 		m.interveneInput.SetValue("")
-		m.interveneInput.SetHeight(1)
 		return m, nil
 	case "enter":
 		text := m.interveneInput.Value()
@@ -1246,14 +1443,20 @@ func (m model) handleInterveneInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a := m.interveneAgent
 		m.interveneInput.SetValue("")
-		m.interveneInput.SetHeight(1)
 		return m, m.sendKeysToAgentCmd(a, text)
 	}
 
 	var cmd tea.Cmd
 	m.interveneInput, cmd = m.interveneInput.Update(msg)
-	autoResizeTextarea(&m.interveneInput, 5)
 	return m, cmd
+}
+
+func (m model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = m.previousView
+	}
+	return m, nil
 }
 
 func (m model) updateWindowNames() {
@@ -1274,10 +1477,15 @@ func (m model) updateWindowNames() {
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusReady:
 			name = "● " + short
+		case agent.StatusWaitingCI:
+			name = "⏳ " + short
 		default:
 			name = short
 		}
-		m.tmuxManager.RenameWindow(a.TmuxWindow, name)
+		if m.prevWindowNames[a.TmuxWindow] != name {
+			m.prevWindowNames[a.TmuxWindow] = name
+			m.tmuxManager.RenameWindow(a.TmuxWindow, name)
+		}
 	}
 }
 
@@ -1303,17 +1511,50 @@ func (m model) detachCmd() tea.Cmd {
 	}
 }
 
-func (m model) addProjectCmd(name, path string, useFastWorktrees bool) tea.Cmd {
+func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
+	buf := m.projImportLines
 	return func() tea.Msg {
+		if useFastWT && !project.IsProjDirectory(path) {
+			projDir, err := project.ProjImport(path, buf.addLine)
+			if err != nil {
+				return errMsg{err}
+			}
+			path = projDir
+		}
 		p := &project.Project{
 			Name:             name,
 			Path:             path,
-			UseFastWorktrees: useFastWorktrees,
+			UseFastWorktrees: useFastWT,
 		}
 		if err := m.projectStore.Add(p); err != nil {
 			return errMsg{err}
 		}
 		return successMsg{fmt.Sprintf("Added project '%s'", name)}
+	}
+}
+
+func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool) tea.Cmd {
+	buf := m.projImportLines
+	return func() tea.Msg {
+		if useFastWT && path != "" && !project.IsProjDirectory(path) {
+			projDir, err := project.ProjImport(path, buf.addLine)
+			if err != nil {
+				return errMsg{err}
+			}
+			path = projDir
+		}
+		err := m.projectStore.Update(name, func(p *project.Project) {
+			if path != "" {
+				p.Path = path
+			}
+			p.DefaultBaseBranch = baseBranch
+			p.CIWaitMinutes = ciWait
+			p.UseFastWorktrees = useFastWT
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		return successMsg{fmt.Sprintf("Updated project '%s'", name)}
 	}
 }
 
@@ -1323,32 +1564,6 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 			return errMsg{err}
 		}
 		return successMsg{fmt.Sprintf("Removed project '%s'", name)}
-	}
-}
-
-func (m model) runProjImportCmd(projectName, repoPath string, proc *projImportProcess) tea.Cmd {
-	return func() tea.Msg {
-		cmd := project.ProjImportCmd(repoPath)
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			proc.finish(err)
-			return projImportDoneMsg{projectName: projectName, err: err}
-		}
-		cmd.Stderr = cmd.Stdout
-
-		if err := cmd.Start(); err != nil {
-			proc.finish(err)
-			return projImportDoneMsg{projectName: projectName, err: err}
-		}
-
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			proc.appendLine(scanner.Text())
-		}
-
-		err = cmd.Wait()
-		proc.finish(err)
-		return projImportDoneMsg{projectName: projectName, err: err}
 	}
 }
 
@@ -1401,6 +1616,7 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 	m.agentStore.Update(agentID, func(ag *agent.Agent) {
 		ag.Status = agent.StatusCleaningUp
 	})
+	m.queueManager.RemoveByAgent(agentID)
 	return func() tea.Msg {
 		go func() {
 			exePath, _ := os.Executable()
@@ -1414,6 +1630,8 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	return func() tea.Msg {
+		m.queueManager.RemoveByAgent(agentID)
+
 		go func() {
 			exePath, _ := os.Executable()
 			exec.Command(exePath, "cleanup", agentID).Run()
@@ -1460,6 +1678,8 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	agentID := a.ID
 	return func() tea.Msg {
+		m.queueManager.RemoveByAgent(agentID)
+
 		closeCmd := exec.Command("gh", "pr", "close", prURL, "--delete-branch")
 		if output, err := closeCmd.CombinedOutput(); err != nil {
 			return errMsg{fmt.Errorf("close PR failed: %s: %w", string(output), err)}
@@ -1503,15 +1723,13 @@ echo -e "${DIM}Reviewing PR comments...${RESET}"
 echo ""
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
 
-claude --continue --permission-mode dontAsk \
-  "The GitHub PR at %s has received review comments. Please review the comments with: gh pr view %s --comments, then address all the feedback. Commit and push your changes, and then run: ccmux pr-ready %s"
+claude --continue --dangerously-skip-permissions \
+  "The GitHub PR at %s has received comments. Please review ALL comments — both conversation-level comments (gh pr view %s --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes. Then check CI status with: gh pr checks %s -- If all checks passed, run: ccmux pr-ready %s -- If checks failed or are still pending, run: ccmux ci-wait %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1520,11 +1738,85 @@ ccmux agent-stopped "$AGENT_ID"
 	return scriptPath, nil
 }
 
+func writeCICheckScript(agentID, worktreePath, prURL string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-ci-check.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID="%s"
+
+cd "%s"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Checking CI status...${RESET}"
+echo ""
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+unset CLAUDECODE
+
+claude --continue --dangerously-skip-permissions \
+  "Check the CI status for the PR at %s. Run: gh pr checks %s -- Then: If ALL checks passed, run: ccmux pr-ready %s -- If any checks FAILED, investigate and fix the failures, commit and push, then run: ccmux ci-wait %s -- If checks are still pending/running, run: ccmux ci-wait %s"
+
+ccmux agent-stopped "$AGENT_ID"
+`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func (m model) resumeCICheckCmd(a *agent.Agent) tea.Cmd {
+	agentID := a.ID
+	worktreePath := a.WorktreePath
+	tmuxWindow := a.TmuxWindow
+	prURL := a.PRURL
+	return func() tea.Msg {
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusRunning
+		})
+
+		scriptPath, err := writeCICheckScript(agentID, worktreePath, prURL)
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to write CI check script: %w", err)}
+		}
+
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create CI check window: %w", err)}
+		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
+
+		return successMsg{fmt.Sprintf("Agent %s resumed to check CI", agentID)}
+	}
+}
+
 func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	m.agentStore.Update(agentID, func(ag *agent.Agent) {
 		ag.Status = agent.StatusKilling
 	})
+	m.queueManager.RemoveByAgent(agentID)
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -1570,16 +1862,20 @@ func (m model) View() string {
 		content = renderAddProjectPathView(m)
 	case ViewAddProjectFastWT:
 		content = renderAddProjectFastWTView(m)
-	case ViewProjImportOutput:
-		content = renderProjImportOutputView(m)
+	case ViewProjImporting:
+		content = renderProjImportingView(m)
+	case ViewEditProject:
+		content = renderEditProjectView(m)
 	case ViewConfirmRemoveProject:
 		content = renderConfirmRemoveProjectView(m)
 	case ViewConfirmKillSession:
 		content = renderConfirmKillSessionView(m)
-	case ViewJumpToAgent:
-		content = renderJumpToAgentView(m)
+	case ViewAgentInfo:
+		content = renderAgentInfoView(m)
 	case ViewUpdate:
 		content = renderUpdateView(m)
+	case ViewHelp:
+		content = renderHelpView(m)
 	default:
 		content = renderMainView(m)
 	}

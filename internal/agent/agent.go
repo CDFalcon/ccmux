@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -130,6 +131,10 @@ func (s *Store) List() ([]*Agent, error) {
 	for _, agent := range data.Agents {
 		agents = append(agents, agent)
 	}
+
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].CreatedAt.Before(agents[j].CreatedAt)
+	})
 
 	return agents, nil
 }

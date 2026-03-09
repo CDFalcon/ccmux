@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
@@ -30,12 +29,14 @@ const (
 	ViewManageProjects
 	ViewAddProjectName
 	ViewAddProjectPath
-	ViewConfirmRemoveProject
-	ViewConfirmKillSession
-	ViewJumpToAgent
-	ViewUpdate
 	ViewAddProjectFastWT
-	ViewProjImportOutput
+	ViewConfirmRemoveProject
+	ViewEditProject
+	ViewConfirmKillSession
+	ViewAgentInfo
+	ViewUpdate
+	ViewProjImporting
+	ViewHelp
 )
 
 const (
@@ -96,33 +97,41 @@ func renderMainView(m model) string {
 		b.WriteString("\n")
 	} else {
 		for _, a := range m.agents {
+			statsStr := formatAgentOneLiner(m.agentResources[a.ID])
+
 			if a.Status == agent.StatusCleaningUp {
 				spin := styledSpinner(m.spinnerFrame, agentCleaningUpStyle)
 				status := agentCleaningUpStyle.Render("cleaning up")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusKilling {
 				spin := styledSpinner(m.spinnerFrame, agentKillingStyle)
 				status := agentKillingStyle.Render("killing")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusSpawning {
 				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
 				status := agentSpawningStyle.Render("spawning")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusRunning {
 				spin := styledSpinner(m.spinnerFrame, agentRunningStyle)
 				status := agentRunningStyle.Render("running")
-				line := fmt.Sprintf("  %s %s: %s [%s]", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status)
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				b.WriteString(line)
+				b.WriteString("\n")
+			} else if a.Status == agent.StatusWaitingCI {
+				icon := agentWaitingCIStyle.Render("⏳")
+				status := agentWaitingCIStyle.Render("waiting on CI")
+				line := fmt.Sprintf("  %s %s: %s [%s]%s", icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else {
 				status := renderAgentStatus(a.Status)
-				line := fmt.Sprintf("  - %s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), status)
+				line := fmt.Sprintf("  - %s: %s [%s]%s", a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			}
@@ -154,17 +163,14 @@ func renderMainView(m model) string {
 		b.WriteString("\n")
 	} else {
 		for _, p := range m.projects {
-			if m.isProjectImporting(p.Name) {
-				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
-				status := agentSpawningStyle.Render("importing")
-				b.WriteString(fmt.Sprintf("  %s %s %s [%s]\n", spin, projectStyle.Render(p.Name), dimStyle.Render(p.Path), status))
-			} else {
-				fastWTLabel := ""
-				if p.UseFastWorktrees {
-					fastWTLabel = dimStyle.Render(" [fast wt]")
-				}
-				b.WriteString(fmt.Sprintf("  - %s %s%s\n", projectStyle.Render(p.Name), dimStyle.Render(p.Path), fastWTLabel))
+			extras := dimStyle.Render(p.Path)
+			if p.DefaultBaseBranch != "" {
+				extras += "  " + dimStyle.Render("base:"+p.DefaultBaseBranch)
 			}
+			if p.UseFastWorktrees {
+				extras += "  " + dimStyle.Render("fast-worktrees")
+			}
+			b.WriteString(fmt.Sprintf("  - %s %s\n", projectStyle.Render(p.Name), extras))
 		}
 	}
 	b.WriteString("\n")
@@ -174,7 +180,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[q]uick action  [n]ew task  [j]ump to agent  [k]ill agent  [p]rojects  [K]ill session"
+	help := helpFooter(ViewMain)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -195,20 +201,14 @@ func renderSelectProjectView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			if m.isProjectImporting(p.Name) {
-				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
-				line := fmt.Sprintf("%s %s  %s", spin, p.Name, agentSpawningStyle.Render("importing..."))
-				b.WriteString(style.Render(line))
-			} else {
-				line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
-				b.WriteString(style.Render(line))
-			}
+			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
+			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
 
-	help := "[↑/↓/j/k] select  [enter] choose  [esc] back"
+	help := helpFooter(ViewSelectProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -253,7 +253,7 @@ func renderNewTaskBranchView(m model) string {
 
 	b.WriteString("\n")
 
-	help := "[↑/↓] select  [enter] choose  [esc] back"
+	help := helpFooter(ViewNewTaskBranch)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -275,10 +275,14 @@ func renderNewTaskBranchInputView(m model) string {
 	b.WriteString(inputStyle.Render(m.branchInput.View()))
 	b.WriteString("\n\n")
 
-	b.WriteString(dimStyle.Render("Leave empty for origin/master"))
+	defaultBranch := "origin/master"
+	if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+		defaultBranch = m.selectedProj.DefaultBaseBranch
+	}
+	b.WriteString(dimStyle.Render("Leave empty for " + defaultBranch))
 	b.WriteString("\n\n")
 
-	help := "[enter] confirm  [esc] back"
+	help := helpFooter(ViewNewTaskBranchInput)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -301,7 +305,7 @@ func renderNewTaskInputView(m model) string {
 	b.WriteString(inputStyle.Render(m.taskInput.View()))
 	b.WriteString("\n\n")
 
-	help := "[enter] submit  [shift+enter] new line  [esc] back"
+	help := helpFooter(ViewNewTaskInput)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -339,7 +343,7 @@ func renderInterveneView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[↑/↓/j/k] select  [enter] focus agent  [esc] back"
+	help := helpFooter(ViewIntervene)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -364,7 +368,7 @@ func renderInterveneInputView(m model) string {
 	b.WriteString(dimStyle.Render("This will send the text to the agent's terminal"))
 	b.WriteString("\n\n")
 
-	help := "[enter] send  [shift+enter] new line  [esc] back"
+	help := helpFooter(ViewInterveneInput)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -402,7 +406,7 @@ func renderReviewView(m model) string {
 		b.WriteString("\n")
 	}
 
-	help := "[↑/↓/j/k] select  [a]ccept  [c]omment  [r]eject  [b]rowser  [esc] back"
+	help := helpFooter(ViewReview)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -423,7 +427,7 @@ func renderConfirmMergeView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[y]es  [n]o"
+	help := helpFooter(ViewConfirmMerge)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -436,7 +440,7 @@ func renderConfirmKillView(m model) string {
 	b.WriteString("\n\n")
 	b.WriteString(renderAgentSelector(m, "No agents to kill"))
 
-	help := "[↑/↓/j/k] select  [enter] kill  [esc] back"
+	help := helpFooter(ViewConfirmKill)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -457,25 +461,34 @@ func renderManageProjectsView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			if m.isProjectImporting(p.Name) {
-				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
-				status := agentSpawningStyle.Render("importing")
-				line := fmt.Sprintf("%s %s  %s [%s]", spin, p.Name, dimStyle.Render(p.Path), status)
-				b.WriteString(style.Render(line))
-			} else {
-				fastWTLabel := ""
-				if p.UseFastWorktrees {
-					fastWTLabel = " " + dimStyle.Render("[fast wt]")
-				}
-				line := fmt.Sprintf("%s  %s%s", p.Name, dimStyle.Render(p.Path), fastWTLabel)
-				b.WriteString(style.Render(line))
-			}
+			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
+			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			selected := m.projects[m.selectedIndex]
+			b.WriteString(headerStyle.Render("## Details"))
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("  Path:        %s\n", dimStyle.Render(selected.Path)))
+			b.WriteString(fmt.Sprintf("  Base branch: %s\n", dimStyle.Render(selected.EffectiveBaseBranch())))
+			b.WriteString(fmt.Sprintf("  CI wait:     %s\n", dimStyle.Render(fmt.Sprintf("%d min", selected.EffectiveCIWaitMinutes()))))
+			fastWtStatus := "no"
+			if selected.UseFastWorktrees {
+				fastWtStatus = "yes (proj)"
+			}
+			b.WriteString(fmt.Sprintf("  Fast worktrees: %s\n", dimStyle.Render(fastWtStatus)))
+			b.WriteString("\n")
+		}
 	}
 
-	help := "[a]dd project  [d]elete selected  [enter] view import  [esc] back"
+	if m.err != nil {
+		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err.Error())))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewManageProjects)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -484,7 +497,7 @@ func renderManageProjectsView(m model) string {
 func renderAddProjectNameView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 1/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Name"))
 	b.WriteString("\n\n")
 
 	b.WriteString("Enter project name:\n")
@@ -494,7 +507,7 @@ func renderAddProjectNameView(m model) string {
 	b.WriteString(dimStyle.Render("A short identifier for the project (e.g., 'myapp', 'backend')"))
 	b.WriteString("\n\n")
 
-	help := "[enter] next  [esc] cancel"
+	help := helpFooter(ViewAddProjectName)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -503,7 +516,7 @@ func renderAddProjectNameView(m model) string {
 func renderAddProjectPathView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Project - Step 2/3"))
+	b.WriteString(titleStyle.Render("# Add Project - Path"))
 	b.WriteString("\n\n")
 
 	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.newProjectName)))
@@ -515,7 +528,93 @@ func renderAddProjectPathView(m model) string {
 	b.WriteString(dimStyle.Render("Full path to the repo root (e.g., '/home/user/projects/myapp')"))
 	b.WriteString("\n\n")
 
-	help := "[enter] create project  [esc] back"
+	help := helpFooter(ViewAddProjectPath)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderAddProjectFastWTView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Add Project - Fast Worktrees"))
+	b.WriteString("\n\n")
+
+	b.WriteString("Enable fast worktrees? (y/n)\n\n")
+	b.WriteString(dimStyle.Render("Runs 'proj import' to enable near-instant worktree creation."))
+	b.WriteString("\n\n")
+
+	help := helpFooter(ViewAddProjectFastWT)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderProjImportingView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Importing Project"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.newProjectName)))
+	b.WriteString(fmt.Sprintf("Path: %s\n\n", dimStyle.Render(m.newProjectPath)))
+
+	b.WriteString(fmt.Sprintf("%s Importing project (this may take a while)...\n\n", spinner(m.spinnerFrame)))
+
+	lines := m.projImportLines.lastN(5)
+	if len(lines) > 0 {
+		box := lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(dimGray).
+			Padding(0, 1).
+			Width(60)
+		content := strings.Join(lines, "\n")
+		b.WriteString(box.Render(content))
+		b.WriteString("\n\n")
+	}
+
+	if m.err != nil {
+		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err.Error())))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewProjImporting)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderEditProjectView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Edit Project"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.selectedProj.Name)))
+	}
+
+	fields := []struct {
+		label string
+		input string
+	}{
+		{"Path:", m.editProjectForm.pathInput.View()},
+		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
+		{"CI wait (minutes):", m.editProjectForm.ciWaitInput.View()},
+		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
+	}
+
+	for i, f := range fields {
+		marker := "  "
+		if i == m.editProjectForm.focusIndex {
+			marker = "> "
+		}
+		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
+		b.WriteString(inputStyle.Render(f.input))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewEditProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -535,7 +634,7 @@ func renderConfirmRemoveProjectView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := "[y]es  [n]o"
+	help := helpFooter(ViewConfirmRemoveProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -560,7 +659,7 @@ func renderConfirmKillSessionView(m model) string {
 
 	b.WriteString("Are you sure you want to kill everything?\n\n")
 
-	help := "[y]es, kill everything  [n]o"
+	help := helpFooter(ViewConfirmKillSession)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -576,6 +675,8 @@ func renderAgentStatus(status agent.Status) string {
 		return agentKillingStyle.Render("killing")
 	case agent.StatusReady:
 		return agentReadyStyle.Render("ready")
+	case agent.StatusWaitingCI:
+		return agentWaitingCIStyle.Render("waiting on CI")
 	case agent.StatusMerged:
 		return agentMergedStyle.Render("merged")
 	case agent.StatusFailed:
@@ -597,6 +698,8 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 		return agentKillingStyle
 	case agent.StatusReady:
 		return agentReadyStyle
+	case agent.StatusWaitingCI:
+		return agentWaitingCIStyle
 	case agent.StatusMerged:
 		return agentMergedStyle
 	case agent.StatusFailed:
@@ -738,10 +841,41 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		b.WriteString(fmt.Sprintf("Task:     %s\n", wrapText(selected.Task, 60)))
 		b.WriteString(fmt.Sprintf("Branch:   %s\n", dimStyle.Render(selected.BranchName)))
 		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
+		if r, ok := m.agentResources[selected.ID]; ok {
+			b.WriteString(fmt.Sprintf("CPU:      %s\n", fmt.Sprintf("%.0f%%", r.CPUPercent)))
+			b.WriteString(fmt.Sprintf("Memory:   %s (%.0f%%)\n", formatBytes(r.MemBytes), r.MemPercent))
+			b.WriteString(fmt.Sprintf("Disk:     %s\n", formatBytes(r.DiskBytes)))
+			costLine := formatCost(r.CostUSD)
+			if costLine != "" {
+				b.WriteString(fmt.Sprintf("Cost:     %s (est.)\n", costLine))
+			}
+			tokenDetail := formatTokenDetail(r)
+			if tokenDetail != "" {
+				b.WriteString(fmt.Sprintf("Tokens:   %s\n", tokenDetail))
+			}
+		}
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+func formatAgentOneLiner(r *AgentResources) string {
+	var parts []string
+	resLine := formatResourceLine(r)
+	if resLine != "" {
+		parts = append(parts, resLine)
+	}
+	if r != nil {
+		costLine := formatCost(r.CostUSD)
+		if costLine != "" {
+			parts = append(parts, "Cost: "+costLine)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + dimStyle.Render(strings.Join(parts, "  "))
 }
 
 func marquee(s string, maxWidth int, offset int) string {
@@ -783,14 +917,14 @@ func styledSpinner(frame int, style lipgloss.Style) string {
 	return style.Render(spinnerFrames[frame%SpinnerFrameCount])
 }
 
-func renderJumpToAgentView(m model) string {
+func renderAgentInfoView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Jump to Agent"))
+	b.WriteString(titleStyle.Render("# Info on Agent"))
 	b.WriteString("\n\n")
 	b.WriteString(renderAgentSelector(m, "No agents running"))
 
-	help := "[↑/↓/j/k] select  [enter] jump  [esc] back"
+	help := helpFooter(ViewAgentInfo)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -843,10 +977,6 @@ func renderUpdateView(m model) string {
 		b.WriteString("\n")
 		b.WriteString(agentReadyStyle.Render("Update complete!"))
 		b.WriteString("\n")
-	} else if m.updateAvailable {
-		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
-		renderChangelog(&b, m.changelogEntries, m.selectedIndex, m.changelogLoading, m.spinnerFrame)
-		b.WriteString("\nUpdate available. Install it?\n")
 	} else {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("You are on the latest version."))
@@ -856,100 +986,12 @@ func renderUpdateView(m model) string {
 	b.WriteString("\n")
 
 	if m.updateComplete {
-		help := "[r]estart  [esc] back"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[r]estart"), m.ctrlCPressed))
 	} else if m.updateError != "" {
-		help := "[esc] back"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
-	} else if m.updateAvailable && !m.updateDownloading {
-		help := "[↑/↓/j/k] scroll  [y] install  [n] cancel"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	} else if !m.updateChecking && !m.updateDownloading {
-		help := "[esc] back"
-		b.WriteString(renderFooter(help, m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	}
-
-	return b.String()
-}
-
-func renderAddProjectFastWTView(m model) string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("# Add Project - Step 3/3"))
-	b.WriteString("\n\n")
-
-	b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.newProjectName)))
-	b.WriteString(fmt.Sprintf("Path: %s\n\n", dimStyle.Render(m.newProjectPath)))
-
-	if project.IsProjDirectory(m.newProjectPath) {
-		b.WriteString(agentRunningStyle.Render("Detected proj directory (.repo found)"))
-		b.WriteString("\n\n")
-	}
-
-	b.WriteString("Enable fast worktrees?\n")
-	b.WriteString(dimStyle.Render("Uses proj (reflink copy) for near-instant worktree creation.\n"))
-	b.WriteString(dimStyle.Render("If not already a proj directory, will run 'proj import' to set up."))
-	b.WriteString("\n\n")
-
-	help := "[y]es  [n]o  [esc] back"
-	b.WriteString(renderFooter(help, m.ctrlCPressed))
-
-	return b.String()
-}
-
-func renderProjImportOutputView(m model) string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("# Project Import"))
-	b.WriteString("\n\n")
-
-	if m.selectedProj != nil {
-		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n\n", dimStyle.Render(m.selectedProj.Path)))
-	}
-
-	projName := ""
-	if m.selectedProj != nil {
-		projName = m.selectedProj.Name
-	}
-	proc, hasProc := m.projectImports[projName]
-	if hasProc {
-		done, importErr := proc.isDone()
-
-		if !done {
-			b.WriteString(fmt.Sprintf("%s Importing...\n\n", styledSpinner(m.spinnerFrame, agentSpawningStyle)))
-		} else if importErr != nil {
-			b.WriteString(errorStyle.Render("Import failed: "+importErr.Error()))
-			b.WriteString("\n\n")
-		} else {
-			b.WriteString(agentRunningStyle.Render("Import complete!"))
-			b.WriteString("\n\n")
-		}
-
-		b.WriteString(headerStyle.Render("## Output"))
-		b.WriteString("\n")
-
-		lines := proc.getLines()
-		maxLines := 20
-		start := 0
-		if len(lines) > maxLines {
-			start = len(lines) - maxLines
-			b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d lines above ...", start)))
-			b.WriteString("\n")
-		}
-		for i := start; i < len(lines); i++ {
-			b.WriteString("  " + lines[i] + "\n")
-		}
-		if len(lines) == 0 {
-			b.WriteString(dimStyle.Render("  No output yet..."))
-			b.WriteString("\n")
-		}
-	}
-
-	b.WriteString("\n")
-
-	help := "[esc] back"
-	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
