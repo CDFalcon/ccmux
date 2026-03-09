@@ -547,8 +547,8 @@ func renderEditProjectView(m model) string {
 			marker = "> "
 		}
 		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
-		b.WriteString(fmt.Sprintf("  %s\n", inputStyle.Render(f.input)))
-		b.WriteString("\n")
+		b.WriteString(inputStyle.Render(f.input))
+		b.WriteString("\n\n")
 	}
 
 	help := helpFooter(ViewEditProject)
