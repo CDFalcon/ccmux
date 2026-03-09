@@ -1004,8 +1004,6 @@ cat > .claude/settings.json << SETTINGSEOF
 SETTINGSEOF
 
 export CCMUX_AGENT_ID="$AGENT_ID"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
 unset CLAUDECODE
 
 echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"

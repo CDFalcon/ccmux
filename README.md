@@ -1,39 +1,36 @@
-# ccmux — Colby's Claude Multiplexer
+# ccmux — Claude Multiplexer
 
-A terminal-based orchestrator for managing multiple [Claude Code](https://claude.ai/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
+A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
 Each agent gets its own git worktree, branch, and tmux window — so multiple agents can work on different tasks in the same repo without conflicts.
 
-## Prerequisites
+## Setup (Linux x86_64)
 
-- [tmux](https://github.com/tmux/tmux)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI (`claude`)
-- [GitHub CLI](https://cli.github.com/) (`gh`)
-- Git
-
-## Installation
-
-Download the latest binary for your platform using the GitHub CLI (required since this is a private repo):
+Install all prerequisites and ccmux in one shot:
 
 ```bash
-# macOS (Apple Silicon)
-gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-arm64'
+# Install system dependencies
+sudo apt-get update && sudo apt-get install -y git tmux jq
 
-# macOS (Intel)
-gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-amd64'
+# Install GitHub CLI
+(type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && sudo apt update && sudo apt install gh -y
 
-# Linux (x86_64)
+# Authenticate with GitHub (needed for private repos and PR operations)
+gh auth login
+
+# Install Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# Install ccmux
 gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-amd64'
-
-# Linux (ARM64)
-gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-arm64'
-```
-
-Then make it executable and move it to your PATH:
-
-```bash
-chmod +x ccmux-*
-mv ccmux-* /usr/local/bin/ccmux  # or ~/bin/, ~/.local/bin/, etc.
+chmod +x ccmux-linux-amd64
+sudo mv ccmux-linux-amd64 /usr/local/bin/ccmux
 ```
 
 ## Quick Start
