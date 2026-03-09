@@ -244,20 +244,6 @@ func TestHandleKeyPress_ShouldShowHelp_GivenHOnMainView(t *testing.T) {
 	}
 }
 
-func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnInputView(t *testing.T) {
-	// Setup.
-	m := newTestModel()
-	m.view = ViewNewTaskBranch
-
-	// Execute.
-	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
-
-	// Assert.
-	rm := result.(model)
-	if rm.view == ViewHelp {
-		t.Error("expected view NOT to be ViewHelp on an input view")
-	}
-}
 
 func TestHandleHelpKeys_ShouldReturnToPreviousView_GivenEsc(t *testing.T) {
 	// Setup.
@@ -285,13 +271,58 @@ func TestHelpFooter_ShouldIncludeHelpOption_GivenNonInputView(t *testing.T) {
 	}
 }
 
-func TestHelpFooter_ShouldNotIncludeHelpOption_GivenInputView(t *testing.T) {
+func TestHelpFooter_ShouldIncludeF1Help_GivenInputView(t *testing.T) {
 	// Setup/Execute.
 	footer := helpFooter(ViewNewTaskInput)
 
 	// Assert.
-	if strings.Contains(footer, "[h]elp") {
-		t.Errorf("expected footer NOT to contain '[h]elp', got '%s'", footer)
+	if !strings.Contains(footer, "[F1] help") {
+		t.Errorf("expected footer to contain '[F1] help', got '%s'", footer)
+	}
+}
+
+func TestHandleKeyPress_ShouldShowHelp_GivenF1OnInputView(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskInput
+
+	// Execute.
+	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyF1})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewHelp {
+		t.Errorf("expected ViewHelp, got %d", rm.view)
+	}
+}
+
+func TestHandleKeyPress_ShouldNotShowHelp_GivenHOnInputView(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskInput
+
+	// Execute.
+	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view == ViewHelp {
+		t.Error("expected 'h' key NOT to open help on input view")
+	}
+}
+
+func TestHandleKeyPress_ShouldShowHelp_GivenF1OnNonInputView(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewMain
+
+	// Execute.
+	result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyF1})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewHelp {
+		t.Errorf("expected ViewHelp, got %d", rm.view)
 	}
 }
 

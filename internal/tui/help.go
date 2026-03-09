@@ -153,7 +153,9 @@ func helpFooter(view ViewState) string {
 			parts = append(parts, cmd.FooterText)
 		}
 	}
-	if !isInputView(view) {
+	if isInputView(view) {
+		parts = append(parts, "[F1] help")
+	} else {
 		parts = append(parts, "[h]elp")
 	}
 	return strings.Join(parts, "  ")
@@ -181,10 +183,11 @@ func renderHelpView(m model) string {
 			}
 		}
 		helpEntry := "[h]elp"
-		if !isInputView(m.previousView) {
-			if w := lipgloss.Width(helpEntry); w > maxWidth {
-				maxWidth = w
-			}
+		if isInputView(m.previousView) {
+			helpEntry = "[F1] help"
+		}
+		if w := lipgloss.Width(helpEntry); w > maxWidth {
+			maxWidth = w
 		}
 
 		for _, cmd := range commands {
@@ -193,11 +196,9 @@ func renderHelpView(m model) string {
 			b.WriteString(fmt.Sprintf("  %s%s%s\n", cmd.FooterText, padding, dimStyle.Render(cmd.Description)))
 		}
 
-		if !isInputView(m.previousView) {
-			w := lipgloss.Width(helpEntry)
-			padding := strings.Repeat(" ", maxWidth-w+4)
-			b.WriteString(fmt.Sprintf("  %s%s%s\n", helpEntry, padding, dimStyle.Render("Show this help screen")))
-		}
+		w := lipgloss.Width(helpEntry)
+		padding := strings.Repeat(" ", maxWidth-w+4)
+		b.WriteString(fmt.Sprintf("  %s%s%s\n", helpEntry, padding, dimStyle.Render("Show this help screen")))
 	}
 
 	b.WriteString("\n")

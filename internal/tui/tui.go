@@ -718,10 +718,13 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ctrlCPressed = false
 	}
 
-	if msg.String() == "h" && !isInputView(m.view) && m.view != ViewHelp {
-		m.previousView = m.view
-		m.view = ViewHelp
-		return m, nil
+	if m.view != ViewHelp {
+		openHelp := (msg.String() == "h" && !isInputView(m.view)) || msg.Type == tea.KeyF1
+		if openHelp {
+			m.previousView = m.view
+			m.view = ViewHelp
+			return m, nil
+		}
 	}
 
 	switch m.view {
