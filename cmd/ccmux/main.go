@@ -144,6 +144,7 @@ func runSession(sessionID string) error {
 				}
 			}
 		} else {
+			tmuxManager.ForwardEnv()
 			tmuxManager.SourceUserConfig()
 			tmuxManager.EnsureRemainOnExit()
 
