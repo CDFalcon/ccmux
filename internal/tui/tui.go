@@ -1128,7 +1128,7 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newProjectPath = ""
 		m.projectForm.nameInput.Focus()
 		return m, textinput.Blink
-	case "e":
+	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
 			m.selectedProj = m.projects[m.selectedIndex]
 			m.view = ViewEditProject
