@@ -389,6 +389,8 @@ func TestGetDiskUsageIncremental_ShouldReturnZero_GivenCleanRepo(t *testing.T) {
 	// Setup.
 	tmpDir := t.TempDir()
 	exec.Command("git", "init", tmpDir).Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.name", "test").Run()
 	exec.Command("git", "-C", tmpDir, "commit", "--allow-empty", "-m", "init").Run()
 
 	// Execute.
