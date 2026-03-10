@@ -134,10 +134,9 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewUpdate: {
 		{FooterText: "[↑/↓/j/k] scroll", Description: "Navigate the changelog"},
-		{FooterText: "[y] install", Description: "Download and install the update"},
-		{FooterText: "[n] cancel", Description: "Cancel and return to main view"},
+		{FooterText: "[c]onfirm", Description: "Download and install the update"},
 		{FooterText: "[r]estart", Description: "Restart after update completes"},
-		{FooterText: "[esc] back", Description: "Return to main view"},
+		{FooterText: "[esc] cancel", Description: "Cancel and return to main view"},
 	},
 }
 

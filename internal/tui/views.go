@@ -995,6 +995,13 @@ func renderUpdateView(m model) string {
 		b.WriteString(fmt.Sprintf("\n%s Checking for updates...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
 	} else if m.updateError != "" {
 		b.WriteString(fmt.Sprintf("\n%s\n", errorStyle.Render(m.updateError)))
+	} else if m.changelogLoading {
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("\n%s Loading changelog...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
+	} else if m.updateAvailable && !m.updateDownloading && !m.updateComplete {
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
+		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
+		b.WriteString("\n")
 	} else if m.updateDownloading {
 		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
 		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
@@ -1016,9 +1023,11 @@ func renderUpdateView(m model) string {
 
 	if m.updateComplete {
 		b.WriteString(renderFooter(withHelpKey("[r]estart"), m.ctrlCPressed))
+	} else if m.updateAvailable && !m.updateDownloading && !m.updateComplete && !m.changelogLoading {
+		b.WriteString(renderFooter(withHelpKey("[c]onfirm  [esc] cancel"), m.ctrlCPressed))
 	} else if m.updateError != "" {
 		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
-	} else if !m.updateChecking && !m.updateDownloading {
+	} else if !m.updateChecking && !m.updateDownloading && !m.changelogLoading {
 		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
 	}
 

@@ -661,19 +661,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCheckResultMsg:
 		m.updateChecking = false
 		if msg.err != nil {
-			m.updateError = fmt.Sprintf("Update check failed: %s", msg.err.Error())
+			if m.view == ViewUpdate {
+				m.updateError = fmt.Sprintf("Update check failed: %s", msg.err.Error())
+			}
 			return m, nil
 		}
 		m.updateVersion = msg.version
 		m.updateAvailable = msg.available
-		if msg.available {
-			m.updateDownloading = true
-			atomic.StoreInt64(m.downloadProgress, 0)
+		if msg.available && m.view == ViewUpdate {
 			m.changelogLoading = true
-			return m, tea.Batch(
-				fetchChangelogCmd(version.Version, msg.version),
-				downloadUpdateCmd(msg.version, m.downloadProgress),
-			)
+			return m, fetchChangelogCmd(version.Version, msg.version)
 		}
 		return m, nil
 
@@ -1420,7 +1417,7 @@ func (m model) handleAgentInfoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.updateChecking || m.updateDownloading {
+	if m.updateChecking || m.updateDownloading || m.changelogLoading {
 		return m, nil
 	}
 
@@ -1428,6 +1425,12 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if !m.updateComplete {
 			m.view = ViewMain
+		}
+	case "c":
+		if m.updateAvailable && !m.updateDownloading && !m.updateComplete {
+			m.updateDownloading = true
+			atomic.StoreInt64(m.downloadProgress, 0)
+			return m, downloadUpdateCmd(m.updateVersion, m.downloadProgress)
 		}
 	case "r":
 		if m.updateComplete {
