@@ -289,6 +289,9 @@ func ProjImport(repoPath string, onLine func(string)) (string, error) {
 	}
 
 	if err := cmd.Wait(); err != nil {
+		if IsProjDirectory(projDir) && FindProjTemplateDir(projDir) != "" {
+			return projDir, nil
+		}
 		output := strings.Join(lastLines, "\n")
 		return "", fmt.Errorf("proj import failed: %w\noutput:\n%s", err, output)
 	}
