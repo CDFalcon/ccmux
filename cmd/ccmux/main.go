@@ -418,7 +418,7 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 If you are blocked or unsure about requirements, use the AskUserQuestion tool rather than guessing.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. Check CI status with: gh pr checks <pr-url>
 3. If all checks passed, run: ccmux pr-ready <pr-url>
 4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
@@ -1049,7 +1049,7 @@ IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux c
 If you are blocked or unsure about requirements, use the AskUserQuestion tool rather than guessing.
 
 When done with your task:
-1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. Check CI status with: gh pr checks <pr-url>
 3. If all checks passed, run: ccmux pr-ready <pr-url>
 4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
