@@ -639,6 +639,59 @@ func TestSetupStatus_ShouldPersist_GivenStore(t *testing.T) {
 	}
 }
 
+func TestAdd_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	p := &Project{
+		Name:             "importing-project",
+		Path:             repoDir,
+		UseFastWorktrees: true,
+		SetupStatus:      SetupStatusSettingUp,
+	}
+
+	// Execute.
+	err := store.Add(p)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("expected no error for setting_up project, got: %v", err)
+	}
+	retrieved, _ := store.Get("importing-project")
+	if !retrieved.UseFastWorktrees {
+		t.Error("expected UseFastWorktrees to be true")
+	}
+	if !retrieved.IsSettingUp() {
+		t.Error("expected project to be in setting up state")
+	}
+}
+
+func TestUpdate_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "will-import", Path: repoDir})
+
+	// Execute.
+	err := store.Update("will-import", func(p *Project) {
+		p.UseFastWorktrees = true
+		p.SetupStatus = SetupStatusSettingUp
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("expected no error for setting_up project, got: %v", err)
+	}
+	retrieved, _ := store.Get("will-import")
+	if !retrieved.UseFastWorktrees {
+		t.Error("expected UseFastWorktrees to be true")
+	}
+	if !retrieved.IsSettingUp() {
+		t.Error("expected project to be in setting up state")
+	}
+}
+
 func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *testing.T) {
 	// Setup.
 	v3Data := `{
