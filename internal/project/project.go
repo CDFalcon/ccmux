@@ -274,16 +274,23 @@ func ProjImport(repoPath string, onLine func(string)) (string, error) {
 		return "", fmt.Errorf("proj import failed to start: %w", err)
 	}
 
+	var lastLines []string
+	const maxLastLines = 10
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if onLine != nil {
 			onLine(line)
 		}
+		lastLines = append(lastLines, line)
+		if len(lastLines) > maxLastLines {
+			lastLines = lastLines[1:]
+		}
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return "", fmt.Errorf("proj import failed: %w", err)
+		output := strings.Join(lastLines, "\n")
+		return "", fmt.Errorf("proj import failed: %w\noutput:\n%s", err, output)
 	}
 	if !IsProjDirectory(projDir) {
 		return "", fmt.Errorf("proj import completed but %s is missing .repo directory", projDir)
