@@ -163,7 +163,7 @@ func renderMainView(m model) string {
 		b.WriteString("\n")
 	} else {
 		for _, p := range m.projects {
-			extras := dimStyle.Render(p.Path)
+			extras := dimStyle.Render(p.EffectivePath())
 			if p.DefaultBaseBranch != "" {
 				extras += "  " + dimStyle.Render("base:"+p.DefaultBaseBranch)
 			}
@@ -201,7 +201,7 @@ func renderSelectProjectView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
+			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.EffectivePath()))
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
@@ -222,7 +222,7 @@ func renderNewTaskBranchView(m model) string {
 
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 	}
 
@@ -267,7 +267,7 @@ func renderNewTaskBranchInputView(m model) string {
 
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 	}
 
@@ -296,7 +296,7 @@ func renderNewTaskInputView(m model) string {
 
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 		b.WriteString("\n")
 	}
@@ -461,7 +461,7 @@ func renderManageProjectsView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.Path))
+			line := fmt.Sprintf("%s  %s", p.Name, dimStyle.Render(p.EffectivePath()))
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
@@ -471,7 +471,7 @@ func renderManageProjectsView(m model) string {
 			selected := m.projects[m.selectedIndex]
 			b.WriteString(headerStyle.Render("## Details"))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("  Path:        %s\n", dimStyle.Render(selected.Path)))
+			b.WriteString(fmt.Sprintf("  Path:        %s\n", dimStyle.Render(selected.EffectivePath())))
 			b.WriteString(fmt.Sprintf("  Base branch: %s\n", dimStyle.Render(selected.EffectiveBaseBranch())))
 			b.WriteString(fmt.Sprintf("  CI wait:     %s\n", dimStyle.Render(fmt.Sprintf("%d min", selected.EffectiveCIWaitMinutes()))))
 			fastWtStatus := "no"
@@ -628,7 +628,7 @@ func renderConfirmRemoveProjectView(m model) string {
 
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Remove project '%s'?\n", projectStyle.Render(m.selectedProj.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.Path)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("This only removes the registration, not the actual files."))
 		b.WriteString("\n\n")

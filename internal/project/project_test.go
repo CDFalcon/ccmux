@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -474,4 +475,160 @@ func TestProjImport_ShouldFail_GivenNoProjInstalled(t *testing.T) {
 	}
 }
 
+func TestEffectivePath_ShouldReturnFastWorktreePath_GivenFastWorktreesEnabled(t *testing.T) {
+	// Setup.
+	p := &Project{
+		Name:             "test",
+		Path:             "/home/user/repo",
+		FastWorktreePath: "/proj/projects/repo",
+		UseFastWorktrees: true,
+	}
 
+	// Execute.
+	result := p.EffectivePath()
+
+	// Assert.
+	if result != "/proj/projects/repo" {
+		t.Errorf("expected '/proj/projects/repo', got '%s'", result)
+	}
+}
+
+func TestEffectivePath_ShouldReturnBasePath_GivenFastWorktreesDisabled(t *testing.T) {
+	// Setup.
+	p := &Project{
+		Name:             "test",
+		Path:             "/home/user/repo",
+		FastWorktreePath: "/proj/projects/repo",
+		UseFastWorktrees: false,
+	}
+
+	// Execute.
+	result := p.EffectivePath()
+
+	// Assert.
+	if result != "/home/user/repo" {
+		t.Errorf("expected '/home/user/repo', got '%s'", result)
+	}
+}
+
+func TestEffectivePath_ShouldReturnBasePath_GivenNoFastWorktreePath(t *testing.T) {
+	// Setup.
+	p := &Project{
+		Name:             "test",
+		Path:             "/home/user/repo",
+		UseFastWorktrees: true,
+	}
+
+	// Execute.
+	result := p.EffectivePath()
+
+	// Assert.
+	if result != "/home/user/repo" {
+		t.Errorf("expected '/home/user/repo', got '%s'", result)
+	}
+}
+
+func TestAdd_ShouldStoreBothPaths_GivenFastWorktreesEnabled(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+	projDir := t.TempDir()
+	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
+
+	repoDir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repoDir
+	cmd.Run()
+
+	project := &Project{
+		Name:             "dual-path",
+		Path:             repoDir,
+		FastWorktreePath: projDir,
+		UseFastWorktrees: true,
+	}
+
+	// Execute.
+	err := store.Add(project)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("dual-path")
+	if retrieved.Path != repoDir {
+		t.Errorf("expected base path '%s', got '%s'", repoDir, retrieved.Path)
+	}
+	if retrieved.FastWorktreePath != projDir {
+		t.Errorf("expected fast worktree path '%s', got '%s'", projDir, retrieved.FastWorktreePath)
+	}
+}
+
+func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	projDir := t.TempDir()
+	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
+
+	store.Add(&Project{
+		Name:             "revertable",
+		Path:             repoDir,
+		FastWorktreePath: projDir,
+		UseFastWorktrees: true,
+	})
+
+	// Execute.
+	err := store.Update("revertable", func(p *Project) {
+		p.UseFastWorktrees = false
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("revertable")
+	if retrieved.EffectivePath() != repoDir {
+		t.Errorf("expected effective path to revert to '%s', got '%s'", repoDir, retrieved.EffectivePath())
+	}
+}
+
+func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *testing.T) {
+	// Setup.
+	v3Data := `{
+		"version": 3,
+		"projects": {
+			"fast-proj": {
+				"name": "fast-proj",
+				"path": "/proj/projects/myrepo",
+				"use_fast_worktrees": true
+			},
+			"normal-proj": {
+				"name": "normal-proj",
+				"path": "/home/user/repo"
+			}
+		}
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v3Data), 3, 4)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	if store.Version != 4 {
+		t.Errorf("expected version 4, got %d", store.Version)
+	}
+	fastProj := store.Projects["fast-proj"]
+	if fastProj.FastWorktreePath != "/proj/projects/myrepo" {
+		t.Errorf("expected fast worktree path '/proj/projects/myrepo', got '%s'", fastProj.FastWorktreePath)
+	}
+	normalProj := store.Projects["normal-proj"]
+	if normalProj.FastWorktreePath != "" {
+		t.Errorf("expected empty fast worktree path for normal project, got '%s'", normalProj.FastWorktreePath)
+	}
+}

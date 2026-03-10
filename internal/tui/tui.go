@@ -1514,16 +1514,22 @@ func (m model) detachCmd() tea.Cmd {
 func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	buf := m.projImportLines
 	return func() tea.Msg {
-		if useFastWT && !project.IsProjDirectory(path) {
-			projDir, err := project.ProjImport(path, buf.addLine)
-			if err != nil {
-				return errMsg{err}
+		var fastWTPath string
+		if useFastWT {
+			if project.IsProjDirectory(path) {
+				fastWTPath = path
+			} else {
+				projDir, err := project.ProjImport(path, buf.addLine)
+				if err != nil {
+					return errMsg{err}
+				}
+				fastWTPath = projDir
 			}
-			path = projDir
 		}
 		p := &project.Project{
 			Name:             name,
 			Path:             path,
+			FastWorktreePath: fastWTPath,
 			UseFastWorktrees: useFastWT,
 		}
 		if err := m.projectStore.Add(p); err != nil {
@@ -1536,16 +1542,27 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool) tea.Cmd {
 	buf := m.projImportLines
 	return func() tea.Msg {
-		if useFastWT && path != "" && !project.IsProjDirectory(path) {
-			projDir, err := project.ProjImport(path, buf.addLine)
-			if err != nil {
-				return errMsg{err}
+		var fastWTPath string
+		if useFastWT && path != "" {
+			existing, _ := m.projectStore.Get(name)
+			if existing != nil && existing.FastWorktreePath != "" && project.IsProjDirectory(existing.FastWorktreePath) {
+				fastWTPath = existing.FastWorktreePath
+			} else if project.IsProjDirectory(path) {
+				fastWTPath = path
+			} else {
+				projDir, err := project.ProjImport(path, buf.addLine)
+				if err != nil {
+					return errMsg{err}
+				}
+				fastWTPath = projDir
 			}
-			path = projDir
 		}
 		err := m.projectStore.Update(name, func(p *project.Project) {
 			if path != "" {
 				p.Path = path
+			}
+			if fastWTPath != "" {
+				p.FastWorktreePath = fastWTPath
 			}
 			p.DefaultBaseBranch = baseBranch
 			p.CIWaitMinutes = ciWait
