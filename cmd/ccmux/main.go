@@ -415,6 +415,8 @@ PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
+If you are blocked or unsure about requirements, use the AskUserQuestion tool rather than guessing.
+
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. Check CI status with: gh pr checks <pr-url>
@@ -1043,6 +1045,8 @@ PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
+
+If you are blocked or unsure about requirements, use the AskUserQuestion tool rather than guessing.
 
 When done with your task:
 1. Commit your work and create a PR with: gh pr create --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
