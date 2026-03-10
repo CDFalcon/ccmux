@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,8 +77,9 @@ type model struct {
 	marqueeOffset   int
 	prevWindowNames map[string]string
 
-	// CI wait tracking
-	ciResumeTriggered map[string]bool
+	// CI check tracking
+	ciLastChecked map[string]time.Time
+	ciChecking    map[string]bool
 
 	// Resource monitoring
 	agentResources map[string]*AgentResources
@@ -378,6 +380,21 @@ type projSetupFailedMsg struct {
 	name string
 	err  error
 }
+type ciCheckResultMsg struct {
+	agentID string
+	status  ciStatus
+	summary string
+	prURL   string
+	err     error
+}
+
+type ciStatus int
+
+const (
+	ciStatusPending ciStatus = iota
+	ciStatusPassed
+	ciStatusFailed
+)
 
 func newFixedTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
@@ -418,7 +435,8 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
 		editProjectForm:   newEditProjectForm(),
-		ciResumeTriggered: make(map[string]bool),
+		ciLastChecked: make(map[string]time.Time),
+		ciChecking:    make(map[string]bool),
 		prevWindowNames:   make(map[string]string),
 		totalMemKB:        getTotalMemoryKB(),
 		clkTck:            getClockTicks(),
@@ -625,22 +643,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		activeWaiting := make(map[string]bool)
 		var cmds []tea.Cmd
+		const ciPollInterval = 30 * time.Second
+		const ciInitialGrace = 1 * time.Minute
 		for _, a := range m.agents {
-			if a.Status == agent.StatusWaitingCI {
+			if a.Status == agent.StatusWaitingCI && a.PRURL != "" {
 				activeWaiting[a.ID] = true
-				waitMinutes := project.DefaultCIWaitMinutes
-				if p, ok := projectMap[a.ProjectName]; ok {
-					waitMinutes = p.EffectiveCIWaitMinutes()
+				if time.Since(a.UpdatedAt) < ciInitialGrace {
+					continue
 				}
-				if time.Since(a.UpdatedAt) >= time.Duration(waitMinutes)*time.Minute && !m.ciResumeTriggered[a.ID] {
-					m.ciResumeTriggered[a.ID] = true
-					cmds = append(cmds, m.resumeCICheckCmd(a))
+				if !m.ciChecking[a.ID] {
+					lastCheck, checked := m.ciLastChecked[a.ID]
+					if !checked || time.Since(lastCheck) >= ciPollInterval {
+						m.ciChecking[a.ID] = true
+						m.ciLastChecked[a.ID] = time.Now()
+						cmds = append(cmds, checkPRChecksCmd(a.ID, a.PRURL, a.WorktreePath))
+					}
 				}
 			}
 		}
-		for id := range m.ciResumeTriggered {
+		for id := range m.ciLastChecked {
 			if !activeWaiting[id] {
-				delete(m.ciResumeTriggered, id)
+				delete(m.ciLastChecked, id)
+				delete(m.ciChecking, id)
 			}
 		}
 		if len(cmds) > 0 {
@@ -649,6 +673,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spawnStartedMsg:
+		return m, nil
+
+	case ciCheckResultMsg:
+		delete(m.ciChecking, msg.agentID)
+		if msg.err != nil {
+			return m, nil
+		}
+		switch msg.status {
+		case ciStatusPassed:
+			summary := getPRTitleFromURL(msg.prURL)
+			if summary == "" {
+				summary = fmt.Sprintf("PR ready: %s", msg.prURL)
+			}
+			m.queueManager.Add(queue.ItemTypePRReady, msg.agentID, summary, msg.prURL)
+			m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusReady
+			})
+			return m, m.refreshCmd()
+		case ciStatusFailed:
+			var a *agent.Agent
+			for _, ag := range m.agents {
+				if ag.ID == msg.agentID {
+					a = ag
+					break
+				}
+			}
+			if a != nil {
+				return m, m.resumeAgentForCIFixCmd(a, msg.summary)
+			}
+		}
 		return m, nil
 
 	case updateCheckTickMsg:
@@ -1792,10 +1846,10 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The GitHub PR at %s has received comments. Please review ALL comments — both conversation-level comments (gh pr view %s --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes. Then check CI status with: gh pr checks %s -- If all checks passed, run: ccmux pr-ready %s -- If checks failed or are still pending, run: ccmux ci-wait %s"
+  "The GitHub PR at %s has received comments. Please review ALL comments — both conversation-level comments (gh pr view %s --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes, then run: ccmux ci-wait %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1804,7 +1858,99 @@ ccmux agent-stopped "$AGENT_ID"
 	return scriptPath, nil
 }
 
-func writeCICheckScript(agentID, worktreePath, prURL string) (string, error) {
+type prCheckResult struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
+	parts := strings.Split(prURL, "/")
+	if len(parts) < 2 {
+		return "", "", "", fmt.Errorf("invalid PR URL")
+	}
+	prNumber = parts[len(parts)-1]
+
+	for i, part := range parts {
+		if part == "github.com" && i+2 < len(parts) {
+			owner = parts[i+1]
+			repo = parts[i+2]
+			break
+		}
+	}
+	if owner == "" || repo == "" {
+		return "", "", "", fmt.Errorf("could not parse owner/repo from URL")
+	}
+	return owner, repo, prNumber, nil
+}
+
+func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []string) {
+	if len(checks) == 0 {
+		return ciStatusPending, nil
+	}
+
+	hasPending := false
+	for _, c := range checks {
+		switch strings.ToUpper(c.State) {
+		case "FAILURE", "ERROR", "CANCELLED", "ACTION_REQUIRED", "TIMED_OUT", "STARTUP_FAILURE":
+			failedNames = append(failedNames, c.Name)
+		case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "":
+			hasPending = true
+		}
+	}
+
+	if len(failedNames) > 0 {
+		return ciStatusFailed, failedNames
+	}
+	if hasPending {
+		return ciStatusPending, nil
+	}
+	return ciStatusPassed, nil
+}
+
+func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
+	return func() tea.Msg {
+		owner, repo, prNumber, err := parsePRURL(prURL)
+		if err != nil {
+			return ciCheckResultMsg{agentID: agentID, err: err}
+		}
+
+		cmd := exec.Command("gh", "pr", "checks", prNumber, "--repo", owner+"/"+repo, "--json", "name,state")
+		cmd.Dir = worktreePath
+		output, err := cmd.Output()
+		if err != nil {
+			return ciCheckResultMsg{agentID: agentID, err: err}
+		}
+
+		var checks []prCheckResult
+		if err := json.Unmarshal(output, &checks); err != nil {
+			return ciCheckResultMsg{agentID: agentID, err: err}
+		}
+
+		status, failedNames := evaluateCIChecks(checks)
+		var summary string
+		if status == ciStatusFailed {
+			summary = fmt.Sprintf("CI checks failed: %s", strings.Join(failedNames, ", "))
+		}
+
+		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL}
+	}
+}
+
+func getPRTitleFromURL(prURL string) string {
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return ""
+	}
+
+	cmd := exec.Command("gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "title", "-q", ".title")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func writeCIFixScript(agentID, worktreePath, prURL, failureSummary string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1815,7 +1961,7 @@ func writeCICheckScript(agentID, worktreePath, prURL string) (string, error) {
 		return "", err
 	}
 
-	scriptPath := filepath.Join(launcherDir, agentID+"-ci-check.sh")
+	scriptPath := filepath.Join(launcherDir, agentID+"-ci-fix.sh")
 
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
@@ -1829,17 +1975,17 @@ WHITE="\033[1;97m"
 DIM="\033[38;5;245m"
 RESET="\033[0m"
 echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
-echo -e "${DIM}Checking CI status...${RESET}"
+echo -e "${DIM}Fixing CI failures...${RESET}"
 echo ""
 
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "Check the CI status for the PR at %s. Run: gh pr checks %s -- Then: If ALL checks passed, run: ccmux pr-ready %s -- If any checks FAILED, investigate and fix the failures, commit and push, then run: ccmux ci-wait %s -- If checks are still pending/running, run: ccmux ci-wait %s"
+  "CI checks have FAILED for the PR at %s. Failures: %s -- Investigate the failures using: gh pr checks %s -- Fix the issues, commit and push your changes, then run: ccmux ci-wait %s"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, prURL, prURL, prURL, prURL)
+`, agentID, worktreePath, prURL, failureSummary, prURL, prURL)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1848,7 +1994,7 @@ ccmux agent-stopped "$AGENT_ID"
 	return scriptPath, nil
 }
 
-func (m model) resumeCICheckCmd(a *agent.Agent) tea.Cmd {
+func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea.Cmd {
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
@@ -1858,22 +2004,22 @@ func (m model) resumeCICheckCmd(a *agent.Agent) tea.Cmd {
 			ag.Status = agent.StatusRunning
 		})
 
-		scriptPath, err := writeCICheckScript(agentID, worktreePath, prURL)
+		scriptPath, err := writeCIFixScript(agentID, worktreePath, prURL, failureSummary)
 		if err != nil {
-			return errMsg{fmt.Errorf("failed to write CI check script: %w", err)}
+			return errMsg{fmt.Errorf("failed to write CI fix script: %w", err)}
 		}
 
 		m.tmuxManager.KillWindow(tmuxWindow)
 		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
-			return errMsg{fmt.Errorf("failed to create CI check window: %w", err)}
+			return errMsg{fmt.Errorf("failed to create CI fix window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
 		})
 
-		return successMsg{fmt.Sprintf("Agent %s resumed to check CI", agentID)}
+		return successMsg{fmt.Sprintf("Agent %s resumed to fix CI failures", agentID)}
 	}
 }
 
