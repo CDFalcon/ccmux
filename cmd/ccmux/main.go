@@ -421,7 +421,9 @@ When done with your task:
 1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 2. Check CI status with: gh pr checks <pr-url>
 3. If all checks passed, run: ccmux pr-ready <pr-url>
-4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>"
+4. If checks failed or are still pending, run: ccmux ci-wait <pr-url>
+
+Note: ccmux automatically monitors CI after you run ci-wait. If CI fails, you will be resumed with failure details. If CI passes, the PR will be marked ready automatically."
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

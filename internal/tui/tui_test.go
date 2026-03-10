@@ -569,3 +569,131 @@ func TestHandleManageProjectsKeys_ShouldEditProject_GivenEnterOnReadyProject(t *
 		t.Errorf("expected ViewEditProject, got %d", rm.view)
 	}
 }
+
+func TestParsePRURL_ShouldReturnOwnerRepoNumber_GivenValidURL(t *testing.T) {
+	// Setup.
+	url := "https://github.com/myorg/myrepo/pull/42"
+
+	// Execute.
+	owner, repo, prNumber, err := parsePRURL(url)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if owner != "myorg" {
+		t.Errorf("expected owner 'myorg', got '%s'", owner)
+	}
+	if repo != "myrepo" {
+		t.Errorf("expected repo 'myrepo', got '%s'", repo)
+	}
+	if prNumber != "42" {
+		t.Errorf("expected prNumber '42', got '%s'", prNumber)
+	}
+}
+
+func TestParsePRURL_ShouldReturnError_GivenInvalidURL(t *testing.T) {
+	// Setup.
+	url := "not-a-url"
+
+	// Execute.
+	_, _, _, err := parsePRURL(url)
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for invalid URL")
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPassed_GivenAllSuccess(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "build", State: "SUCCESS"},
+		{Name: "lint", State: "SUCCESS"},
+	}
+
+	// Execute.
+	status, failed := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed, got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnFailed_GivenAnyFailure(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "build", State: "SUCCESS"},
+		{Name: "lint", State: "FAILURE"},
+		{Name: "test", State: "ERROR"},
+	}
+
+	// Execute.
+	status, failed := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusFailed {
+		t.Errorf("expected ciStatusFailed, got %d", status)
+	}
+	if len(failed) != 2 {
+		t.Fatalf("expected 2 failures, got %d", len(failed))
+	}
+	if failed[0] != "lint" || failed[1] != "test" {
+		t.Errorf("expected ['lint', 'test'], got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPending_GivenAnyPendingAndNoFailures(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "build", State: "SUCCESS"},
+		{Name: "test", State: "IN_PROGRESS"},
+	}
+
+	// Execute.
+	status, failed := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPending {
+		t.Errorf("expected ciStatusPending, got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPending_GivenNoChecks(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{}
+
+	// Execute.
+	status, _ := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPending {
+		t.Errorf("expected ciStatusPending, got %d", status)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnFailed_GivenFailureAndPending(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "build", State: "FAILURE"},
+		{Name: "test", State: "PENDING"},
+	}
+
+	// Execute.
+	status, failed := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusFailed {
+		t.Errorf("expected ciStatusFailed (failure takes precedence over pending), got %d", status)
+	}
+	if len(failed) != 1 || failed[0] != "build" {
+		t.Errorf("expected ['build'], got %v", failed)
+	}
+}
