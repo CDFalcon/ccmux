@@ -100,12 +100,12 @@ func (s *Store) Add(project *Project) error {
 		project.FastWorktreePath = absFWP
 	}
 
-	if project.UseFastWorktrees {
+	if project.UseFastWorktrees && !project.IsSettingUp() {
 		effectivePath := project.EffectivePath()
 		if !IsProjDirectory(effectivePath) {
 			return fmt.Errorf("path is not a proj directory (missing .repo): %s", effectivePath)
 		}
-	} else if !isGitRepo(project.Path) {
+	} else if !project.UseFastWorktrees && !isGitRepo(project.Path) {
 		return fmt.Errorf("path is not a git repository: %s", project.Path)
 	}
 
@@ -177,12 +177,12 @@ func (s *Store) Update(name string, fn func(p *Project)) error {
 
 	fn(p)
 
-	if p.UseFastWorktrees {
+	if p.UseFastWorktrees && !p.IsSettingUp() {
 		effectivePath := p.EffectivePath()
 		if !IsProjDirectory(effectivePath) {
 			return fmt.Errorf("path is not a proj directory (missing .repo): %s", effectivePath)
 		}
-	} else if !isGitRepo(p.Path) {
+	} else if !p.UseFastWorktrees && !isGitRepo(p.Path) {
 		return fmt.Errorf("path is not a git repository: %s", p.Path)
 	}
 
