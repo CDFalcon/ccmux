@@ -873,7 +873,11 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		if r, ok := m.agentResources[selected.ID]; ok {
 			b.WriteString(fmt.Sprintf("CPU:      %s\n", fmt.Sprintf("%.0f%%", r.CPUPercent)))
 			b.WriteString(fmt.Sprintf("Memory:   %s (%.0f%%)\n", formatBytes(r.MemBytes), r.MemPercent))
-			b.WriteString(fmt.Sprintf("Disk:     %s\n", formatBytes(r.DiskBytes)))
+			diskStr := formatBytes(r.DiskBytes)
+			if r.DiskReflinked {
+				diskStr = "~" + diskStr + " (incremental)"
+			}
+			b.WriteString(fmt.Sprintf("Disk:     %s\n", diskStr))
 			costLine := formatCost(r.CostUSD)
 			if costLine != "" {
 				b.WriteString(fmt.Sprintf("Cost:     %s (est.)\n", costLine))

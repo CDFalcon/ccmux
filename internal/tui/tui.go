@@ -524,8 +524,14 @@ func (m model) refreshCmd() tea.Cmd {
 			queueItems, _ = m.queueManager.List()
 		}
 
+		fastWTProjects := make(map[string]bool)
+		for _, p := range projects {
+			if p.UseFastWorktrees {
+				fastWTProjects[p.Name] = true
+			}
+		}
 		resources, newCPUTicks := queryAllAgentResources(
-			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks,
+			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects,
 		)
 
 		return refreshMsg{

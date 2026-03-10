@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -361,6 +362,85 @@ func TestGetAgentSessionTokens_ShouldReturnZero_GivenNonAssistantMessages(t *tes
 	// Assert.
 	if result.Total != 0 {
 		t.Errorf("expected 0, got %d", result.Total)
+	}
+}
+
+func TestFormatResourceLine_ShouldPrefixTilde_GivenReflinked(t *testing.T) {
+	// Setup.
+	r := &AgentResources{
+		CPUPercent:    10,
+		MemBytes:      int64(512 * 1024 * 1024),
+		MemPercent:    1,
+		DiskBytes:     int64(2 * 1024 * 1024),
+		DiskReflinked: true,
+	}
+
+	// Execute.
+	result := formatResourceLine(r)
+
+	// Assert.
+	expected := "CPU: 10%  Mem: 512Mb (1%)  Disk: ~2Mb"
+	if result != expected {
+		t.Errorf("expected '%s', got '%s'", expected, result)
+	}
+}
+
+func TestGetDiskUsageIncremental_ShouldReturnZero_GivenCleanRepo(t *testing.T) {
+	// Setup.
+	tmpDir := t.TempDir()
+	exec.Command("git", "init", tmpDir).Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.name", "test").Run()
+	exec.Command("git", "-C", tmpDir, "commit", "--allow-empty", "-m", "init").Run()
+
+	// Execute.
+	result := getDiskUsageIncremental(tmpDir)
+
+	// Assert.
+	if result != 0 {
+		t.Errorf("expected 0, got %d", result)
+	}
+}
+
+func TestGetDiskUsageIncremental_ShouldCountModifiedFiles_GivenChanges(t *testing.T) {
+	// Setup.
+	tmpDir := t.TempDir()
+	exec.Command("git", "init", tmpDir).Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.name", "test").Run()
+	testFile := filepath.Join(tmpDir, "test.txt")
+	os.WriteFile(testFile, []byte("hello world"), 0o644)
+	exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Run()
+	os.WriteFile(testFile, []byte("modified content here"), 0o644)
+
+	// Execute.
+	result := getDiskUsageIncremental(tmpDir)
+
+	// Assert.
+	info, _ := os.Stat(testFile)
+	if result != info.Size() {
+		t.Errorf("expected %d, got %d", info.Size(), result)
+	}
+}
+
+func TestGetDiskUsageIncremental_ShouldCountUntrackedFiles_GivenNewFiles(t *testing.T) {
+	// Setup.
+	tmpDir := t.TempDir()
+	exec.Command("git", "init", tmpDir).Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.name", "test").Run()
+	exec.Command("git", "-C", tmpDir, "commit", "--allow-empty", "-m", "init").Run()
+	newFile := filepath.Join(tmpDir, "new.txt")
+	os.WriteFile(newFile, []byte("new content"), 0o644)
+
+	// Execute.
+	result := getDiskUsageIncremental(tmpDir)
+
+	// Assert.
+	info, _ := os.Stat(newFile)
+	if result != info.Size() {
+		t.Errorf("expected %d, got %d", info.Size(), result)
 	}
 }
 

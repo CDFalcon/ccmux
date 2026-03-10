@@ -22,6 +22,7 @@ type AgentResources struct {
 	MemBytes    int64
 	MemPercent  float64
 	DiskBytes   int64
+	DiskReflinked bool
 	TotalTokens int64
 	TokensIn         int64
 	TokensOut        int64
@@ -42,6 +43,7 @@ func queryAllAgentResources(
 	totalMemKB int64,
 	clkTck int64,
 	prevCPUTicks map[int]int64,
+	fastWTProjects map[string]bool,
 ) (map[string]*AgentResources, map[int]int64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
@@ -49,8 +51,9 @@ func queryAllAgentResources(
 	numCPU := float64(runtime.NumCPU())
 
 	type diskResult struct {
-		agentID string
-		bytes   int64
+		agentID   string
+		bytes     int64
+		reflinked bool
 	}
 	var wg sync.WaitGroup
 	diskCh := make(chan diskResult, len(agents))
@@ -63,10 +66,15 @@ func queryAllAgentResources(
 	for _, a := range agents {
 		if a.WorktreePath != "" {
 			wg.Add(1)
-			go func(id, path string) {
+			isFastWT := fastWTProjects[a.ProjectName]
+			go func(id, path string, fastWT bool) {
 				defer wg.Done()
-				diskCh <- diskResult{id, getDiskUsage(path)}
-			}(a.ID, a.WorktreePath)
+				if fastWT {
+					diskCh <- diskResult{id, getDiskUsageIncremental(path), true}
+				} else {
+					diskCh <- diskResult{id, getDiskUsage(path), false}
+				}
+			}(a.ID, a.WorktreePath, isFastWT)
 			wg.Add(1)
 			go func(id, path string) {
 				defer wg.Done()
@@ -82,8 +90,10 @@ func queryAllAgentResources(
 	}()
 
 	diskMap := make(map[string]int64)
+	diskReflinked := make(map[string]bool)
 	for r := range diskCh {
 		diskMap[r.agentID] = r.bytes
+		diskReflinked[r.agentID] = r.reflinked
 	}
 
 	tokenMap := make(map[string]tokenBreakdown)
@@ -131,6 +141,7 @@ func queryAllAgentResources(
 		}
 
 		res.DiskBytes = diskMap[a.ID]
+		res.DiskReflinked = diskReflinked[a.ID]
 		tb := tokenMap[a.ID]
 		res.TotalTokens = tb.Total
 		res.TokensIn = tb.In
@@ -234,6 +245,38 @@ func getDiskUsage(path string) int64 {
 	}
 	size, _ := strconv.ParseInt(fields[0], 10, 64)
 	return size
+}
+
+func getDiskUsageIncremental(path string) int64 {
+	cmd := exec.Command("git", "-C", path, "diff", "--name-only", "HEAD")
+	modifiedOut, err := cmd.Output()
+	if err != nil {
+		return getDiskUsage(path)
+	}
+
+	cmd2 := exec.Command("git", "-C", path, "ls-files", "--others", "--exclude-standard")
+	untrackedOut, err := cmd2.Output()
+	if err != nil {
+		return getDiskUsage(path)
+	}
+
+	var totalBytes int64
+	seen := make(map[string]bool)
+	for _, output := range [][]byte{modifiedOut, untrackedOut} {
+		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			fullPath := filepath.Join(path, line)
+			info, err := os.Stat(fullPath)
+			if err == nil {
+				totalBytes += info.Size()
+			}
+		}
+	}
+	return totalBytes
 }
 
 func getTotalMemoryKB() int64 {
@@ -478,11 +521,15 @@ func formatResourceLine(r *AgentResources) string {
 	if r == nil {
 		return ""
 	}
+	diskStr := formatBytes(r.DiskBytes)
+	if r.DiskReflinked {
+		diskStr = "~" + diskStr
+	}
 	return fmt.Sprintf("CPU: %.0f%%  Mem: %s (%.0f%%)  Disk: %s",
 		r.CPUPercent,
 		formatBytes(r.MemBytes),
 		r.MemPercent,
-		formatBytes(r.DiskBytes),
+		diskStr,
 	)
 }
 
