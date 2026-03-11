@@ -79,8 +79,9 @@ type model struct {
 	prevWindowNames map[string]string
 
 	// CI check tracking
-	ciLastChecked map[string]time.Time
-	ciChecking    map[string]bool
+	ciLastChecked    map[string]time.Time
+	ciChecking       map[string]bool
+	ciCheckProgress  map[string]ciProgress
 
 	// Resource monitoring
 	agentResources map[string]*AgentResources
@@ -382,11 +383,13 @@ type projSetupFailedMsg struct {
 	err  error
 }
 type ciCheckResultMsg struct {
-	agentID string
-	status  ciStatus
-	summary string
-	prURL   string
-	err     error
+	agentID   string
+	status    ciStatus
+	summary   string
+	prURL     string
+	err       error
+	completed int
+	total     int
 }
 
 type ciStatus int
@@ -396,6 +399,11 @@ const (
 	ciStatusPassed
 	ciStatusFailed
 )
+
+type ciProgress struct {
+	Completed int
+	Total     int
+}
 
 func newFixedTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
@@ -436,8 +444,9 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
 		editProjectForm:   newEditProjectForm(),
-		ciLastChecked: make(map[string]time.Time),
-		ciChecking:    make(map[string]bool),
+		ciLastChecked:   make(map[string]time.Time),
+		ciChecking:      make(map[string]bool),
+		ciCheckProgress: make(map[string]ciProgress),
 		prevWindowNames:   make(map[string]string),
 		totalMemKB:        getTotalMemoryKB(),
 		clkTck:            getClockTicks(),
@@ -675,6 +684,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !activeWaiting[id] {
 				delete(m.ciLastChecked, id)
 				delete(m.ciChecking, id)
+				delete(m.ciCheckProgress, id)
 			}
 		}
 		if len(cmds) > 0 {
@@ -690,8 +700,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, nil
 		}
+		m.ciCheckProgress[msg.agentID] = ciProgress{Completed: msg.completed, Total: msg.total}
 		switch msg.status {
 		case ciStatusPassed:
+			delete(m.ciCheckProgress, msg.agentID)
 			summary := getPRTitleFromURL(msg.prURL)
 			if summary == "" {
 				summary = fmt.Sprintf("PR ready: %s", msg.prURL)
@@ -1901,9 +1913,10 @@ func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
 	return owner, repo, prNumber, nil
 }
 
-func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []string) {
-	if len(checks) == 0 {
-		return ciStatusPending, nil
+func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []string, completed int, total int) {
+	total = len(checks)
+	if total == 0 {
+		return ciStatusPending, nil, 0, 0
 	}
 
 	hasPending := false
@@ -1912,6 +1925,7 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 		concl := strings.ToUpper(c.Conclusion)
 
 		if st == "COMPLETED" {
+			completed++
 			switch concl {
 			case "SUCCESS", "NEUTRAL", "SKIPPED":
 			case "FAILURE", "ERROR", "CANCELLED", "ACTION_REQUIRED", "TIMED_OUT", "STARTUP_FAILURE":
@@ -1925,12 +1939,12 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 	}
 
 	if len(failedNames) > 0 {
-		return ciStatusFailed, failedNames
+		return ciStatusFailed, failedNames, completed, total
 	}
 	if hasPending {
-		return ciStatusPending, nil
+		return ciStatusPending, nil, completed, total
 	}
-	return ciStatusPassed, nil
+	return ciStatusPassed, nil, completed, total
 }
 
 func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
@@ -1954,13 +1968,13 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 			return ciCheckResultMsg{agentID: agentID, err: err}
 		}
 
-		status, failedNames := evaluateCIChecks(resp.StatusCheckRollup)
+		status, failedNames, completed, total := evaluateCIChecks(resp.StatusCheckRollup)
 		var summary string
 		if status == ciStatusFailed {
 			summary = fmt.Sprintf("CI checks failed: %s", strings.Join(failedNames, ", "))
 		}
 
-		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL}
+		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total}
 	}
 }
 

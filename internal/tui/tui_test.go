@@ -613,7 +613,7 @@ func TestEvaluateCIChecks_ShouldReturnPassed_GivenAllSuccess(t *testing.T) {
 	}
 
 	// Execute.
-	status, failed := evaluateCIChecks(checks)
+	status, failed, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusPassed {
@@ -633,7 +633,7 @@ func TestEvaluateCIChecks_ShouldReturnPassed_GivenSkippedAndNeutral(t *testing.T
 	}
 
 	// Execute.
-	status, failed := evaluateCIChecks(checks)
+	status, failed, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusPassed {
@@ -653,7 +653,7 @@ func TestEvaluateCIChecks_ShouldReturnFailed_GivenAnyFailure(t *testing.T) {
 	}
 
 	// Execute.
-	status, failed := evaluateCIChecks(checks)
+	status, failed, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusFailed {
@@ -675,7 +675,7 @@ func TestEvaluateCIChecks_ShouldReturnPending_GivenAnyPendingAndNoFailures(t *te
 	}
 
 	// Execute.
-	status, failed := evaluateCIChecks(checks)
+	status, failed, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusPending {
@@ -691,7 +691,7 @@ func TestEvaluateCIChecks_ShouldReturnPending_GivenNoChecks(t *testing.T) {
 	checks := []prCheckResult{}
 
 	// Execute.
-	status, _ := evaluateCIChecks(checks)
+	status, _, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusPending {
@@ -707,7 +707,7 @@ func TestEvaluateCIChecks_ShouldReturnFailed_GivenFailureAndPending(t *testing.T
 	}
 
 	// Execute.
-	status, failed := evaluateCIChecks(checks)
+	status, failed, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
 	if status != ciStatusFailed {
@@ -715,5 +715,27 @@ func TestEvaluateCIChecks_ShouldReturnFailed_GivenFailureAndPending(t *testing.T
 	}
 	if len(failed) != 1 || failed[0] != "build" {
 		t.Errorf("expected ['build'], got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnCorrectProgress_GivenMixedStatuses(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{Name: "lint", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
+		{Name: "deploy", Status: "QUEUED", Conclusion: ""},
+		{Name: "e2e", Status: "COMPLETED", Conclusion: "SUCCESS"},
+	}
+
+	// Execute.
+	_, _, completed, total := evaluateCIChecks(checks)
+
+	// Assert.
+	if completed != 3 {
+		t.Errorf("expected 3 completed, got %d", completed)
+	}
+	if total != 5 {
+		t.Errorf("expected 5 total, got %d", total)
 	}
 }
