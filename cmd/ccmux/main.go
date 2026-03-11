@@ -319,6 +319,13 @@ if [ "$USE_FAST_WT" = "1" ]; then
   git reset --hard "$BASE_BRANCH"
   echo "✓ Reset to latest $BASE_BRANCH"
   echo ""
+
+  echo "→ Updating remote branch refs..."
+  git ls-remote --heads origin | while read sha ref; do
+    git update-ref "refs/remotes/origin/${ref#refs/heads/}" "$sha" 2>/dev/null || true
+  done
+  echo "✓ Remote branch refs updated"
+  echo ""
 else
   # Standard git worktree mode
   WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
@@ -332,6 +339,13 @@ else
   git worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_BRANCH"
   cd "$WORKTREE_PATH"
   echo "✓ Worktree created"
+  echo ""
+
+  echo "→ Updating remote branch refs..."
+  git ls-remote --heads origin | while read sha ref; do
+    git update-ref "refs/remotes/origin/${ref#refs/heads/}" "$sha" 2>/dev/null || true
+  done
+  echo "✓ Remote branch refs updated"
   echo ""
 fi
 
