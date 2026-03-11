@@ -175,7 +175,6 @@ func TestUpdate_ShouldModifyProject_GivenValidName(t *testing.T) {
 	// Execute.
 	err := store.Update("updatable", func(p *Project) {
 		p.DefaultBaseBranch = "origin/main"
-		p.CIWaitMinutes = 10
 	})
 
 	// Assert.
@@ -186,9 +185,6 @@ func TestUpdate_ShouldModifyProject_GivenValidName(t *testing.T) {
 	if retrieved.DefaultBaseBranch != "origin/main" {
 		t.Errorf("expected base branch 'origin/main', got '%s'", retrieved.DefaultBaseBranch)
 	}
-	if retrieved.CIWaitMinutes != 10 {
-		t.Errorf("expected CI wait 10, got %d", retrieved.CIWaitMinutes)
-	}
 }
 
 func TestUpdate_ShouldFail_GivenNonExistentProject(t *testing.T) {
@@ -198,38 +194,12 @@ func TestUpdate_ShouldFail_GivenNonExistentProject(t *testing.T) {
 
 	// Execute.
 	err := store.Update("ghost", func(p *Project) {
-		p.CIWaitMinutes = 5
+		p.DefaultBaseBranch = "origin/main"
 	})
 
 	// Assert.
 	if err == nil {
 		t.Error("expected error for non-existent project, got nil")
-	}
-}
-
-func TestEffectiveCIWaitMinutes_ShouldReturnDefault_GivenZeroValue(t *testing.T) {
-	// Setup.
-	p := &Project{Name: "test", CIWaitMinutes: 0}
-
-	// Execute.
-	result := p.EffectiveCIWaitMinutes()
-
-	// Assert.
-	if result != DefaultCIWaitMinutes {
-		t.Errorf("expected %d, got %d", DefaultCIWaitMinutes, result)
-	}
-}
-
-func TestEffectiveCIWaitMinutes_ShouldReturnCustom_GivenPositiveValue(t *testing.T) {
-	// Setup.
-	p := &Project{Name: "test", CIWaitMinutes: 10}
-
-	// Execute.
-	result := p.EffectiveCIWaitMinutes()
-
-	// Assert.
-	if result != 10 {
-		t.Errorf("expected 10, got %d", result)
 	}
 }
 
