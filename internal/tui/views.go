@@ -862,6 +862,9 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		b.WriteString(fmt.Sprintf("Task:     %s\n", wrapText(selected.Task, 60)))
 		b.WriteString(fmt.Sprintf("Branch:   %s\n", dimStyle.Render(selected.BranchName)))
 		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
+		if selected.PRURL != "" {
+			b.WriteString(fmt.Sprintf("PR:       %s\n", selected.PRURL))
+		}
 		if selected.Status == agent.StatusWaitingCI {
 			if p, ok := m.ciCheckProgress[selected.ID]; ok && p.Total > 0 {
 				b.WriteString(fmt.Sprintf("CI:       %s\n", agentWaitingCIStyle.Render(fmt.Sprintf("waiting on CI - %d/%d checks left", p.Total-p.Completed, p.Total))))
