@@ -205,7 +205,7 @@ func (m *Manager) SetupAgentNavigation() {
 		"").Run()
 
 	statusFmt := fmt.Sprintf(
-		"#{?#{==:#{window_index},%d},, #[fg=colour245]F12 → ccmux }",
+		"#{?#{==:#{window_index},%d},, #[fg=colour245]F12: return to ccmux }",
 		baseIdx,
 	)
 	exec.Command("tmux", "set-option", "-t", m.sessionName, "status-right", statusFmt).Run()
