@@ -49,10 +49,13 @@ var (
 				Bold(true)
 
 	agentRunningStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(ColorYellow))
+				Foreground(lipgloss.Color(ColorRoyalBlue))
 
 	agentReadyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(ColorGreen))
+			Foreground(lipgloss.Color(ColorYellow))
+
+	agentWaitingReviewStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(ColorYellow))
 
 	agentMergedStyle = lipgloss.NewStyle().
 				Foreground(royalBlue)
@@ -94,9 +97,6 @@ var (
 	branchMatchStyle = lipgloss.NewStyle().
 				Foreground(royalBlue).
 				Bold(true)
-
-	questionStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(ColorYellow))
 
 	prReadyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorGreen))

@@ -7,14 +7,15 @@ const CurrentSchemaVersion = 1
 type Status string
 
 const (
-	StatusSpawning   Status = "spawning"
-	StatusRunning    Status = "running"
-	StatusReady      Status = "ready"
-	StatusWaitingCI  Status = "waiting_ci"
-	StatusCleaningUp Status = "cleaning_up"
-	StatusKilling    Status = "killing"
-	StatusMerged     Status = "merged"
-	StatusFailed     Status = "failed"
+	StatusSpawning      Status = "spawning"
+	StatusRunning       Status = "running"
+	StatusReady         Status = "ready"
+	StatusWaitingReview Status = "waiting_review"
+	StatusWaitingCI     Status = "waiting_ci"
+	StatusCleaningUp    Status = "cleaning_up"
+	StatusKilling       Status = "killing"
+	StatusMerged        Status = "merged"
+	StatusFailed        Status = "failed"
 )
 
 func (s Status) DisplayName() string {
@@ -24,7 +25,9 @@ func (s Status) DisplayName() string {
 	case StatusRunning:
 		return "running"
 	case StatusReady:
-		return "ready"
+		return "idle"
+	case StatusWaitingReview:
+		return "waiting for review"
 	case StatusWaitingCI:
 		return "waiting on CI"
 	case StatusCleaningUp:

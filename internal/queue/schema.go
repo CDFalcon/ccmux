@@ -7,9 +7,8 @@ const CurrentSchemaVersion = 1
 type ItemType string
 
 const (
-	ItemTypeQuestion ItemType = "question"
-	ItemTypePRReady  ItemType = "pr_ready"
-	ItemTypeIdle     ItemType = "idle"
+	ItemTypePRReady ItemType = "pr_ready"
+	ItemTypeIdle    ItemType = "idle"
 )
 
 type QueueItem struct {

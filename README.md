@@ -59,5 +59,4 @@ sudo mv ccmux-linux-amd64 /usr/local/bin/ccmux
 4. **Monitor and work the queue:** As agents work, items appear in the quick action queue. Press `q` to pop the top item and take action:
 
    - 💤 **Idle** — agent's terminal has gone quiet (may be stuck). Jump in to check on it or send it a message.
-   - ❓ **Question** — agent explicitly asked for help. Read the details and respond.
    - 🔀 **PR Ready** — agent opened a pull request. **`a`**ccept (merge + cleanup), **`c`**omment (resume agent to address feedback), **`r`**eject (close PR + cleanup), or **`b`**rowser (open in browser).

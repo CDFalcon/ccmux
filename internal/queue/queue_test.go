@@ -31,7 +31,7 @@ func TestAdd_ShouldCreateQueueItem_GivenValidInput(t *testing.T) {
 	defer cleanup()
 
 	// Execute.
-	item, err := q.Add(ItemTypeQuestion, "agent-1", "Test question", "Details here")
+	item, err := q.Add(ItemTypeIdle, "agent-1", "Agent idle", "Details here")
 
 	// Assert.
 	if err != nil {
@@ -40,8 +40,8 @@ func TestAdd_ShouldCreateQueueItem_GivenValidInput(t *testing.T) {
 	if item.ID == "" {
 		t.Error("expected item ID to be set")
 	}
-	if item.Type != ItemTypeQuestion {
-		t.Errorf("expected type %s, got %s", ItemTypeQuestion, item.Type)
+	if item.Type != ItemTypeIdle {
+		t.Errorf("expected type %s, got %s", ItemTypeIdle, item.Type)
 	}
 	if item.AgentID != "agent-1" {
 		t.Errorf("expected agent ID agent-1, got %s", item.AgentID)
@@ -52,7 +52,7 @@ func TestList_ShouldReturnAllItems_GivenMultipleAdds(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
-	q.Add(ItemTypeQuestion, "agent-1", "Question 1", "")
+	q.Add(ItemTypeIdle, "agent-1", "Idle 1", "")
 	q.Add(ItemTypePRReady, "agent-2", "PR ready", "")
 
 	// Execute.
@@ -71,19 +71,19 @@ func TestListByType_ShouldFilterByType_GivenMixedItems(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
-	q.Add(ItemTypeQuestion, "agent-1", "Question", "")
+	q.Add(ItemTypeIdle, "agent-1", "Idle", "")
 	q.Add(ItemTypePRReady, "agent-2", "PR ready", "")
-	q.Add(ItemTypeQuestion, "agent-3", "Another question", "")
+	q.Add(ItemTypeIdle, "agent-3", "Another idle", "")
 
 	// Execute.
-	items, err := q.ListByType(ItemTypeQuestion)
+	items, err := q.ListByType(ItemTypeIdle)
 
 	// Assert.
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(items) != 2 {
-		t.Errorf("expected 2 question items, got %d", len(items))
+		t.Errorf("expected 2 idle items, got %d", len(items))
 	}
 }
 
@@ -91,7 +91,7 @@ func TestRemove_ShouldDeleteItem_GivenValidID(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
-	item, _ := q.Add(ItemTypeQuestion, "agent-1", "Question", "")
+	item, _ := q.Add(ItemTypeIdle, "agent-1", "Idle", "")
 
 	// Execute.
 	err := q.Remove(item.ID)
@@ -110,9 +110,9 @@ func TestRemoveByAgent_ShouldDeleteAllAgentItems_GivenAgentID(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
-	q.Add(ItemTypeQuestion, "agent-1", "Question 1", "")
+	q.Add(ItemTypeIdle, "agent-1", "Idle 1", "")
 	q.Add(ItemTypePRReady, "agent-1", "PR ready", "")
-	q.Add(ItemTypeQuestion, "agent-2", "Question 2", "")
+	q.Add(ItemTypeIdle, "agent-2", "Idle 2", "")
 
 	// Execute.
 	err := q.RemoveByAgent("agent-1")
@@ -134,7 +134,7 @@ func TestClear_ShouldRemoveAllItems_GivenPopulatedQueue(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
-	q.Add(ItemTypeQuestion, "agent-1", "Question", "")
+	q.Add(ItemTypeIdle, "agent-1", "Idle", "")
 	q.Add(ItemTypePRReady, "agent-2", "PR ready", "")
 
 	// Execute.

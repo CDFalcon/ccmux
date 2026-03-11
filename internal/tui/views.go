@@ -334,7 +334,7 @@ func renderInterveneView(m model) string {
 	b.WriteString(titleStyle.Render("# Intervene - Select Agent"))
 	b.WriteString("\n\n")
 
-	items := filterQueueByType(m.queueItems, queue.ItemTypeQuestion, queue.ItemTypeIdle)
+	items := filterQueueByType(m.queueItems, queue.ItemTypeIdle)
 	if len(items) == 0 {
 		b.WriteString(dimStyle.Render("No agents need intervention"))
 		b.WriteString("\n\n")
@@ -713,6 +713,8 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 		return agentKillingStyle
 	case agent.StatusReady:
 		return agentReadyStyle
+	case agent.StatusWaitingReview:
+		return agentWaitingReviewStyle
 	case agent.StatusWaitingCI:
 		return agentWaitingCIStyle
 	case agent.StatusMerged:
@@ -726,8 +728,6 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 
 func getItemIcon(itemType queue.ItemType) string {
 	switch itemType {
-	case queue.ItemTypeQuestion:
-		return "❓"
 	case queue.ItemTypePRReady:
 		return "🔀"
 	case queue.ItemTypeIdle:
@@ -739,8 +739,6 @@ func getItemIcon(itemType queue.ItemType) string {
 
 func getItemStyle(itemType queue.ItemType) lipgloss.Style {
 	switch itemType {
-	case queue.ItemTypeQuestion:
-		return questionStyle
 	case queue.ItemTypePRReady:
 		return prReadyStyle
 	default:

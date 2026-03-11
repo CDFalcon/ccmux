@@ -700,7 +700,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.queueManager.Add(queue.ItemTypePRReady, msg.agentID, summary, msg.prURL)
 			m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
-				ag.Status = agent.StatusReady
+				ag.Status = agent.StatusWaitingReview
 			})
 			return m, m.refreshCmd()
 		case ciStatusFailed:
@@ -931,7 +931,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		item := m.queueItems[len(m.queueItems)-1]
 		switch item.Type {
-		case queue.ItemTypeIdle, queue.ItemTypeQuestion:
+		case queue.ItemTypeIdle:
 			for _, a := range m.agents {
 				if a.ID == item.AgentID {
 					return m, m.quickRespondToAgentCmd(a)
@@ -1120,7 +1120,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleInterveneKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	items := filterQueueByType(m.queueItems, queue.ItemTypeQuestion, queue.ItemTypeIdle)
+	items := filterQueueByType(m.queueItems, queue.ItemTypeIdle)
 
 	switch msg.String() {
 	case "esc":
@@ -1548,6 +1548,8 @@ func (m model) updateWindowNames() {
 		case agent.StatusKilling:
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusReady:
+			name = "● " + short
+		case agent.StatusWaitingReview:
 			name = "● " + short
 		case agent.StatusWaitingCI:
 			name = "⏳ " + short
