@@ -129,7 +129,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewAgentInfo: {
 		{FooterText: "[↑/↓/k] select", Description: "Navigate the agent list"},
-		{FooterText: "[j]ump to agent", Description: "Jump to the selected agent's window"},
+		{FooterText: "[enter] jump to agent", Description: "Jump to the selected agent's window"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
 	ViewUpdate: {
