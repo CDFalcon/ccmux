@@ -19,6 +19,7 @@ var viewTitles = map[ViewState]string{
 	ViewNewTaskBranch:        "New Task - Base Branch",
 	ViewNewTaskBranchInput:   "New Task - Specify Branch",
 	ViewNewTaskInput:         "New Task",
+	ViewNewTaskWorktreeName:  "New Task - Worktree Name",
 	ViewIntervene:            "Intervene",
 	ViewInterveneInput:       "Send Message",
 	ViewReview:               "Review PR",
@@ -61,8 +62,12 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewNewTaskInput: {
-		{FooterText: "[enter] submit", Description: "Submit the task and spawn an agent"},
+		{FooterText: "[enter] next", Description: "Continue to worktree name step"},
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
+	},
+	ViewNewTaskWorktreeName: {
+		{FooterText: "[enter] spawn", Description: "Spawn the agent (name is optional)"},
+		{FooterText: "[esc] back", Description: "Return to task description"},
 	},
 	ViewIntervene: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the agent list"},

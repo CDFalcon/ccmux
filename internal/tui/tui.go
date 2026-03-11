@@ -41,9 +41,11 @@ type model struct {
 	taskInput             textarea.Model
 	branchInput           textinput.Model
 	branchOptions         []string
-	branchFilter     textinput.Model
-	filteredBranches []string
-	spawnBranch      string
+	branchFilter          textinput.Model
+	filteredBranches      []string
+	spawnBranch           string
+	spawnTask             string
+	worktreeNameInput     textinput.Model
 
 	// Project form inputs
 	projectForm     projectFormModel
@@ -421,6 +423,11 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	branchFilter.Width = 50
 	branchFilter.CharLimit = 100
 
+	worktreeNameInput := textinput.New()
+	worktreeNameInput.Placeholder = "e.g. fix-auth-bug (optional)"
+	worktreeNameInput.Width = 50
+	worktreeNameInput.CharLimit = 50
+
 	interveneInput := newFixedTextarea("Type message to send to agent...", 60)
 
 	progress := new(int64)
@@ -430,6 +437,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		taskInput:         taskInput,
 		branchInput:       branchInput,
 		branchFilter:      branchFilter,
+		worktreeNameInput: worktreeNameInput,
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
 		editProjectForm:   newEditProjectForm(),
@@ -809,6 +817,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.taskInput, cmd = m.taskInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
+	if m.view == ViewNewTaskWorktreeName {
+		var cmd tea.Cmd
+		m.worktreeNameInput, cmd = m.worktreeNameInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	if m.view == ViewAddProjectName {
 		var cmd tea.Cmd
@@ -886,6 +899,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNewTaskBranchInputKeys(msg)
 	case ViewNewTaskInput:
 		return m.handleNewTaskInputKeys(msg)
+	case ViewNewTaskWorktreeName:
+		return m.handleNewTaskWorktreeNameKeys(msg)
 	case ViewIntervene:
 		return m.handleInterveneKeys(msg)
 	case ViewInterveneInput:
@@ -1105,17 +1120,44 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if task == "" {
 			return m, nil
 		}
-		proj := m.selectedProj
-		branch := m.spawnBranch
-		m.view = ViewMain
-		m.taskInput.SetValue("")
-		m.selectedProj = nil
-		m.spawnBranch = ""
-		return m, m.spawnAgentCmd(task, proj, branch)
+		m.spawnTask = task
+		m.taskInput.Blur()
+		m.view = ViewNewTaskWorktreeName
+		m.worktreeNameInput.SetValue("")
+		m.worktreeNameInput.Focus()
+		return m, textinput.Blink
 	}
 
 	var cmd tea.Cmd
 	m.taskInput, cmd = m.taskInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewNewTaskInput
+		m.worktreeNameInput.Blur()
+		cmd := m.taskInput.Focus()
+		return m, cmd
+	case "enter":
+		worktreeName := m.worktreeNameInput.Value()
+		task := m.spawnTask
+		proj := m.selectedProj
+		branch := m.spawnBranch
+		m.view = ViewMain
+		m.taskInput.SetValue("")
+		m.taskInput.Blur()
+		m.worktreeNameInput.SetValue("")
+		m.worktreeNameInput.Blur()
+		m.selectedProj = nil
+		m.spawnBranch = ""
+		m.spawnTask = ""
+		return m, m.spawnAgentCmd(task, proj, branch, worktreeName)
+	}
+
+	var cmd tea.Cmd
+	m.worktreeNameInput, cmd = m.worktreeNameInput.Update(msg)
 	return m, cmd
 }
 
@@ -1689,13 +1731,17 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 	}
 }
 
-func (m model) spawnAgentCmd(task string, proj *project.Project, branch string) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to get executable: %w", err)}
 		}
-		cmd := exec.Command(exePath, "spawn", task, "--project", proj.Name, "--branch", branch)
+		args := []string{"spawn", task, "--project", proj.Name, "--branch", branch}
+		if worktreeName != "" {
+			args = append(args, "--worktree-name", worktreeName)
+		}
+		cmd := exec.Command(exePath, args...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return errMsg{fmt.Errorf("spawn failed: %s: %w", string(output), err)}
@@ -2173,6 +2219,8 @@ func (m model) View() string {
 		content = renderNewTaskBranchInputView(m)
 	case ViewNewTaskInput:
 		content = renderNewTaskInputView(m)
+	case ViewNewTaskWorktreeName:
+		content = renderNewTaskWorktreeNameView(m)
 	case ViewIntervene:
 		content = renderInterveneView(m)
 	case ViewInterveneInput:

@@ -21,6 +21,7 @@ const (
 	ViewNewTaskBranch
 	ViewNewTaskBranchInput
 	ViewNewTaskInput
+	ViewNewTaskWorktreeName
 	ViewIntervene
 	ViewInterveneInput
 	ViewReview
@@ -323,6 +324,31 @@ func renderNewTaskInputView(m model) string {
 	b.WriteString("\n\n")
 
 	help := helpFooter(ViewNewTaskInput)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderNewTaskWorktreeNameView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# New Task - Worktree Name (optional)"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Worktree name:\n")
+	b.WriteString(inputStyle.Render(m.worktreeNameInput.View()))
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("Optional. Leave empty for default (e.g. ccmux/<agent-id>)"))
+	b.WriteString("\n\n")
+
+	help := helpFooter(ViewNewTaskWorktreeName)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()

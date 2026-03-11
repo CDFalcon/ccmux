@@ -190,6 +190,7 @@ func runSession(sessionID string) error {
 func spawnCmd() *cobra.Command {
 	var projectName string
 	var baseBranch string
+	var worktreeName string
 
 	cmd := &cobra.Command{
 		Use:    "spawn <task>",
@@ -197,7 +198,7 @@ func spawnCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task := args[0]
-			logging.Log("spawn: starting for task=%q project=%q branch=%q", task, projectName, baseBranch)
+			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q", task, projectName, baseBranch, worktreeName)
 
 			if projectName == "" {
 				return fmt.Errorf("--project is required")
@@ -223,7 +224,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-		launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName))
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -258,12 +259,13 @@ func spawnCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&projectName, "project", "", "Project to use")
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
+	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -281,6 +283,11 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, 
 		useFastWT = "1"
 	}
 
+	wtSuffix := agentID
+	if worktreeName != "" {
+		wtSuffix = worktreeName + "-" + agentID
+	}
+
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
@@ -290,6 +297,7 @@ REPO_PATH="%s"
 BASE_BRANCH="%s"
 SESSION_ID="%s"
 USE_FAST_WT="%s"
+WT_SUFFIX="%s"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -302,12 +310,12 @@ echo ""
 if [ "$USE_FAST_WT" = "1" ]; then
   # Fast worktree mode using proj (reflink copy)
   PROJ_DIR="$REPO_PATH"
-  WORKTREE_PATH="$PROJ_DIR/ccmux-$AGENT_ID"
-  BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$AGENT_ID"
+  WORKTREE_PATH="$PROJ_DIR/ccmux-$WT_SUFFIX"
+  BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$WT_SUFFIX"
 
   echo "→ Creating fast worktree at $WORKTREE_PATH..."
   cd "$PROJ_DIR"
-  proj new "ccmux-$AGENT_ID"
+  proj new "ccmux-$WT_SUFFIX"
   cd "$WORKTREE_PATH"
   echo "✓ Fast worktree created (proj)"
   echo ""
@@ -327,8 +335,8 @@ if [ "$USE_FAST_WT" = "1" ]; then
   echo ""
 else
   # Standard git worktree mode
-  WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$AGENT_ID"
-  BRANCH_NAME="ccmux/$AGENT_ID"
+  WORKTREE_PATH="$(dirname "$REPO_PATH")/ccmux-$WT_SUFFIX"
+  BRANCH_NAME="ccmux/$WT_SUFFIX"
 
   echo "→ Creating worktree at $WORKTREE_PATH..."
   cd "$REPO_PATH"
@@ -425,7 +433,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1102,6 +1110,27 @@ done
 	}
 
 	return scriptPath, nil
+}
+
+// sanitizeWorktreeName converts a user-supplied name into a safe string for
+// use in branch names and directory paths: lowercase, spaces/underscores become
+// hyphens, non-alphanumeric-hyphen chars are dropped, max 30 chars.
+func sanitizeWorktreeName(name string) string {
+	name = strings.ToLower(name)
+	name = strings.Map(func(r rune) rune {
+		if r == ' ' || r == '_' {
+			return '-'
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return -1
+	}, name)
+	name = strings.Trim(name, "-")
+	if len(name) > 30 {
+		name = strings.TrimRight(name[:30], "-")
+	}
+	return name
 }
 
 func generateID() string {
