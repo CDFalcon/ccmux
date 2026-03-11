@@ -58,6 +58,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
 	m.ForwardEnv()
 	m.SourceUserConfig()
+	m.SetupAgentNavigation()
 	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
 		return fmt.Errorf("failed to start command in session: %w", err)
 	}
@@ -191,6 +192,23 @@ func (m *Manager) RenameWindow(windowID, name string) error {
 
 func (m *Manager) EnsureRemainOnExit() {
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
+}
+
+func (m *Manager) SetupAgentNavigation() {
+	baseIdx := GetBaseIndex()
+	firstWindow := fmt.Sprintf("%s:%d", m.sessionName, baseIdx)
+
+	exec.Command("tmux", "bind-key", "-n", "F12",
+		"if-shell", "-F",
+		fmt.Sprintf("#{!=:#{window_index},%d}", baseIdx),
+		fmt.Sprintf("select-window -t %s", firstWindow),
+		"").Run()
+
+	statusFmt := fmt.Sprintf(
+		"#{?#{==:#{window_index},%d},, #[fg=colour245]F12 → ccmux }",
+		baseIdx,
+	)
+	exec.Command("tmux", "set-option", "-t", m.sessionName, "status-right", statusFmt).Run()
 }
 
 func (m *Manager) RespawnDeadPane(windowID, command string) error {

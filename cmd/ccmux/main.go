@@ -146,6 +146,7 @@ func runSession(sessionID string) error {
 			tmuxManager.ForwardEnv()
 			tmuxManager.SourceUserConfig()
 			tmuxManager.EnsureRemainOnExit()
+			tmuxManager.SetupAgentNavigation()
 
 			exePath, err := os.Executable()
 			if err == nil {
