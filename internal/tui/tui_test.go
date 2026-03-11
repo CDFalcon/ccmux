@@ -831,3 +831,109 @@ func TestDeduplicateChecks_ShouldKeepLatestByStartedAt(t *testing.T) {
 		t.Errorf("expected 'b' to remain SUCCESS, got %s", resultMap["b"].Conclusion)
 	}
 }
+
+func TestNormalizeChecks_ShouldConvertStatusContextToCheckRunFormat(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{TypeName: "StatusContext", Context: "ci/buildkite", State: "SUCCESS"},
+		{TypeName: "StatusContext", Context: "ci/lint", State: "PENDING"},
+		{TypeName: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+	}
+
+	// Execute.
+	result := normalizeChecks(checks)
+
+	// Assert.
+	if result[0].Name != "ci/buildkite" {
+		t.Errorf("expected Name to be set from Context, got %q", result[0].Name)
+	}
+	if result[0].Status != "COMPLETED" {
+		t.Errorf("expected COMPLETED for success state, got %q", result[0].Status)
+	}
+	if result[0].Conclusion != "SUCCESS" {
+		t.Errorf("expected SUCCESS conclusion, got %q", result[0].Conclusion)
+	}
+	if result[1].Name != "ci/lint" {
+		t.Errorf("expected Name to be set from Context, got %q", result[1].Name)
+	}
+	if result[1].Status != "IN_PROGRESS" {
+		t.Errorf("expected IN_PROGRESS for pending state, got %q", result[1].Status)
+	}
+	if result[2].Name != "build" {
+		t.Errorf("expected CheckRun to be unchanged, got %q", result[2].Name)
+	}
+	if result[2].Status != "COMPLETED" {
+		t.Errorf("expected CheckRun status unchanged, got %q", result[2].Status)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPassed_GivenMixedCheckRunAndStatusContext(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{TypeName: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{TypeName: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{TypeName: "StatusContext", Context: "ci/buildkite/deploy", State: "SUCCESS"},
+		{TypeName: "StatusContext", Context: "ci/buildkite/lint", State: "SUCCESS"},
+	}
+
+	// Execute.
+	status, failed, completed, total := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed, got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+	if completed != 4 {
+		t.Errorf("expected 4 completed, got %d", completed)
+	}
+	if total != 4 {
+		t.Errorf("expected 4 total, got %d", total)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnFailed_GivenStatusContextFailure(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{TypeName: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{TypeName: "StatusContext", Context: "ci/deploy", State: "FAILURE"},
+	}
+
+	// Execute.
+	status, failed, _, _ := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusFailed {
+		t.Errorf("expected ciStatusFailed, got %d", status)
+	}
+	if len(failed) != 1 || failed[0] != "ci/deploy" {
+		t.Errorf("expected ['ci/deploy'], got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPending_GivenStatusContextPending(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{TypeName: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{TypeName: "StatusContext", Context: "ci/deploy", State: "PENDING"},
+	}
+
+	// Execute.
+	status, failed, completed, total := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPending {
+		t.Errorf("expected ciStatusPending, got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+	if completed != 1 {
+		t.Errorf("expected 1 completed, got %d", completed)
+	}
+	if total != 2 {
+		t.Errorf("expected 2 total, got %d", total)
+	}
+}
