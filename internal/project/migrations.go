@@ -45,4 +45,8 @@ func init() {
 		store.Version = 4
 		return json.Marshal(store)
 	})
+	migrations.Register(4, func(data []byte) ([]byte, error) {
+		// Version 5 adds window_layout_path field — no data transformation needed.
+		return data, nil
+	})
 }

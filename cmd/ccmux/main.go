@@ -18,6 +18,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/tui"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
+	"github.com/CDFalcon/ccmux/internal/windowlayout"
 	"github.com/CDFalcon/ccmux/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -224,7 +225,17 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-		launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees)
+		var paneSetupCmds string
+		if proj.WindowLayoutPath != "" {
+			layout, err := windowlayout.Load(proj.WindowLayoutPath)
+			if err != nil {
+				logging.Log("spawn: failed to load window layout config: %v", err)
+			} else {
+				paneSetupCmds = layout.GenerateSetupScript()
+			}
+		}
+
+		launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, paneSetupCmds)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -264,7 +275,7 @@ func spawnCmd() *cobra.Command {
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, paneSetupCmds string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -417,6 +428,7 @@ ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH"
 echo "✓ Agent registered"
 echo ""
 
+%s
 echo -e "${DIM}Starting Claude Code...${RESET}"
 echo ""
 
@@ -449,13 +461,22 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, buildPaneSetupSection(paneSetupCmds))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
 	}
 
 	return scriptPath, nil
+}
+
+// buildPaneSetupSection returns the bash snippet (with MAIN_PANE capture) for
+// embedding in the launcher script, or an empty string if there are no panes.
+func buildPaneSetupSection(paneSetupCmds string) string {
+	if paneSetupCmds == "" {
+		return ""
+	}
+	return "MAIN_PANE=\"$TMUX_PANE\"\n" + paneSetupCmds
 }
 
 func registerAgentCmd() *cobra.Command {
