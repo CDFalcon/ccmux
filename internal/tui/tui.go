@@ -371,13 +371,14 @@ type projSetupFailedMsg struct {
 	err  error
 }
 type ciCheckResultMsg struct {
-	agentID   string
-	status    ciStatus
-	summary   string
-	prURL     string
-	err       error
-	completed int
-	total     int
+	agentID          string
+	status           ciStatus
+	summary          string
+	prURL            string
+	err              error
+	completed        int
+	total            int
+	hasMergeConflict bool
 }
 
 type ciStatus int
@@ -677,6 +678,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ciCheckProgress[msg.agentID] = ciProgress{Completed: msg.completed, Total: msg.total}
+		if msg.hasMergeConflict {
+			var a *agent.Agent
+			for _, ag := range m.agents {
+				if ag.ID == msg.agentID {
+					a = ag
+					break
+				}
+			}
+			if a != nil {
+				delete(m.ciCheckProgress, msg.agentID)
+				return m, m.resumeAgentForMergeConflictCmd(a)
+			}
+		}
 		switch msg.status {
 		case ciStatusPassed:
 			delete(m.ciCheckProgress, msg.agentID)
@@ -1852,6 +1866,7 @@ type prCheckResult struct {
 
 type statusCheckRollupResponse struct {
 	StatusCheckRollup []prCheckResult `json:"statusCheckRollup"`
+	Mergeable         string          `json:"mergeable"`
 }
 
 func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
@@ -1918,7 +1933,7 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "statusCheckRollup")
+		cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "statusCheckRollup,mergeable")
 		output, err := cmd.Output()
 		if err != nil {
 			return ciCheckResultMsg{agentID: agentID, err: err}
@@ -1929,13 +1944,15 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 			return ciCheckResultMsg{agentID: agentID, err: err}
 		}
 
+		hasMergeConflict := resp.Mergeable == "CONFLICTING"
+
 		status, failedNames, completed, total := evaluateCIChecks(resp.StatusCheckRollup)
 		var summary string
 		if status == ciStatusFailed {
 			summary = fmt.Sprintf("CI checks failed: %s", strings.Join(failedNames, ", "))
 		}
 
-		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total}
+		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total, hasMergeConflict: hasMergeConflict}
 	}
 }
 
@@ -2023,6 +2040,80 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to fix CI failures", agentID)}
+	}
+}
+
+func writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-merge-conflict.sh")
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID="%s"
+
+cd "%s"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Resolving merge conflicts...${RESET}"
+echo ""
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+unset CLAUDECODE
+
+claude --continue --dangerously-skip-permissions \
+  "The PR at %s has merge conflicts with the base branch (%s). Resolve the merge conflicts by rebasing: git fetch origin && git rebase origin/%s -- Resolve any conflicts, then git add the resolved files and git rebase --continue. After resolving all conflicts, push with: git push --force-with-lease -- Then run: ccmux ci-wait %s"
+
+ccmux agent-stopped "$AGENT_ID"
+`, agentID, worktreePath, prURL, baseBranch, baseBranch, prURL)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
+	agentID := a.ID
+	worktreePath := a.WorktreePath
+	tmuxWindow := a.TmuxWindow
+	prURL := a.PRURL
+	baseBranch := a.BaseBranch
+	return func() tea.Msg {
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusRunning
+		})
+
+		scriptPath, err := writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch)
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to write merge conflict script: %w", err)}
+		}
+
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create merge conflict window: %w", err)}
+		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
+
+		return successMsg{fmt.Sprintf("Agent %s resumed to resolve merge conflicts", agentID)}
 	}
 }
 

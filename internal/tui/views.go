@@ -125,9 +125,10 @@ func renderMainView(m model) string {
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusWaitingCI {
 				icon := agentWaitingCIStyle.Render("⏳")
-				ciLabel := "waiting on CI"
+				ciLabel := "Waiting on CI"
 				if p, ok := m.ciCheckProgress[a.ID]; ok && p.Total > 0 {
-					ciLabel = fmt.Sprintf("CI %d/%d", p.Completed, p.Total)
+					remaining := p.Total - p.Completed
+					ciLabel = fmt.Sprintf("Waiting on CI - %d/%d checks left", remaining, p.Total)
 				}
 				status := agentWaitingCIStyle.Render(ciLabel)
 				line := fmt.Sprintf("  %s %s: %s [%s]%s", icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
@@ -840,7 +841,15 @@ func renderAgentSelector(m model, emptyMsg string) string {
 				style = selectedItemStyle
 			}
 			statusStyle := getAgentStatusStyle(a.Status)
-			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(a.Status.DisplayName()))
+			statusText := a.Status.DisplayName()
+			if a.Status == agent.StatusWaitingCI {
+				statusText = "Waiting on CI"
+				if p, ok := m.ciCheckProgress[a.ID]; ok && p.Total > 0 {
+					remaining := p.Total - p.Completed
+					statusText = fmt.Sprintf("Waiting on CI - %d/%d checks left", remaining, p.Total)
+				}
+			}
+			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(statusText))
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
@@ -857,9 +866,9 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
 		if selected.Status == agent.StatusWaitingCI {
 			if p, ok := m.ciCheckProgress[selected.ID]; ok && p.Total > 0 {
-				b.WriteString(fmt.Sprintf("CI:       %s\n", agentWaitingCIStyle.Render(fmt.Sprintf("%d/%d checks complete", p.Completed, p.Total))))
+				b.WriteString(fmt.Sprintf("CI:       %s\n", agentWaitingCIStyle.Render(fmt.Sprintf("Waiting on CI - %d/%d checks left", p.Total-p.Completed, p.Total))))
 			} else {
-				b.WriteString(fmt.Sprintf("CI:       %s\n", dimStyle.Render("waiting for checks...")))
+				b.WriteString(fmt.Sprintf("CI:       %s\n", dimStyle.Render("Waiting for checks...")))
 			}
 		}
 		if r, ok := m.agentResources[selected.ID]; ok {
