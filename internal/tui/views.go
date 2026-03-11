@@ -695,24 +695,7 @@ func renderConfirmKillSessionView(m model) string {
 }
 
 func renderAgentStatus(status agent.Status) string {
-	switch status {
-	case agent.StatusRunning:
-		return agentRunningStyle.Render("running")
-	case agent.StatusCleaningUp:
-		return agentCleaningUpStyle.Render("cleaning up")
-	case agent.StatusKilling:
-		return agentKillingStyle.Render("killing")
-	case agent.StatusReady:
-		return agentReadyStyle.Render("ready")
-	case agent.StatusWaitingCI:
-		return agentWaitingCIStyle.Render("waiting on CI")
-	case agent.StatusMerged:
-		return agentMergedStyle.Render("merged")
-	case agent.StatusFailed:
-		return agentFailedStyle.Render("failed")
-	default:
-		return string(status)
-	}
+	return getAgentStatusStyle(status).Render(status.DisplayName())
 }
 
 func getAgentStatusStyle(status agent.Status) lipgloss.Style {
@@ -855,7 +838,7 @@ func renderAgentSelector(m model, emptyMsg string) string {
 				style = selectedItemStyle
 			}
 			statusStyle := getAgentStatusStyle(a.Status)
-			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(string(a.Status)))
+			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(a.Status.DisplayName()))
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}

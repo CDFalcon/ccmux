@@ -149,6 +149,26 @@ func TestList_ShouldReturnAgentsSortedByCreatedAt_GivenMultipleAgents(t *testing
 	}
 }
 
+func TestDisplayName_ShouldReturnFriendlyName_GivenWaitingCIStatus(t *testing.T) {
+	// Execute.
+	result := StatusWaitingCI.DisplayName()
+
+	// Assert.
+	if result != "waiting on CI" {
+		t.Errorf("expected 'waiting on CI', got '%s'", result)
+	}
+}
+
+func TestDisplayName_ShouldReturnFriendlyName_GivenCleaningUpStatus(t *testing.T) {
+	// Execute.
+	result := StatusCleaningUp.DisplayName()
+
+	// Assert.
+	if result != "cleaning up" {
+		t.Errorf("expected 'cleaning up', got '%s'", result)
+	}
+}
+
 func TestDelete_ShouldRemoveAgent_GivenValidID(t *testing.T) {
 	// Setup.
 	store, cleanup := setupTestStore(t)

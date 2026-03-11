@@ -17,6 +17,29 @@ const (
 	StatusFailed     Status = "failed"
 )
 
+func (s Status) DisplayName() string {
+	switch s {
+	case StatusSpawning:
+		return "spawning"
+	case StatusRunning:
+		return "running"
+	case StatusReady:
+		return "ready"
+	case StatusWaitingCI:
+		return "waiting on CI"
+	case StatusCleaningUp:
+		return "cleaning up"
+	case StatusKilling:
+		return "killing"
+	case StatusMerged:
+		return "merged"
+	case StatusFailed:
+		return "failed"
+	default:
+		return string(s)
+	}
+}
+
 type Agent struct {
 	ID           string    `json:"id"`
 	Task         string    `json:"task"`
