@@ -1,3 +1,13 @@
+```
+   ██████╗  ██████╗ ███╗   ███╗██╗   ██╗██╗  ██╗
+  ██╔════╝ ██╔════╝ ████╗ ████║██║   ██║╚██╗██╔╝
+  ██║      ██║      ██╔████╔██║██║   ██║ ╚███╔╝
+  ██║      ██║      ██║╚██╔╝██║██║   ██║ ██╔██╗
+  ╚██████╗ ╚██████╗ ██║ ╚═╝ ██║╚██████╔╝██╔╝ ██╗
+   ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝
+  Colby's Claude Multiplexer
+```
+
 # ccmux — Colby's Claude MUltipleXer
 
 A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
