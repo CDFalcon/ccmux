@@ -151,7 +151,7 @@ func runSession(sessionID string) error {
 			exePath, err := os.Executable()
 			if err == nil {
 				cmd := fmt.Sprintf("%s %s", exePath, sessionID)
-				tmuxManager.RespawnDeadPane(tmuxSessionName+":0", cmd)
+				tmuxManager.RespawnDeadPane(tmuxManager.FirstWindowTarget(), cmd)
 			}
 
 			tmuxManager.SelectFirstWindow()

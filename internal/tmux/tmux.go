@@ -23,6 +23,23 @@ func NewManager(sessionName string) *Manager {
 	return &Manager{sessionName: sessionName}
 }
 
+func GetBaseIndex() int {
+	cmd := exec.Command("tmux", "show-option", "-gv", "base-index")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	idx, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0
+	}
+	return idx
+}
+
+func (m *Manager) FirstWindowTarget() string {
+	return fmt.Sprintf("%s:%d", m.sessionName, GetBaseIndex())
+}
+
 func (m *Manager) SessionName() string {
 	return m.sessionName
 }
@@ -41,7 +58,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
 	m.ForwardEnv()
 	m.SourceUserConfig()
-	if err := m.RespawnPane(m.sessionName+":0", command); err != nil {
+	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
 		return fmt.Errorf("failed to start command in session: %w", err)
 	}
 	return nil
@@ -102,7 +119,7 @@ func (m *Manager) SelectWindow(windowID string) error {
 }
 
 func (m *Manager) SelectFirstWindow() error {
-	return m.SelectWindow(m.sessionName + ":0")
+	return m.SelectWindow(m.FirstWindowTarget())
 }
 
 func (m *Manager) SendKeys(target, keys string) error {
