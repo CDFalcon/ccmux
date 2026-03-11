@@ -54,6 +54,9 @@ var (
 	agentReadyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorYellow))
 
+	agentWaitingReviewStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(ColorYellow))
+
 	agentMergedStyle = lipgloss.NewStyle().
 				Foreground(royalBlue)
 

@@ -537,7 +537,7 @@ func prReadyCmd() *cobra.Command {
 			}
 
 			return agentStore.Update(agentID, func(a *agent.Agent) {
-				a.Status = agent.StatusReady
+				a.Status = agent.StatusWaitingReview
 			})
 		},
 	}
@@ -613,6 +613,8 @@ func agentStoppedCmd() *cobra.Command {
 
 			switch a.Status {
 			case agent.StatusReady:
+				// Agent stopped without a PR but was already marked idle
+			case agent.StatusWaitingReview:
 				// Agent made a PR - it's already in queue, nothing to do
 			case agent.StatusWaitingCI:
 				// Agent is waiting for CI - timer will handle resume, nothing to do
@@ -817,7 +819,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			}
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "resume"})
 
-		case a.Status == agent.StatusReady && worktreeExists:
+		case (a.Status == agent.StatusReady || a.Status == agent.StatusWaitingReview) && worktreeExists:
 			scriptPath, err := writePlaceholderScript(a.ID, a.WorktreePath, a.Task)
 			if err != nil {
 				logging.Log("recovery: failed to write placeholder script for %s: %v", a.ID, err)

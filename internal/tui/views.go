@@ -713,6 +713,8 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 		return agentKillingStyle
 	case agent.StatusReady:
 		return agentReadyStyle
+	case agent.StatusWaitingReview:
+		return agentWaitingReviewStyle
 	case agent.StatusWaitingCI:
 		return agentWaitingCIStyle
 	case agent.StatusMerged:

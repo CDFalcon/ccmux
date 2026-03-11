@@ -700,7 +700,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.queueManager.Add(queue.ItemTypePRReady, msg.agentID, summary, msg.prURL)
 			m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
-				ag.Status = agent.StatusReady
+				ag.Status = agent.StatusWaitingReview
 			})
 			return m, m.refreshCmd()
 		case ciStatusFailed:
@@ -1548,6 +1548,8 @@ func (m model) updateWindowNames() {
 		case agent.StatusKilling:
 			name = spinner(m.spinnerFrame) + " " + short
 		case agent.StatusReady:
+			name = "● " + short
+		case agent.StatusWaitingReview:
 			name = "● " + short
 		case agent.StatusWaitingCI:
 			name = "⏳ " + short
