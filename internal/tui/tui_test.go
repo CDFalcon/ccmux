@@ -739,3 +739,95 @@ func TestEvaluateCIChecks_ShouldReturnCorrectProgress_GivenMixedStatuses(t *test
 		t.Errorf("expected 5 total, got %d", total)
 	}
 }
+
+func TestEvaluateCIChecks_ShouldReturnPassed_GivenStaleFailureAndNewerSuccess(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "check-pr-title", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-03-11T17:00:00Z"},
+		{Name: "check-pr-title", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-03-11T17:05:00Z"},
+		{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-03-11T17:00:00Z"},
+	}
+
+	// Execute.
+	status, failed, completed, total := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed, got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+	if completed != 2 {
+		t.Errorf("expected 2 completed, got %d", completed)
+	}
+	if total != 2 {
+		t.Errorf("expected 2 total (deduplicated), got %d", total)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnFailed_GivenNewerFailureAfterOldSuccess(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "lint", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-03-11T17:00:00Z"},
+		{Name: "lint", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-03-11T17:10:00Z"},
+	}
+
+	// Execute.
+	status, failed, _, _ := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusFailed {
+		t.Errorf("expected ciStatusFailed, got %d", status)
+	}
+	if len(failed) != 1 || failed[0] != "lint" {
+		t.Errorf("expected ['lint'], got %v", failed)
+	}
+}
+
+func TestEvaluateCIChecks_ShouldReturnPending_GivenStaleFailureAndNewerRerun(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "test", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-03-11T17:00:00Z"},
+		{Name: "test", Status: "IN_PROGRESS", Conclusion: "", StartedAt: "2026-03-11T17:05:00Z"},
+	}
+
+	// Execute.
+	status, failed, _, _ := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusPending {
+		t.Errorf("expected ciStatusPending (re-run in progress should override stale failure), got %d", status)
+	}
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %v", failed)
+	}
+}
+
+func TestDeduplicateChecks_ShouldKeepLatestByStartedAt(t *testing.T) {
+	// Setup.
+	checks := []prCheckResult{
+		{Name: "a", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-03-11T17:00:00Z"},
+		{Name: "a", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-03-11T17:05:00Z"},
+		{Name: "a", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-03-11T17:01:00Z"},
+		{Name: "b", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-03-11T17:00:00Z"},
+	}
+
+	// Execute.
+	result := deduplicateChecks(checks)
+
+	// Assert.
+	if len(result) != 2 {
+		t.Fatalf("expected 2 deduplicated checks, got %d", len(result))
+	}
+	resultMap := make(map[string]prCheckResult)
+	for _, c := range result {
+		resultMap[c.Name] = c
+	}
+	if resultMap["a"].Conclusion != "SUCCESS" {
+		t.Errorf("expected 'a' to keep SUCCESS (latest), got %s", resultMap["a"].Conclusion)
+	}
+	if resultMap["b"].Conclusion != "SUCCESS" {
+		t.Errorf("expected 'b' to remain SUCCESS, got %s", resultMap["b"].Conclusion)
+	}
+}

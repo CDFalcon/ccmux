@@ -1864,6 +1864,7 @@ type prCheckResult struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	StartedAt  string `json:"startedAt"`
 }
 
 type statusCheckRollupResponse struct {
@@ -1891,7 +1892,27 @@ func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
 	return owner, repo, prNumber, nil
 }
 
+func deduplicateChecks(checks []prCheckResult) []prCheckResult {
+	latest := make(map[string]prCheckResult)
+	for _, c := range checks {
+		existing, found := latest[c.Name]
+		if !found {
+			latest[c.Name] = c
+			continue
+		}
+		if c.StartedAt > existing.StartedAt {
+			latest[c.Name] = c
+		}
+	}
+	result := make([]prCheckResult, 0, len(latest))
+	for _, c := range latest {
+		result = append(result, c)
+	}
+	return result
+}
+
 func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []string, completed int, total int) {
+	checks = deduplicateChecks(checks)
 	total = len(checks)
 	if total == 0 {
 		return ciStatusPending, nil, 0, 0
