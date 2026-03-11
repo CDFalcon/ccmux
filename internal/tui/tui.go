@@ -1861,10 +1861,13 @@ ccmux agent-stopped "$AGENT_ID"
 }
 
 type prCheckResult struct {
+	TypeName   string `json:"__typename"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	StartedAt  string `json:"startedAt"`
+	Context    string `json:"context"`
+	State      string `json:"state"`
 }
 
 type statusCheckRollupResponse struct {
@@ -1892,6 +1895,33 @@ func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
 	return owner, repo, prNumber, nil
 }
 
+func normalizeChecks(checks []prCheckResult) []prCheckResult {
+	result := make([]prCheckResult, len(checks))
+	for i, c := range checks {
+		if c.TypeName == "StatusContext" {
+			state := strings.ToUpper(c.State)
+			status := "COMPLETED"
+			conclusion := state
+			if state == "PENDING" || state == "EXPECTED" {
+				status = "IN_PROGRESS"
+				conclusion = ""
+			}
+			result[i] = prCheckResult{
+				TypeName:   c.TypeName,
+				Name:       c.Context,
+				Status:     status,
+				Conclusion: conclusion,
+				StartedAt:  c.StartedAt,
+				Context:    c.Context,
+				State:      c.State,
+			}
+		} else {
+			result[i] = c
+		}
+	}
+	return result
+}
+
 func deduplicateChecks(checks []prCheckResult) []prCheckResult {
 	latest := make(map[string]prCheckResult)
 	for _, c := range checks {
@@ -1912,6 +1942,7 @@ func deduplicateChecks(checks []prCheckResult) []prCheckResult {
 }
 
 func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []string, completed int, total int) {
+	checks = normalizeChecks(checks)
 	checks = deduplicateChecks(checks)
 	total = len(checks)
 	if total == 0 {
