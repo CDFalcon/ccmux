@@ -3,6 +3,11 @@ name: Release
 on:
   push:
     branches: [master]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
 
 permissions:
   contents: write
