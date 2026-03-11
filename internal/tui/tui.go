@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -146,9 +145,8 @@ type projectFormModel struct {
 type editProjectFormModel struct {
 	pathInput       textinput.Model
 	baseBranchInput textinput.Model
-	ciWaitInput     textinput.Model
 	fastWTInput     textinput.Model
-	focusIndex      int // 0=path, 1=baseBranch, 2=ciWait, 3=fastWT
+	focusIndex      int // 0=path, 1=baseBranch, 2=fastWT
 }
 
 func newProjectForm() projectFormModel {
@@ -193,11 +191,6 @@ func newEditProjectForm() editProjectFormModel {
 	baseBranchInput.Width = 50
 	baseBranchInput.CharLimit = 100
 
-	ciWaitInput := textinput.New()
-	ciWaitInput.Placeholder = "5"
-	ciWaitInput.Width = 10
-	ciWaitInput.CharLimit = 5
-
 	fastWTInput := textinput.New()
 	fastWTInput.Placeholder = "no"
 	fastWTInput.Width = 10
@@ -206,7 +199,6 @@ func newEditProjectForm() editProjectFormModel {
 	return editProjectFormModel{
 		pathInput:       pathInput,
 		baseBranchInput: baseBranchInput,
-		ciWaitInput:     ciWaitInput,
 		fastWTInput:     fastWTInput,
 		focusIndex:      0,
 	}
@@ -215,7 +207,6 @@ func newEditProjectForm() editProjectFormModel {
 func (ef *editProjectFormModel) blurAll() {
 	ef.pathInput.Blur()
 	ef.baseBranchInput.Blur()
-	ef.ciWaitInput.Blur()
 	ef.fastWTInput.Blur()
 }
 
@@ -227,8 +218,6 @@ func (ef *editProjectFormModel) focusCurrent() {
 	case 1:
 		ef.baseBranchInput.Focus()
 	case 2:
-		ef.ciWaitInput.Focus()
-	case 3:
 		ef.fastWTInput.Focus()
 	}
 }
@@ -236,11 +225,6 @@ func (ef *editProjectFormModel) focusCurrent() {
 func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	ef.pathInput.SetValue(p.Path)
 	ef.baseBranchInput.SetValue(p.DefaultBaseBranch)
-	if p.CIWaitMinutes > 0 {
-		ef.ciWaitInput.SetValue(fmt.Sprintf("%d", p.CIWaitMinutes))
-	} else {
-		ef.ciWaitInput.SetValue("")
-	}
 	if p.UseFastWorktrees {
 		ef.fastWTInput.SetValue("yes")
 	} else {
@@ -656,24 +640,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
 
-		projectMap := make(map[string]*project.Project)
-		for _, p := range m.projects {
-			projectMap[p.Name] = p
-		}
-
 		activeWaiting := make(map[string]bool)
 		var cmds []tea.Cmd
 		const ciPollInterval = 30 * time.Second
 		for _, a := range m.agents {
 			if a.Status == agent.StatusWaitingCI && a.PRURL != "" {
 				activeWaiting[a.ID] = true
-				ciWaitMinutes := project.DefaultCIWaitMinutes
-				if p, ok := projectMap[a.ProjectName]; ok {
-					ciWaitMinutes = p.EffectiveCIWaitMinutes()
-				}
-				if time.Since(a.UpdatedAt) < time.Duration(ciWaitMinutes)*time.Minute {
-					continue
-				}
 				if !m.ciChecking[a.ID] {
 					lastCheck, checked := m.ciLastChecked[a.ID]
 					if !checked || time.Since(lastCheck) >= ciPollInterval {
@@ -846,8 +818,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 		case 2:
-			m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
-		case 3:
 			m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
 		}
 		if cmd != nil {
@@ -1313,11 +1283,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedProj = nil
 		return m, nil
 	case "tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 4
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 3
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 3) % 4
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 2) % 3
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "enter":
@@ -1326,16 +1296,6 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		path := m.editProjectForm.pathInput.Value()
 		baseBranch := m.editProjectForm.baseBranchInput.Value()
-		ciWaitStr := m.editProjectForm.ciWaitInput.Value()
-		ciWait := 0
-		if ciWaitStr != "" {
-			parsed, err := strconv.Atoi(ciWaitStr)
-			if err != nil || parsed < 0 {
-				m.err = fmt.Errorf("CI wait must be a positive number")
-				return m, clearMessageCmd()
-			}
-			ciWait = parsed
-		}
 		fastWTStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.fastWTInput.Value()))
 		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
 		projName := m.selectedProj.Name
@@ -1346,7 +1306,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, ciWait, useFastWT)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT)
 	}
 
 	var cmd tea.Cmd
@@ -1356,8 +1316,6 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 1:
 		m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 	case 2:
-		m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
-	case 3:
 		m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
 	}
 	return m, cmd
@@ -1656,7 +1614,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
@@ -1679,7 +1637,6 @@ func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFa
 				p.FastWorktreePath = fastWTPath
 			}
 			p.DefaultBaseBranch = baseBranch
-			p.CIWaitMinutes = ciWait
 			p.UseFastWorktrees = useFastWT
 			if needsImport {
 				p.SetupStatus = project.SetupStatusSettingUp

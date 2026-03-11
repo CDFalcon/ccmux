@@ -2,8 +2,6 @@ package project
 
 const CurrentSchemaVersion = 4
 
-const DefaultCIWaitMinutes = 5
-
 const SetupStatusSettingUp = "setting_up"
 
 type Project struct {
@@ -11,7 +9,6 @@ type Project struct {
 	Path              string `json:"path"`
 	FastWorktreePath  string `json:"fast_worktree_path,omitempty"`
 	DefaultBaseBranch string `json:"default_base_branch,omitempty"`
-	CIWaitMinutes     int    `json:"ci_wait_minutes,omitempty"`
 	UseFastWorktrees  bool   `json:"use_fast_worktrees,omitempty"`
 	SetupStatus       string `json:"setup_status,omitempty"`
 }
@@ -25,13 +22,6 @@ func (p *Project) EffectivePath() string {
 		return p.FastWorktreePath
 	}
 	return p.Path
-}
-
-func (p *Project) EffectiveCIWaitMinutes() int {
-	if p.CIWaitMinutes <= 0 {
-		return DefaultCIWaitMinutes
-	}
-	return p.CIWaitMinutes
 }
 
 func (p *Project) EffectiveBaseBranch() string {

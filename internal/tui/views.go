@@ -503,7 +503,6 @@ func renderManageProjectsView(m model) string {
 				b.WriteString("\n")
 				b.WriteString(fmt.Sprintf("  Path:        %s\n", dimStyle.Render(selected.EffectivePath())))
 				b.WriteString(fmt.Sprintf("  Base branch: %s\n", dimStyle.Render(selected.EffectiveBaseBranch())))
-				b.WriteString(fmt.Sprintf("  CI wait:     %s\n", dimStyle.Render(fmt.Sprintf("%d min", selected.EffectiveCIWaitMinutes()))))
 				fastWtStatus := "no"
 				if selected.UseFastWorktrees {
 					fastWtStatus = "yes (proj)"
@@ -633,7 +632,6 @@ func renderEditProjectView(m model) string {
 	}{
 		{"Path:", m.editProjectForm.pathInput.View()},
 		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
-		{"CI wait (minutes):", m.editProjectForm.ciWaitInput.View()},
 		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
 	}
 
