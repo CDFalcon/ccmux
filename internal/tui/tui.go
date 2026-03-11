@@ -143,11 +143,12 @@ type projectFormModel struct {
 }
 
 type editProjectFormModel struct {
-	pathInput       textinput.Model
-	baseBranchInput textinput.Model
-	ciWaitInput     textinput.Model
-	fastWTInput     textinput.Model
-	focusIndex      int // 0=path, 1=baseBranch, 2=ciWait, 3=fastWT
+	pathInput          textinput.Model
+	baseBranchInput    textinput.Model
+	ciWaitInput        textinput.Model
+	fastWTInput        textinput.Model
+	windowLayoutInput  textinput.Model
+	focusIndex         int // 0=path, 1=baseBranch, 2=ciWait, 3=fastWT, 4=windowLayout
 }
 
 func newProjectForm() projectFormModel {
@@ -202,12 +203,18 @@ func newEditProjectForm() editProjectFormModel {
 	fastWTInput.Width = 10
 	fastWTInput.CharLimit = 5
 
+	windowLayoutInput := textinput.New()
+	windowLayoutInput.Placeholder = "~/.config/ccmux/window-layout.yaml"
+	windowLayoutInput.Width = 50
+	windowLayoutInput.CharLimit = 300
+
 	return editProjectFormModel{
-		pathInput:       pathInput,
-		baseBranchInput: baseBranchInput,
-		ciWaitInput:     ciWaitInput,
-		fastWTInput:     fastWTInput,
-		focusIndex:      0,
+		pathInput:         pathInput,
+		baseBranchInput:   baseBranchInput,
+		ciWaitInput:       ciWaitInput,
+		fastWTInput:       fastWTInput,
+		windowLayoutInput: windowLayoutInput,
+		focusIndex:        0,
 	}
 }
 
@@ -216,6 +223,7 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.baseBranchInput.Blur()
 	ef.ciWaitInput.Blur()
 	ef.fastWTInput.Blur()
+	ef.windowLayoutInput.Blur()
 }
 
 func (ef *editProjectFormModel) focusCurrent() {
@@ -229,6 +237,8 @@ func (ef *editProjectFormModel) focusCurrent() {
 		ef.ciWaitInput.Focus()
 	case 3:
 		ef.fastWTInput.Focus()
+	case 4:
+		ef.windowLayoutInput.Focus()
 	}
 }
 
@@ -245,6 +255,7 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	} else {
 		ef.fastWTInput.SetValue("")
 	}
+	ef.windowLayoutInput.SetValue(p.WindowLayoutPath)
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -833,6 +844,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
 		case 3:
 			m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+		case 4:
+			m.editProjectForm.windowLayoutInput, cmd = m.editProjectForm.windowLayoutInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1297,11 +1310,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedProj = nil
 		return m, nil
 	case "tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 4
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 5
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 3) % 4
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 4) % 5
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "enter":
@@ -1322,6 +1335,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		fastWTStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.fastWTInput.Value()))
 		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
+		windowLayoutPath := strings.TrimSpace(m.editProjectForm.windowLayoutInput.Value())
 		projName := m.selectedProj.Name
 		alreadyHasFastWT := m.selectedProj.UseFastWorktrees && m.selectedProj.FastWorktreePath != ""
 		m.editProjectForm.blurAll()
@@ -1330,7 +1344,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, ciWait, useFastWT)
+		return m, m.updateProjectCmd(projName, path, baseBranch, ciWait, useFastWT, windowLayoutPath)
 	}
 
 	var cmd tea.Cmd
@@ -1343,6 +1357,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editProjectForm.ciWaitInput, cmd = m.editProjectForm.ciWaitInput.Update(msg)
 	case 3:
 		m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+	case 4:
+		m.editProjectForm.windowLayoutInput, cmd = m.editProjectForm.windowLayoutInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -1640,7 +1656,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFastWT bool, windowLayoutPath string) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
@@ -1665,6 +1681,7 @@ func (m model) updateProjectCmd(name, path, baseBranch string, ciWait int, useFa
 			p.DefaultBaseBranch = baseBranch
 			p.CIWaitMinutes = ciWait
 			p.UseFastWorktrees = useFastWT
+			p.WindowLayoutPath = windowLayoutPath
 			if needsImport {
 				p.SetupStatus = project.SetupStatusSettingUp
 			}

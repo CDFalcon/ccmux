@@ -631,6 +631,7 @@ func renderEditProjectView(m model) string {
 		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
 		{"CI wait (minutes):", m.editProjectForm.ciWaitInput.View()},
 		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
+		{"Window layout (YAML path):", m.editProjectForm.windowLayoutInput.View()},
 	}
 
 	for i, f := range fields {
