@@ -2061,6 +2061,12 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 
 		hasMergeConflict := resp.Mergeable == "CONFLICTING"
 
+		// If statusCheckRollup is null (not just empty), this repo has no CI checks configured.
+		// Treat as passed rather than waiting indefinitely.
+		if resp.StatusCheckRollup == nil {
+			return ciCheckResultMsg{agentID: agentID, status: ciStatusPassed, prURL: prURL, hasMergeConflict: hasMergeConflict}
+		}
+
 		status, failedNames, completed, total := evaluateCIChecks(resp.StatusCheckRollup)
 		var summary string
 		if status == ciStatusFailed {
