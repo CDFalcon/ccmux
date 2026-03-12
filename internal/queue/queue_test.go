@@ -135,7 +135,7 @@ func TestRemoveByAgentAndType_ShouldDeleteMatchingItems_GivenAgentIDAndType(t *t
 	q, cleanup := setupTestQueue(t)
 	defer cleanup()
 	q.Add(ItemTypePRReady, "agent-1", "PR ready 1", "https://github.com/pr/1")
-	q.Add(ItemTypeQuestion, "agent-1", "Question from agent-1", "")
+	q.Add(ItemTypeIdle, "agent-1", "Idle agent-1", "")
 	q.Add(ItemTypePRReady, "agent-2", "PR ready 2", "https://github.com/pr/2")
 
 	// Execute.
