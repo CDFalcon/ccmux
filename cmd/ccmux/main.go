@@ -567,6 +567,15 @@ func ciWaitCmd() *cobra.Command {
 
 			sessionID := getCurrentSessionID()
 
+			queueManager, err := queue.NewQueue(sessionID)
+			if err != nil {
+				return err
+			}
+
+			if err := queueManager.RemoveByAgentAndType(agentID, queue.ItemTypePRReady); err != nil {
+				return err
+			}
+
 			agentStore, err := agent.NewStore(sessionID)
 			if err != nil {
 				return err

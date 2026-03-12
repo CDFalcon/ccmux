@@ -130,6 +130,32 @@ func TestRemoveByAgent_ShouldDeleteAllAgentItems_GivenAgentID(t *testing.T) {
 	}
 }
 
+func TestRemoveByAgentAndType_ShouldDeleteMatchingItems_GivenAgentIDAndType(t *testing.T) {
+	// Setup.
+	q, cleanup := setupTestQueue(t)
+	defer cleanup()
+	q.Add(ItemTypePRReady, "agent-1", "PR ready 1", "https://github.com/pr/1")
+	q.Add(ItemTypeQuestion, "agent-1", "Question from agent-1", "")
+	q.Add(ItemTypePRReady, "agent-2", "PR ready 2", "https://github.com/pr/2")
+
+	// Execute.
+	err := q.RemoveByAgentAndType("agent-1", ItemTypePRReady)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	items, _ := q.List()
+	if len(items) != 2 {
+		t.Errorf("expected 2 items after removal, got %d", len(items))
+	}
+	for _, item := range items {
+		if item.AgentID == "agent-1" && item.Type == ItemTypePRReady {
+			t.Error("expected agent-1 pr_ready item to be removed")
+		}
+	}
+}
+
 func TestClear_ShouldRemoveAllItems_GivenPopulatedQueue(t *testing.T) {
 	// Setup.
 	q, cleanup := setupTestQueue(t)

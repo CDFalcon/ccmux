@@ -185,6 +185,28 @@ func (q *Queue) RemoveByAgent(agentID string) error {
 	return q.save(data)
 }
 
+func (q *Queue) RemoveByAgentAndType(agentID string, itemType ItemType) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	data, err := q.load()
+	if err != nil {
+		return err
+	}
+
+	var newItems []*QueueItem
+	for _, item := range data.Items {
+		if item.AgentID == agentID && item.Type == itemType {
+			continue
+		}
+		newItems = append(newItems, item)
+	}
+
+	data.Items = newItems
+
+	return q.save(data)
+}
+
 func (q *Queue) Clear() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
