@@ -19,7 +19,7 @@ var viewTitles = map[ViewState]string{
 	ViewNewTaskBranch:        "New Task - Base Branch",
 	ViewNewTaskBranchInput:   "New Task - Specify Branch",
 	ViewNewTaskInput:         "New Task",
-	ViewNewTaskWorktreeName:  "New Task - Worktree Name",
+	ViewNewTaskWorktreeName:  "New Task - Branch Name",
 	ViewIntervene:            "Intervene",
 	ViewInterveneInput:       "Send Message",
 	ViewReview:               "Review PR",
@@ -62,7 +62,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewNewTaskInput: {
-		{FooterText: "[enter] next", Description: "Continue to worktree name step"},
+		{FooterText: "[enter] next", Description: "Continue to branch name step"},
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewNewTaskWorktreeName: {

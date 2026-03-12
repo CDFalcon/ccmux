@@ -332,19 +332,20 @@ func renderNewTaskInputView(m model) string {
 func renderNewTaskWorktreeNameView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# New Task - Worktree Name (optional)"))
+	b.WriteString(titleStyle.Render("# New Task - Branch Name (optional)"))
 	b.WriteString("\n\n")
 
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
-		b.WriteString("\n")
 	}
+	b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(m.spawnTask)))
+	b.WriteString("\n")
 
-	b.WriteString("Worktree name:\n")
+	b.WriteString("Branch name:\n")
 	b.WriteString(inputStyle.Render(m.worktreeNameInput.View()))
-	b.WriteString("\n\n")
-
+	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("Optional. Leave empty for default (e.g. ccmux/<agent-id>)"))
 	b.WriteString("\n\n")
 
