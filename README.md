@@ -38,10 +38,14 @@ gh auth login
 # Install Claude Code
 npm install -g @anthropic-ai/claude-code
 
-# Install ccmux
+# Install ccmux (into ~/.local/bin — no sudo required for updates)
+mkdir -p ~/.local/bin
 gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-amd64'
 chmod +x ccmux-linux-amd64
-sudo mv ccmux-linux-amd64 /usr/local/bin/ccmux
+mv ccmux-linux-amd64 ~/.local/bin/ccmux
+
+# Ensure ~/.local/bin is in your PATH (add to ~/.bashrc if not already present)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 # Optional: install proj for near-instant worktree creation on large repos
 # Requires an XFS filesystem with reflink support (see proj README for setup)
