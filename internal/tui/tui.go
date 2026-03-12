@@ -1496,7 +1496,7 @@ func (m model) handleAgentInfoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
 		}
-	case "down":
+	case "down", "j":
 		if m.selectedIndex < len(m.agents)-1 {
 			m.selectedIndex++
 		}
