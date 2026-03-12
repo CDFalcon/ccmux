@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
@@ -37,6 +38,12 @@ const (
 	ViewAgentInfo
 	ViewUpdate
 	ViewProjImporting
+	ViewManagePrompts
+	ViewAddPromptName
+	ViewAddPromptContent
+	ViewEditPrompt
+	ViewConfirmRemovePrompt
+	ViewNewTaskSelectPrompts
 	ViewHelp
 )
 
@@ -165,7 +172,7 @@ func renderMainView(m model) string {
 	b.WriteString(headerStyle.Render(fmt.Sprintf("# Projects (%d)", len(m.projects))))
 	b.WriteString("\n")
 	if len(m.projects) == 0 {
-		b.WriteString(dimStyle.Render("  No projects registered. Press [p] to add one."))
+		b.WriteString(dimStyle.Render("  No projects registered. Press [P] to add one."))
 		b.WriteString("\n")
 	} else {
 		for _, p := range m.projects {
@@ -1075,4 +1082,197 @@ func renderUpdateView(m model) string {
 	}
 
 	return b.String()
+}
+
+func renderManagePromptsView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Manage Prompts"))
+	b.WriteString("\n\n")
+
+	if len(m.prompts) == 0 {
+		b.WriteString(dimStyle.Render("No prompts configured"))
+		b.WriteString("\n\n")
+	} else {
+		for i, p := range m.prompts {
+			style := queueItemStyle
+			if i == m.selectedIndex {
+				style = selectedItemStyle
+			}
+			defaultTag := ""
+			if p.IsDefault {
+				defaultTag = dimStyle.Render(" (default)")
+			}
+			line := fmt.Sprintf("%s%s", p.Name, defaultTag)
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.prompts) {
+			selected := m.prompts[m.selectedIndex]
+			b.WriteString(headerStyle.Render("## Preview"))
+			b.WriteString("\n")
+			preview := selected.Content
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			b.WriteString(dimStyle.Render("  " + strings.ReplaceAll(preview, "\n", "\n  ")))
+			b.WriteString("\n\n")
+		}
+	}
+
+	if m.err != nil {
+		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %s", m.err.Error())))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewManagePrompts)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderAddPromptNameView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Add Prompt - Name"))
+	b.WriteString("\n\n")
+
+	b.WriteString("Enter prompt name:\n")
+	b.WriteString(inputStyle.Render(m.promptForm.nameInput.View()))
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("A short label for this prompt (e.g., 'code-review', 'testing-rules')"))
+	b.WriteString("\n\n")
+
+	help := helpFooter(ViewAddPromptName)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderAddPromptContentView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Add Prompt - Content"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
+
+	b.WriteString("Enter prompt content:\n")
+	b.WriteString(inputStyle.Render(m.promptForm.contentInput.View()))
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("The text that will be injected into the agent's system prompt"))
+	b.WriteString("\n\n")
+
+	help := helpFooter(ViewAddPromptContent)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderEditPromptView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Edit Prompt"))
+	b.WriteString("\n\n")
+
+	if m.selectedPrompt != nil {
+		b.WriteString(fmt.Sprintf("Prompt: %s\n\n", projectStyle.Render(m.selectedPrompt.Name)))
+	}
+
+	fields := []struct {
+		label string
+		input string
+	}{
+		{"Name:", m.editPromptForm.nameInput.View()},
+		{"Content:", m.editPromptForm.contentInput.View()},
+		{"Default (yes/no):", m.editPromptForm.defaultInput.View()},
+	}
+
+	for i, f := range fields {
+		marker := "  "
+		if i == m.editPromptForm.focusIndex {
+			marker = "> "
+		}
+		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
+		b.WriteString(inputStyle.Render(f.input))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewEditPrompt)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderConfirmRemovePromptView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Remove Prompt"))
+	b.WriteString("\n\n")
+
+	if m.selectedPrompt != nil {
+		b.WriteString(fmt.Sprintf("Remove prompt '%s'?\n", projectStyle.Render(m.selectedPrompt.Name)))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("This cannot be undone."))
+		b.WriteString("\n\n")
+	}
+
+	help := helpFooter(ViewConfirmRemovePrompt)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderNewTaskSelectPromptsView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# New Task - Select Prompts"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
+		b.WriteString("\n")
+	}
+
+	if len(m.prompts) == 0 {
+		b.WriteString(dimStyle.Render("No prompts configured. Press [enter] to continue without prompts."))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("Toggle prompts on/off:\n\n")
+
+		for i, p := range m.prompts {
+			style := queueItemStyle
+			if i == m.selectedIndex {
+				style = selectedItemStyle
+			}
+			checkbox := "[ ]"
+			if m.spawnPromptEnabled[p.ID] {
+				checkbox = "[x]"
+			}
+			line := fmt.Sprintf("%s %s", checkbox, p.Name)
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	help := helpFooter(ViewNewTaskSelectPrompts)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func enabledPromptContent(prompts []*prompt.Prompt, enabled map[string]bool) string {
+	var parts []string
+	for _, p := range prompts {
+		if enabled[p.ID] {
+			parts = append(parts, p.Content)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }

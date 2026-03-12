@@ -20,6 +20,7 @@ import (
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/project"
+	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -46,12 +47,20 @@ type model struct {
 	spawnBranch           string
 	spawnTask             string
 	worktreeNameInput     textinput.Model
+	spawnPromptEnabled    map[string]bool
 
 	// Project form inputs
 	projectForm     projectFormModel
 	editProjectForm editProjectFormModel
 	newProjectName  string
 	newProjectPath  string
+
+	// Prompt form inputs
+	prompts          []*prompt.Prompt
+	promptForm       promptFormModel
+	editPromptForm   editPromptFormModel
+	newPromptName    string
+	selectedPrompt   *prompt.Prompt
 
 	// Intervention input
 	interveneInput textarea.Model
@@ -100,6 +109,7 @@ type model struct {
 	agentStore   *agent.Store
 	queueManager *queue.Queue
 	projectStore *project.Store
+	promptStore  *prompt.Store
 	tmuxManager  *tmux.Manager
 	sessionID    string
 }
@@ -152,6 +162,91 @@ type editProjectFormModel struct {
 	baseBranchInput textinput.Model
 	fastWTInput     textinput.Model
 	focusIndex      int // 0=path, 1=baseBranch, 2=fastWT
+}
+
+type promptFormModel struct {
+	nameInput    textinput.Model
+	contentInput textarea.Model
+}
+
+type editPromptFormModel struct {
+	nameInput    textinput.Model
+	contentInput textarea.Model
+	defaultInput textinput.Model
+	focusIndex   int
+}
+
+func newPromptForm() promptFormModel {
+	nameInput := textinput.New()
+	nameInput.Placeholder = "my-prompt"
+	nameInput.Width = 50
+	nameInput.CharLimit = 100
+
+	contentInput := newFixedTextarea("Enter prompt content...", 60)
+
+	return promptFormModel{
+		nameInput:    nameInput,
+		contentInput: contentInput,
+	}
+}
+
+func (pf *promptFormModel) reset() {
+	pf.nameInput.SetValue("")
+	pf.contentInput.SetValue("")
+	pf.nameInput.Blur()
+	pf.contentInput.Blur()
+	pf.nameInput.Focus()
+}
+
+func newEditPromptForm() editPromptFormModel {
+	nameInput := textinput.New()
+	nameInput.Placeholder = "prompt name"
+	nameInput.Width = 50
+	nameInput.CharLimit = 100
+
+	contentInput := newFixedTextarea("Prompt content...", 60)
+
+	defaultInput := textinput.New()
+	defaultInput.Placeholder = "no"
+	defaultInput.Width = 10
+	defaultInput.CharLimit = 5
+
+	return editPromptFormModel{
+		nameInput:    nameInput,
+		contentInput: contentInput,
+		defaultInput: defaultInput,
+		focusIndex:   0,
+	}
+}
+
+func (ef *editPromptFormModel) blurAll() {
+	ef.nameInput.Blur()
+	ef.contentInput.Blur()
+	ef.defaultInput.Blur()
+}
+
+func (ef *editPromptFormModel) focusCurrent() {
+	ef.blurAll()
+	switch ef.focusIndex {
+	case 0:
+		ef.nameInput.Focus()
+	case 1:
+		ef.contentInput.Focus()
+	case 2:
+		ef.defaultInput.Focus()
+	}
+}
+
+func (ef *editPromptFormModel) loadFromPrompt(p *prompt.Prompt) {
+	ef.nameInput.SetValue(p.Name)
+	ef.contentInput.SetValue(p.Content)
+	if p.IsDefault {
+		ef.defaultInput.SetValue("yes")
+	} else {
+		ef.defaultInput.SetValue("")
+	}
+	ef.focusIndex = 0
+	ef.focusCurrent()
 }
 
 func newProjectForm() projectFormModel {
@@ -349,6 +444,7 @@ type refreshMsg struct {
 	agents       []*agent.Agent
 	queueItems   []*queue.QueueItem
 	projects     []*project.Project
+	prompts      []*prompt.Prompt
 	resources    map[string]*AgentResources
 	prevCPUTicks map[int]int64
 }
@@ -414,7 +510,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -444,6 +540,9 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
 		editProjectForm:   newEditProjectForm(),
+		promptForm:        newPromptForm(),
+		editPromptForm:    newEditPromptForm(),
+		spawnPromptEnabled: make(map[string]bool),
 		ciLastChecked:   make(map[string]time.Time),
 		ciChecking:      make(map[string]bool),
 		ciCheckProgress: make(map[string]ciProgress),
@@ -456,6 +555,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		agentStore:        agentStore,
 		queueManager:      queueManager,
 		projectStore:      projectStore,
+		promptStore:       promptStore,
 		tmuxManager:       tmuxManager,
 		sessionID:         sessionID,
 	}
@@ -565,10 +665,13 @@ func (m model) refreshCmd() tea.Cmd {
 			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects,
 		)
 
+		prompts, _ := m.promptStore.List()
+
 		return refreshMsg{
 			agents:       agents,
 			queueItems:   queueItems,
 			projects:     projects,
+			prompts:      prompts,
 			resources:    resources,
 			prevCPUTicks: newCPUTicks,
 		}
@@ -652,6 +755,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agents = msg.agents
 		m.queueItems = msg.queueItems
 		m.projects = msg.projects
+		m.prompts = msg.prompts
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
 
@@ -927,6 +1031,18 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddProjectFastWTKeys(msg)
 	case ViewProjImporting:
 		return m.handleProjImportingKeys(msg)
+	case ViewManagePrompts:
+		return m.handleManagePromptsKeys(msg)
+	case ViewAddPromptName:
+		return m.handleAddPromptNameKeys(msg)
+	case ViewAddPromptContent:
+		return m.handleAddPromptContentKeys(msg)
+	case ViewEditPrompt:
+		return m.handleEditPromptKeys(msg)
+	case ViewConfirmRemovePrompt:
+		return m.handleConfirmRemovePromptKeys(msg)
+	case ViewNewTaskSelectPrompts:
+		return m.handleNewTaskSelectPromptsKeys(msg)
 	case ViewEditProject:
 		return m.handleEditProjectKeys(msg)
 	case ViewConfirmRemoveProject:
@@ -965,7 +1081,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n":
 		if len(m.projects) == 0 {
-			m.err = fmt.Errorf("no projects registered. Press [p] to add one")
+			m.err = fmt.Errorf("no projects registered. Press [P] to add one")
 			return m, clearMessageCmd()
 		}
 		m.view = ViewSelectProject
@@ -979,6 +1095,9 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "K":
 		m.view = ViewConfirmKillSession
 	case "p":
+		m.view = ViewManagePrompts
+		m.selectedIndex = 0
+	case "P":
 		m.view = ViewManageProjects
 		m.selectedIndex = 0
 	case "u":
@@ -1128,10 +1247,13 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.spawnTask = task
 		m.taskInput.Blur()
-		m.view = ViewNewTaskWorktreeName
-		m.worktreeNameInput.SetValue("")
-		m.worktreeNameInput.Focus()
-		return m, textinput.Blink
+		m.spawnPromptEnabled = make(map[string]bool)
+		for _, p := range m.prompts {
+			m.spawnPromptEnabled[p.ID] = p.IsDefault
+		}
+		m.view = ViewNewTaskSelectPrompts
+		m.selectedIndex = 0
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -1142,15 +1264,16 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.view = ViewNewTaskInput
+		m.view = ViewNewTaskSelectPrompts
 		m.worktreeNameInput.Blur()
-		cmd := m.taskInput.Focus()
-		return m, cmd
+		m.selectedIndex = 0
+		return m, nil
 	case "enter":
 		worktreeName := m.worktreeNameInput.Value()
 		task := m.spawnTask
 		proj := m.selectedProj
 		branch := m.spawnBranch
+		promptContent := enabledPromptContent(m.prompts, m.spawnPromptEnabled)
 		m.view = ViewMain
 		m.taskInput.SetValue("")
 		m.taskInput.Blur()
@@ -1159,7 +1282,8 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		m.spawnTask = ""
-		return m, m.spawnAgentCmd(task, proj, branch, worktreeName)
+		m.spawnPromptEnabled = make(map[string]bool)
+		return m, m.spawnAgentCmd(task, proj, branch, worktreeName, promptContent)
 	}
 
 	var cmd tea.Cmd
@@ -1496,6 +1620,209 @@ func (m model) handleConfirmRemoveProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 	return m, nil
 }
 
+func (m model) handleManagePromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewMain
+	case "up", "k":
+		if m.selectedIndex > 0 {
+			m.selectedIndex--
+		}
+	case "down", "j":
+		if m.selectedIndex < len(m.prompts)-1 {
+			m.selectedIndex++
+		}
+	case "a":
+		m.view = ViewAddPromptName
+		m.promptForm.reset()
+		m.newPromptName = ""
+		m.promptForm.nameInput.Focus()
+		return m, textinput.Blink
+	case "enter":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.prompts) {
+			m.selectedPrompt = m.prompts[m.selectedIndex]
+			m.view = ViewEditPrompt
+			m.editPromptForm.loadFromPrompt(m.selectedPrompt)
+			return m, textinput.Blink
+		}
+	case "d":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.prompts) {
+			m.selectedPrompt = m.prompts[m.selectedIndex]
+			m.view = ViewConfirmRemovePrompt
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleAddPromptNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewManagePrompts
+		m.promptForm.reset()
+		return m, nil
+	case "enter":
+		name := m.promptForm.nameInput.Value()
+		if name == "" {
+			return m, nil
+		}
+		m.newPromptName = name
+		m.view = ViewAddPromptContent
+		m.promptForm.contentInput.SetValue("")
+		m.promptForm.nameInput.Blur()
+		cmd := m.promptForm.contentInput.Focus()
+		return m, cmd
+	}
+
+	var cmd tea.Cmd
+	m.promptForm.nameInput, cmd = m.promptForm.nameInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) handleAddPromptContentKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewAddPromptName
+		m.promptForm.contentInput.Blur()
+		m.promptForm.nameInput.Focus()
+		return m, textinput.Blink
+	case "enter":
+		content := m.promptForm.contentInput.Value()
+		if content == "" {
+			return m, nil
+		}
+		m.view = ViewManagePrompts
+		m.selectedIndex = 0
+		return m, m.addPromptCmd(m.newPromptName, content)
+	}
+
+	var cmd tea.Cmd
+	m.promptForm.contentInput, cmd = m.promptForm.contentInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.editPromptForm.blurAll()
+		m.view = ViewManagePrompts
+		m.selectedPrompt = nil
+		return m, nil
+	case "tab":
+		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + 1) % 3
+		m.editPromptForm.focusCurrent()
+		return m, textinput.Blink
+	case "shift+tab":
+		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + 2) % 3
+		m.editPromptForm.focusCurrent()
+		return m, textinput.Blink
+	case "enter":
+		if m.selectedPrompt == nil {
+			return m, nil
+		}
+		name := m.editPromptForm.nameInput.Value()
+		content := m.editPromptForm.contentInput.Value()
+		defaultStr := strings.ToLower(strings.TrimSpace(m.editPromptForm.defaultInput.Value()))
+		isDefault := defaultStr == "yes" || defaultStr == "true" || defaultStr == "y"
+		promptID := m.selectedPrompt.ID
+		m.editPromptForm.blurAll()
+		m.selectedPrompt = nil
+		m.view = ViewManagePrompts
+		return m, m.updatePromptCmd(promptID, name, content, isDefault)
+	}
+
+	var cmd tea.Cmd
+	switch m.editPromptForm.focusIndex {
+	case 0:
+		m.editPromptForm.nameInput, cmd = m.editPromptForm.nameInput.Update(msg)
+	case 1:
+		m.editPromptForm.contentInput, cmd = m.editPromptForm.contentInput.Update(msg)
+	case 2:
+		m.editPromptForm.defaultInput, cmd = m.editPromptForm.defaultInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m model) handleConfirmRemovePromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		if m.selectedPrompt != nil {
+			promptToRemove := m.selectedPrompt
+			m.selectedPrompt = nil
+			m.view = ViewManagePrompts
+			m.selectedIndex = 0
+			return m, m.removePromptCmd(promptToRemove.ID)
+		}
+	case "n", "esc":
+		m.selectedPrompt = nil
+		m.view = ViewManagePrompts
+	}
+	return m, nil
+}
+
+func (m model) handleNewTaskSelectPromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewNewTaskInput
+		m.selectedIndex = 0
+		cmd := m.taskInput.Focus()
+		return m, cmd
+	case "up", "k":
+		if m.selectedIndex > 0 {
+			m.selectedIndex--
+		}
+	case "down", "j":
+		if m.selectedIndex < len(m.prompts)-1 {
+			m.selectedIndex++
+		}
+	case " ":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.prompts) {
+			p := m.prompts[m.selectedIndex]
+			m.spawnPromptEnabled[p.ID] = !m.spawnPromptEnabled[p.ID]
+		}
+	case "enter":
+		m.view = ViewNewTaskWorktreeName
+		m.worktreeNameInput.SetValue("")
+		m.worktreeNameInput.Focus()
+		return m, textinput.Blink
+	}
+	return m, nil
+}
+
+func (m model) addPromptCmd(name, content string) tea.Cmd {
+	return func() tea.Msg {
+		p := &prompt.Prompt{
+			Name:    name,
+			Content: content,
+		}
+		if err := m.promptStore.Add(p); err != nil {
+			return errMsg{err}
+		}
+		return successMsg{msg: fmt.Sprintf("Prompt '%s' added", name)}
+	}
+}
+
+func (m model) updatePromptCmd(id, name, content string, isDefault bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.promptStore.Update(id, func(p *prompt.Prompt) {
+			p.Name = name
+			p.Content = content
+			p.IsDefault = isDefault
+		}); err != nil {
+			return errMsg{err}
+		}
+		return successMsg{msg: fmt.Sprintf("Prompt '%s' updated", name)}
+	}
+}
+
+func (m model) removePromptCmd(id string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.promptStore.Remove(id); err != nil {
+			return errMsg{err}
+		}
+		return successMsg{msg: "Prompt removed"}
+	}
+}
+
 func (m model) handleConfirmKillSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
@@ -1749,7 +2076,7 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 	}
 }
 
-func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, promptContent string) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -1758,6 +2085,9 @@ func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, 
 		args := []string{"spawn", task, "--project", proj.Name, "--branch", branch}
 		if worktreeName != "" {
 			args = append(args, "--worktree-name", worktreeName)
+		}
+		if promptContent != "" {
+			args = append(args, "--prompts", promptContent)
 		}
 		cmd := exec.Command(exePath, args...)
 		output, err := cmd.CombinedOutput()
@@ -2306,6 +2636,18 @@ func (m model) View() string {
 		content = renderAddProjectFastWTView(m)
 	case ViewProjImporting:
 		content = renderProjImportingView(m)
+	case ViewManagePrompts:
+		content = renderManagePromptsView(m)
+	case ViewAddPromptName:
+		content = renderAddPromptNameView(m)
+	case ViewAddPromptContent:
+		content = renderAddPromptContentView(m)
+	case ViewEditPrompt:
+		content = renderEditPromptView(m)
+	case ViewConfirmRemovePrompt:
+		content = renderConfirmRemovePromptView(m)
+	case ViewNewTaskSelectPrompts:
+		content = renderNewTaskSelectPromptsView(m)
 	case ViewEditProject:
 		content = renderEditProjectView(m)
 	case ViewConfirmRemoveProject:
@@ -2325,8 +2667,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, tmuxManager, sessionID)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

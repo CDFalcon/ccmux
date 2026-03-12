@@ -13,6 +13,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/project"
+	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
@@ -174,7 +175,12 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	restart, err := tui.Run(agentStore, queueManager, projectStore, tmuxManager, sessionID)
+	promptStore, err := prompt.NewStore()
+	if err != nil {
+		return err
+	}
+
+	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
 	if err != nil {
 		return err
 	}
@@ -192,6 +198,7 @@ func spawnCmd() *cobra.Command {
 	var projectName string
 	var baseBranch string
 	var worktreeName string
+	var promptContent string
 
 	cmd := &cobra.Command{
 		Use:    "spawn <task>",
@@ -225,7 +232,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName))
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -265,12 +272,13 @@ func spawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectName, "project", "", "Project to use")
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
+	cmd.Flags().StringVar(&promptContent, "prompts", "", "Custom prompt content to inject into the agent's system prompt")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -434,17 +442,36 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
+PROMPTS_FILE="%s"
+if [ -f "$PROMPTS_FILE" ]; then
+  PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${PROMPTS_CONTENT}"
+fi
+
 claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, promptsFilePath(agentID))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
 	}
 
+	if promptContent != "" {
+		if err := os.WriteFile(promptsFilePath(agentID), []byte(promptContent), 0644); err != nil {
+			return "", fmt.Errorf("failed to write prompts file: %w", err)
+		}
+	}
+
 	return scriptPath, nil
+}
+
+func promptsFilePath(agentID string) string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".ccmux", "launchers", agentID+"-prompts.txt")
 }
 
 func registerAgentCmd() *cobra.Command {
@@ -739,6 +766,7 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
 	}
 
 	agentStore.Delete(agentID)
@@ -784,6 +812,7 @@ func killSessionCmd() *cobra.Command {
 				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 			}
 
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
@@ -876,6 +905,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 		agentStore.Delete(a.ID)
 	}
 
@@ -886,6 +916,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-prompts.txt"))
 		agentStore.Delete(id)
 	}
 
@@ -1026,10 +1057,18 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
+PROMPTS_FILE="%s"
+if [ -f "$PROMPTS_FILE" ]; then
+  PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${PROMPTS_CONTENT}"
+fi
+
 claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, baseBranch, sessionID)
+`, agentID, worktreePath, baseBranch, sessionID, promptsFilePath(agentID))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

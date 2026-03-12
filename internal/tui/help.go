@@ -35,6 +35,12 @@ var viewTitles = map[ViewState]string{
 	ViewAgentInfo:            "Info on Agent",
 	ViewUpdate:               "Update",
 	ViewProjImporting:        "Setting Up Project",
+	ViewManagePrompts:        "Manage Prompts",
+	ViewAddPromptName:        "Add Prompt (Name)",
+	ViewAddPromptContent:     "Add Prompt (Content)",
+	ViewEditPrompt:           "Edit Prompt",
+	ViewConfirmRemovePrompt:  "Remove Prompt",
+	ViewNewTaskSelectPrompts: "New Task - Select Prompts",
 }
 
 var viewHelpCommands = map[ViewState][]helpCommand{
@@ -43,7 +49,8 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[n]ew task", Description: "Spawn a new Claude agent"},
 		{FooterText: "[i]nfo on agent", Description: "View agent details and jump to its tmux window"},
 		{FooterText: "[k]ill agent", Description: "Terminate a running agent"},
-		{FooterText: "[p]rojects", Description: "Manage registered projects"},
+		{FooterText: "[p]rompts", Description: "Manage custom agent prompts"},
+		{FooterText: "[P]rojects", Description: "Manage registered projects"},
 		{FooterText: "[K]ill session", Description: "Kill all agents and the tmux session"},
 		{FooterText: "[u]pdate", Description: "Check for and install updates", HideFromFooter: true},
 	},
@@ -62,7 +69,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewNewTaskInput: {
-		{FooterText: "[enter] next", Description: "Continue to branch name step"},
+		{FooterText: "[enter] next", Description: "Continue to prompt selection"},
 		{FooterText: "[esc] back", Description: "Return to branch selection"},
 	},
 	ViewNewTaskWorktreeName: {
@@ -127,6 +134,37 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewProjImporting: {
 		{FooterText: "[esc] back", Description: "Return to project management (import continues)"},
+	},
+	ViewManagePrompts: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the prompt list"},
+		{FooterText: "[a]dd prompt", Description: "Create a new prompt"},
+		{FooterText: "[enter] edit selected", Description: "Edit the selected prompt"},
+		{FooterText: "[d]elete selected", Description: "Remove the selected prompt"},
+		{FooterText: "[esc] back", Description: "Return to main view"},
+	},
+	ViewAddPromptName: {
+		{FooterText: "[enter] next", Description: "Proceed to content entry"},
+		{FooterText: "[esc] cancel", Description: "Cancel and return to prompt management"},
+	},
+	ViewAddPromptContent: {
+		{FooterText: "[enter] create prompt", Description: "Create the prompt"},
+		{FooterText: "[esc] back", Description: "Return to name entry"},
+	},
+	ViewEditPrompt: {
+		{FooterText: "[tab] next field", Description: "Move to the next field"},
+		{FooterText: "[shift+tab] prev field", Description: "Move to the previous field"},
+		{FooterText: "[enter] save", Description: "Save changes"},
+		{FooterText: "[esc] cancel", Description: "Cancel and return to prompt management"},
+	},
+	ViewConfirmRemovePrompt: {
+		{FooterText: "[y]es", Description: "Confirm prompt removal"},
+		{FooterText: "[n]o", Description: "Cancel and go back"},
+	},
+	ViewNewTaskSelectPrompts: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the prompt list"},
+		{FooterText: "[space] toggle", Description: "Enable or disable the selected prompt"},
+		{FooterText: "[enter] continue", Description: "Continue to worktree name step"},
+		{FooterText: "[esc] back", Description: "Return to task description"},
 	},
 	ViewConfirmKillSession: {
 		{FooterText: "[y]es, kill everything", Description: "Kill all agents and the tmux session"},
