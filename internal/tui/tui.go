@@ -71,6 +71,9 @@ type model struct {
 	changelogEntries  []updater.ChangelogEntry
 	changelogLoading  bool
 
+	// Kill agent confirmation
+	confirmKillAgent *agent.Agent
+
 	// Ctrl+C confirmation
 	ctrlCPressed bool
 
@@ -1269,6 +1272,20 @@ func (m model) handleConfirmMergeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleConfirmKillKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If we're in the confirmation step, handle y/esc to confirm or cancel.
+	if m.confirmKillAgent != nil {
+		switch msg.String() {
+		case "y", "enter":
+			selected := m.confirmKillAgent
+			m.confirmKillAgent = nil
+			m.view = ViewMain
+			return m, m.killAgentCmd(selected)
+		case "esc", "n":
+			m.confirmKillAgent = nil
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.view = ViewMain
@@ -1282,9 +1299,7 @@ func (m model) handleConfirmKillKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
-			selected := m.agents[m.selectedIndex]
-			m.view = ViewMain
-			return m, m.killAgentCmd(selected)
+			m.confirmKillAgent = m.agents[m.selectedIndex]
 		}
 	}
 	return m, nil

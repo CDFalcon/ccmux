@@ -482,10 +482,20 @@ func renderConfirmKillView(m model) string {
 
 	b.WriteString(titleStyle.Render("# Kill Agent"))
 	b.WriteString("\n\n")
-	b.WriteString(renderAgentSelector(m, "No agents to kill"))
 
-	help := helpFooter(ViewConfirmKill)
-	b.WriteString(renderFooter(help, m.ctrlCPressed))
+	if m.confirmKillAgent != nil {
+		b.WriteString(errorStyle.Render(fmt.Sprintf("Kill agent %s?", m.confirmKillAgent.ID)))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(truncate(m.confirmKillAgent.Task, MaxTaskDisplayLen)))
+		b.WriteString("\n\n")
+		b.WriteString("Press [y] to confirm or [esc] to go back.\n\n")
+		help := "[y]es  [esc] back  [F1] help"
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
+	} else {
+		b.WriteString(renderAgentSelector(m, "No agents to kill"))
+		help := helpFooter(ViewConfirmKill)
+		b.WriteString(renderFooter(help, m.ctrlCPressed))
+	}
 
 	return b.String()
 }
