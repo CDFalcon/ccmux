@@ -45,7 +45,6 @@ type model struct {
 	filteredBranches      []string
 	spawnBranch           string
 	spawnTask             string
-	spawnAutoMode         bool
 	worktreeNameInput     textinput.Model
 
 	// Project form inputs
@@ -1144,15 +1143,11 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.worktreeNameInput.Blur()
 		cmd := m.taskInput.Focus()
 		return m, cmd
-	case " ":
-		m.spawnAutoMode = !m.spawnAutoMode
-		return m, nil
 	case "enter":
 		worktreeName := m.worktreeNameInput.Value()
 		task := m.spawnTask
 		proj := m.selectedProj
 		branch := m.spawnBranch
-		autoMode := m.spawnAutoMode
 		m.view = ViewMain
 		m.taskInput.SetValue("")
 		m.taskInput.Blur()
@@ -1161,8 +1156,7 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		m.spawnTask = ""
-		m.spawnAutoMode = false
-		return m, m.spawnAgentCmd(task, proj, branch, worktreeName, autoMode)
+		return m, m.spawnAgentCmd(task, proj, branch, worktreeName)
 	}
 
 	var cmd tea.Cmd
@@ -1752,7 +1746,7 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 	}
 }
 
-func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, autoMode bool) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -1761,9 +1755,6 @@ func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, 
 		args := []string{"spawn", task, "--project", proj.Name, "--branch", branch}
 		if worktreeName != "" {
 			args = append(args, "--worktree-name", worktreeName)
-		}
-		if autoMode {
-			args = append(args, "--auto-mode")
 		}
 		cmd := exec.Command(exePath, args...)
 		output, err := cmd.CombinedOutput()

@@ -192,7 +192,6 @@ func spawnCmd() *cobra.Command {
 	var projectName string
 	var baseBranch string
 	var worktreeName string
-	var autoMode bool
 
 	cmd := &cobra.Command{
 		Use:    "spawn <task>",
@@ -200,7 +199,7 @@ func spawnCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task := args[0]
-			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q autoMode=%v", task, projectName, baseBranch, worktreeName, autoMode)
+			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q", task, projectName, baseBranch, worktreeName)
 
 			if projectName == "" {
 				return fmt.Errorf("--project is required")
@@ -226,7 +225,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), autoMode)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName))
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -252,7 +251,6 @@ func spawnCmd() *cobra.Command {
 				ProjectName: projectName,
 				TmuxWindow:  windowID,
 				BaseBranch:  baseBranch,
-				AutoMode:    autoMode,
 				Status:      agent.StatusSpawning,
 			}
 			if err := agentStore.Create(a); err != nil {
@@ -267,13 +265,12 @@ func spawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectName, "project", "", "Project to use")
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
-	cmd.Flags().BoolVar(&autoMode, "auto-mode", false, "Disable superpowers workflows for fully autonomous operation")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, autoMode bool) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -291,11 +288,6 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, 
 		useFastWT = "1"
 	}
 
-	autoModeStr := "0"
-	if autoMode {
-		autoModeStr = "1"
-	}
-
 	wtSuffix := agentID
 	if worktreeName != "" {
 		wtSuffix = worktreeName + "-" + agentID
@@ -311,7 +303,6 @@ BASE_BRANCH="%s"
 SESSION_ID="%s"
 USE_FAST_WT="%s"
 WT_SUFFIX="%s"
-AUTO_MODE="%s"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -443,17 +434,11 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
-if [ "$AUTO_MODE" = "1" ]; then
-  SYSTEM_PROMPT="${SYSTEM_PROMPT}
-
-IMPORTANT: You are running in fully autonomous mode. Do NOT use superpowers skills or invoke structured multi-step workflows (brainstorming, TDD, planning phases, spec writing, etc.). Make reasonable decisions based on available information and proceed directly to implementation. Do not ask for user input or approval. Complete the task autonomously without human-in-the-loop gates."
-fi
-
 claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, autoModeStr)
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

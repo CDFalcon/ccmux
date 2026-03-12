@@ -349,13 +349,6 @@ func renderNewTaskWorktreeNameView(m model) string {
 	b.WriteString(dimStyle.Render("Optional. Leave empty for default (e.g. ccmux/<agent-id>)"))
 	b.WriteString("\n\n")
 
-	autoModeLabel := dimStyle.Render("[ ] Auto mode (no superpowers)")
-	if m.spawnAutoMode {
-		autoModeLabel = agentRunningStyle.Render("[✓] Auto mode (no superpowers)")
-	}
-	b.WriteString(autoModeLabel)
-	b.WriteString("\n\n")
-
 	help := helpFooter(ViewNewTaskWorktreeName)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 

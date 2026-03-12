@@ -67,7 +67,6 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewNewTaskWorktreeName: {
 		{FooterText: "[enter] spawn", Description: "Spawn the agent (name is optional)"},
-		{FooterText: "[space] toggle auto mode", Description: "Toggle fully autonomous mode (skips superpowers workflows)"},
 		{FooterText: "[esc] back", Description: "Return to task description"},
 	},
 	ViewIntervene: {
