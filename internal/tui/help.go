@@ -153,7 +153,8 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] back", Description: "Return to name entry"},
 	},
 	ViewAddPromptDefault: {
-		{FooterText: "[enter] next", Description: "Proceed to project selection"},
+		{FooterText: "[y]es", Description: "Set as default and proceed"},
+		{FooterText: "[n]o", Description: "Skip default and proceed"},
 		{FooterText: "[esc] back", Description: "Return to content entry"},
 	},
 	ViewAddPromptProjects: {

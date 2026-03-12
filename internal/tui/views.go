@@ -1197,8 +1197,7 @@ func renderAddPromptDefaultView(m model) string {
 
 	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
 
-	b.WriteString("Set as default? (yes/no):\n")
-	b.WriteString(inputStyle.Render(m.promptForm.defaultInput.View()))
+	b.WriteString("Set as default?")
 	b.WriteString("\n\n")
 
 	b.WriteString(dimStyle.Render("Default prompts are automatically selected when creating new tasks"))
