@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -42,6 +43,7 @@ const (
 	ViewAddPromptName
 	ViewAddPromptContent
 	ViewAddPromptDefault
+	ViewAddPromptProjects
 	ViewEditPrompt
 	ViewConfirmRemovePrompt
 	ViewNewTaskSelectPrompts
@@ -1100,11 +1102,14 @@ func renderManagePromptsView(m model) string {
 			if i == m.selectedIndex {
 				style = selectedItemStyle
 			}
-			defaultTag := ""
+			tags := ""
 			if p.IsDefault {
-				defaultTag = dimStyle.Render(" (default)")
+				tags += dimStyle.Render(" (default)")
 			}
-			line := fmt.Sprintf("%s%s", p.Name, defaultTag)
+			if len(p.ProjectNames) > 0 {
+				tags += dimStyle.Render(fmt.Sprintf(" [%s]", strings.Join(p.ProjectNames, ", ")))
+			}
+			line := fmt.Sprintf("%s%s", p.Name, tags)
 			b.WriteString(style.Render(line))
 			b.WriteString("\n")
 		}
@@ -1195,6 +1200,51 @@ func renderAddPromptDefaultView(m model) string {
 	return b.String()
 }
 
+func renderAddPromptProjectsView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Add Prompt - Projects"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
+
+	b.WriteString(renderProjectToggleList(m.projects, m.promptProjectEnabled, m.promptProjectIndex))
+
+	help := helpFooter(ViewAddPromptProjects)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+func renderProjectToggleList(projects []*project.Project, enabled map[string]bool, selectedIdx int) string {
+	var b strings.Builder
+
+	if len(projects) == 0 {
+		b.WriteString(dimStyle.Render("No projects configured. Prompt will apply to all projects."))
+		b.WriteString("\n\n")
+		return b.String()
+	}
+
+	b.WriteString("Toggle projects (none selected = all projects):\n\n")
+
+	for i, p := range projects {
+		style := queueItemStyle
+		if i == selectedIdx {
+			style = selectedItemStyle
+		}
+		checkbox := "[ ]"
+		if enabled[p.Name] {
+			checkbox = "[x]"
+		}
+		line := fmt.Sprintf("%s %s", checkbox, p.Name)
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	return b.String()
+}
+
 func renderEditPromptView(m model) string {
 	var b strings.Builder
 
@@ -1222,6 +1272,30 @@ func renderEditPromptView(m model) string {
 		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
 		b.WriteString(inputStyle.Render(f.input))
 		b.WriteString("\n\n")
+	}
+
+	marker := "  "
+	if m.editPromptForm.focusIndex == 3 {
+		marker = "> "
+	}
+	b.WriteString(fmt.Sprintf("%sProjects (none = all):\n", marker))
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("  No projects configured"))
+		b.WriteString("\n\n")
+	} else {
+		for i, p := range m.projects {
+			checkbox := "[ ]"
+			if m.promptProjectEnabled[p.Name] {
+				checkbox = "[x]"
+			}
+			style := dimStyle
+			if m.editPromptForm.focusIndex == 3 && i == m.promptProjectIndex {
+				style = selectedItemStyle
+			}
+			b.WriteString(style.Render(fmt.Sprintf("  %s %s", checkbox, p.Name)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
 	}
 
 	help := helpFooter(ViewEditPrompt)
@@ -1261,13 +1335,13 @@ func renderNewTaskSelectPromptsView(m model) string {
 		b.WriteString("\n")
 	}
 
-	if len(m.prompts) == 0 {
-		b.WriteString(dimStyle.Render("No prompts configured. Press [enter] to continue without prompts."))
+	if len(m.spawnFilteredPrompts) == 0 {
+		b.WriteString(dimStyle.Render("No prompts available for this project. Press [enter] to continue without prompts."))
 		b.WriteString("\n\n")
 	} else {
 		b.WriteString("Toggle prompts on/off:\n\n")
 
-		for i, p := range m.prompts {
+		for i, p := range m.spawnFilteredPrompts {
 			style := queueItemStyle
 			if i == m.selectedIndex {
 				style = selectedItemStyle

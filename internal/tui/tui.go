@@ -48,6 +48,7 @@ type model struct {
 	spawnTask             string
 	worktreeNameInput     textinput.Model
 	spawnPromptEnabled    map[string]bool
+	spawnFilteredPrompts  []*prompt.Prompt
 
 	// Project form inputs
 	projectForm     projectFormModel
@@ -56,11 +57,13 @@ type model struct {
 	newProjectPath  string
 
 	// Prompt form inputs
-	prompts          []*prompt.Prompt
-	promptForm       promptFormModel
-	editPromptForm   editPromptFormModel
-	newPromptName    string
-	selectedPrompt   *prompt.Prompt
+	prompts              []*prompt.Prompt
+	promptForm           promptFormModel
+	editPromptForm       editPromptFormModel
+	newPromptName        string
+	selectedPrompt       *prompt.Prompt
+	promptProjectEnabled map[string]bool
+	promptProjectIndex   int
 
 	// Intervention input
 	interveneInput textarea.Model
@@ -243,6 +246,8 @@ func (ef *editPromptFormModel) focusCurrent() {
 		ef.contentInput.Focus()
 	case 2:
 		ef.defaultInput.Focus()
+	case 3:
+		// projects field - no text input to focus
 	}
 }
 
@@ -256,6 +261,14 @@ func (ef *editPromptFormModel) loadFromPrompt(p *prompt.Prompt) {
 	}
 	ef.focusIndex = 0
 	ef.focusCurrent()
+}
+
+func promptProjectEnabledFromPrompt(p *prompt.Prompt) map[string]bool {
+	enabled := make(map[string]bool)
+	for _, name := range p.ProjectNames {
+		enabled[name] = true
+	}
+	return enabled
 }
 
 func newProjectForm() projectFormModel {
@@ -1048,6 +1061,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddPromptContentKeys(msg)
 	case ViewAddPromptDefault:
 		return m.handleAddPromptDefaultKeys(msg)
+	case ViewAddPromptProjects:
+		return m.handleAddPromptProjectsKeys(msg)
 	case ViewEditPrompt:
 		return m.handleEditPromptKeys(msg)
 	case ViewConfirmRemovePrompt:
@@ -1259,7 +1274,12 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawnTask = task
 		m.taskInput.Blur()
 		m.spawnPromptEnabled = make(map[string]bool)
+		m.spawnFilteredPrompts = nil
 		for _, p := range m.prompts {
+			if m.selectedProj != nil && !p.AppliesToProject(m.selectedProj.Name) {
+				continue
+			}
+			m.spawnFilteredPrompts = append(m.spawnFilteredPrompts, p)
 			m.spawnPromptEnabled[p.ID] = p.IsDefault
 		}
 		m.view = ViewNewTaskSelectPrompts
@@ -1284,7 +1304,7 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		task := m.spawnTask
 		proj := m.selectedProj
 		branch := m.spawnBranch
-		promptContent := enabledPromptContent(m.prompts, m.spawnPromptEnabled)
+		promptContent := enabledPromptContent(m.spawnFilteredPrompts, m.spawnPromptEnabled)
 		m.view = ViewMain
 		m.taskInput.SetValue("")
 		m.taskInput.Blur()
@@ -1654,6 +1674,8 @@ func (m model) handleManagePromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedPrompt = m.prompts[m.selectedIndex]
 			m.view = ViewEditPrompt
 			m.editPromptForm.loadFromPrompt(m.selectedPrompt)
+			m.promptProjectEnabled = promptProjectEnabledFromPrompt(m.selectedPrompt)
+			m.promptProjectIndex = 0
 			return m, textinput.Blink
 		}
 	case "d":
@@ -1721,11 +1743,11 @@ func (m model) handleAddPromptDefaultKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := m.promptForm.contentInput.Focus()
 		return m, cmd
 	case "enter":
-		defaultStr := strings.ToLower(strings.TrimSpace(m.promptForm.defaultInput.Value()))
-		isDefault := defaultStr == "yes" || defaultStr == "true" || defaultStr == "y"
-		m.view = ViewManagePrompts
-		m.selectedIndex = 0
-		return m, m.addPromptCmd(m.newPromptName, m.promptForm.contentInput.Value(), isDefault)
+		m.promptForm.defaultInput.Blur()
+		m.promptProjectEnabled = make(map[string]bool)
+		m.promptProjectIndex = 0
+		m.view = ViewAddPromptProjects
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -1733,7 +1755,48 @@ func (m model) handleAddPromptDefaultKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) handleAddPromptProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = ViewAddPromptDefault
+		cmd := m.promptForm.defaultInput.Focus()
+		return m, cmd
+	case "up", "k":
+		if m.promptProjectIndex > 0 {
+			m.promptProjectIndex--
+		}
+	case "down", "j":
+		if m.promptProjectIndex < len(m.projects)-1 {
+			m.promptProjectIndex++
+		}
+	case " ":
+		if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
+			p := m.projects[m.promptProjectIndex]
+			m.promptProjectEnabled[p.Name] = !m.promptProjectEnabled[p.Name]
+		}
+	case "enter":
+		defaultStr := strings.ToLower(strings.TrimSpace(m.promptForm.defaultInput.Value()))
+		isDefault := defaultStr == "yes" || defaultStr == "true" || defaultStr == "y"
+		projectNames := m.enabledProjectNames()
+		m.view = ViewManagePrompts
+		m.selectedIndex = 0
+		return m, m.addPromptCmd(m.newPromptName, m.promptForm.contentInput.Value(), isDefault, projectNames)
+	}
+	return m, nil
+}
+
+func (m model) enabledProjectNames() []string {
+	var names []string
+	for _, p := range m.projects {
+		if m.promptProjectEnabled[p.Name] {
+			names = append(names, p.Name)
+		}
+	}
+	return names
+}
+
 func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	numFields := 4
 	switch msg.String() {
 	case "esc":
 		m.editPromptForm.blurAll()
@@ -1741,12 +1804,18 @@ func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedPrompt = nil
 		return m, nil
 	case "tab":
-		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + 1) % 3
+		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + 1) % numFields
 		m.editPromptForm.focusCurrent()
+		if m.editPromptForm.focusIndex == 3 {
+			return m, nil
+		}
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + 2) % 3
+		m.editPromptForm.focusIndex = (m.editPromptForm.focusIndex + numFields - 1) % numFields
 		m.editPromptForm.focusCurrent()
+		if m.editPromptForm.focusIndex == 3 {
+			return m, nil
+		}
 		return m, textinput.Blink
 	case "enter":
 		if m.selectedPrompt == nil {
@@ -1756,11 +1825,31 @@ func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		content := m.editPromptForm.contentInput.Value()
 		defaultStr := strings.ToLower(strings.TrimSpace(m.editPromptForm.defaultInput.Value()))
 		isDefault := defaultStr == "yes" || defaultStr == "true" || defaultStr == "y"
+		projectNames := m.enabledProjectNames()
 		promptID := m.selectedPrompt.ID
 		m.editPromptForm.blurAll()
 		m.selectedPrompt = nil
 		m.view = ViewManagePrompts
-		return m, m.updatePromptCmd(promptID, name, content, isDefault)
+		return m, m.updatePromptCmd(promptID, name, content, isDefault, projectNames)
+	}
+
+	if m.editPromptForm.focusIndex == 3 {
+		switch msg.String() {
+		case "up", "k":
+			if m.promptProjectIndex > 0 {
+				m.promptProjectIndex--
+			}
+		case "down", "j":
+			if m.promptProjectIndex < len(m.projects)-1 {
+				m.promptProjectIndex++
+			}
+		case " ":
+			if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
+				p := m.projects[m.promptProjectIndex]
+				m.promptProjectEnabled[p.Name] = !m.promptProjectEnabled[p.Name]
+			}
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -1804,12 +1893,12 @@ func (m model) handleNewTaskSelectPromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.selectedIndex--
 		}
 	case "down", "j":
-		if m.selectedIndex < len(m.prompts)-1 {
+		if m.selectedIndex < len(m.spawnFilteredPrompts)-1 {
 			m.selectedIndex++
 		}
 	case " ":
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.prompts) {
-			p := m.prompts[m.selectedIndex]
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.spawnFilteredPrompts) {
+			p := m.spawnFilteredPrompts[m.selectedIndex]
 			m.spawnPromptEnabled[p.ID] = !m.spawnPromptEnabled[p.ID]
 		}
 	case "enter":
@@ -1821,12 +1910,13 @@ func (m model) handleNewTaskSelectPromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 	return m, nil
 }
 
-func (m model) addPromptCmd(name, content string, isDefault bool) tea.Cmd {
+func (m model) addPromptCmd(name, content string, isDefault bool, projectNames []string) tea.Cmd {
 	return func() tea.Msg {
 		p := &prompt.Prompt{
-			Name:      name,
-			Content:   content,
-			IsDefault: isDefault,
+			Name:         name,
+			Content:      content,
+			IsDefault:    isDefault,
+			ProjectNames: projectNames,
 		}
 		if err := m.promptStore.Add(p); err != nil {
 			return errMsg{err}
@@ -1835,12 +1925,13 @@ func (m model) addPromptCmd(name, content string, isDefault bool) tea.Cmd {
 	}
 }
 
-func (m model) updatePromptCmd(id, name, content string, isDefault bool) tea.Cmd {
+func (m model) updatePromptCmd(id, name, content string, isDefault bool, projectNames []string) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.promptStore.Update(id, func(p *prompt.Prompt) {
 			p.Name = name
 			p.Content = content
 			p.IsDefault = isDefault
+			p.ProjectNames = projectNames
 		}); err != nil {
 			return errMsg{err}
 		}
@@ -2678,6 +2769,8 @@ func (m model) View() string {
 		content = renderAddPromptContentView(m)
 	case ViewAddPromptDefault:
 		content = renderAddPromptDefaultView(m)
+	case ViewAddPromptProjects:
+		content = renderAddPromptProjectsView(m)
 	case ViewEditPrompt:
 		content = renderEditPromptView(m)
 	case ViewConfirmRemovePrompt:

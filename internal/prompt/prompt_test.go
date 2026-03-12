@@ -238,6 +238,67 @@ func TestUpdate_ShouldUpdateTimestamp_GivenModification(t *testing.T) {
 	}
 }
 
+func TestAppliesToProject_ShouldReturnTrue_GivenNoProjectNames(t *testing.T) {
+	// Setup.
+	p := &Prompt{Name: "global", Content: "content"}
+
+	// Execute.
+	result := p.AppliesToProject("any-project")
+
+	// Assert.
+	if !result {
+		t.Error("expected prompt with no project names to apply to any project")
+	}
+}
+
+func TestAppliesToProject_ShouldReturnTrue_GivenMatchingProject(t *testing.T) {
+	// Setup.
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a", "proj-b"}}
+
+	// Execute.
+	result := p.AppliesToProject("proj-b")
+
+	// Assert.
+	if !result {
+		t.Error("expected prompt to apply to matching project")
+	}
+}
+
+func TestAppliesToProject_ShouldReturnFalse_GivenNonMatchingProject(t *testing.T) {
+	// Setup.
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a"}}
+
+	// Execute.
+	result := p.AppliesToProject("proj-c")
+
+	// Assert.
+	if result {
+		t.Error("expected prompt to not apply to non-matching project")
+	}
+}
+
+func TestAdd_ShouldPersistProjectNames_GivenScopedPrompt(t *testing.T) {
+	// Setup.
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a", "proj-b"}}
+
+	// Execute.
+	err := store.Add(p)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get(p.ID)
+	if len(retrieved.ProjectNames) != 2 {
+		t.Fatalf("expected 2 project names, got %d", len(retrieved.ProjectNames))
+	}
+	if retrieved.ProjectNames[0] != "proj-a" || retrieved.ProjectNames[1] != "proj-b" {
+		t.Errorf("expected project names [proj-a, proj-b], got %v", retrieved.ProjectNames)
+	}
+}
+
 func TestGet_ShouldFail_GivenNonExistentID(t *testing.T) {
 	// Setup.
 	store, cleanup := setupTestStore(t)
