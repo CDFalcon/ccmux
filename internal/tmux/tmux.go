@@ -55,7 +55,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create tmux session: %s: %w", string(output), err)
 	}
-	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
+	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on ; set-hook -w pane-died kill-window").Run()
 	m.ForwardEnv()
 	m.SourceUserConfig()
 	m.SetupAgentNavigation()
@@ -191,7 +191,7 @@ func (m *Manager) RenameWindow(windowID, name string) error {
 }
 
 func (m *Manager) EnsureRemainOnExit() {
-	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
+	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on ; set-hook -w pane-died kill-window").Run()
 }
 
 func (m *Manager) SetupAgentNavigation() {
