@@ -47,6 +47,7 @@ type Agent struct {
 	ID           string    `json:"id"`
 	Task         string    `json:"task"`
 	ProjectName  string    `json:"project_name,omitempty"`
+	WorktreeName string    `json:"worktree_name,omitempty"`
 	WorktreePath string    `json:"worktree_path"`
 	BranchName   string    `json:"branch_name"`
 	BaseBranch   string    `json:"base_branch"`

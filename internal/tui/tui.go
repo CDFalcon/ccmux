@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2044,24 +2045,29 @@ func (m model) updateWindowNames() {
 			continue
 		}
 		var name string
-		short := a.ID[:8]
+		var base string
+		if a.WorktreeName != "" && a.ProjectName != "" {
+			base = a.ProjectName + ":" + a.WorktreeName
+		} else {
+			base = a.ID[:8]
+		}
 		switch a.Status {
 		case agent.StatusSpawning:
-			name = spinner(m.spinnerFrame) + " " + short
+			name = spinner(m.spinnerFrame) + " " + base
 		case agent.StatusRunning:
-			name = spinner(m.spinnerFrame) + " " + short
+			name = spinner(m.spinnerFrame) + " " + base
 		case agent.StatusCleaningUp:
-			name = spinner(m.spinnerFrame) + " " + short
+			name = spinner(m.spinnerFrame) + " " + base
 		case agent.StatusKilling:
-			name = spinner(m.spinnerFrame) + " " + short
+			name = spinner(m.spinnerFrame) + " " + base
 		case agent.StatusReady:
-			name = "● " + short
+			name = "● " + base
 		case agent.StatusWaitingReview:
-			name = "● " + short
+			name = "● " + base
 		case agent.StatusWaitingCI:
-			name = "⏳ " + short
+			name = "⏳ " + base
 		default:
-			name = short
+			name = base
 		}
 		if m.prevWindowNames[a.TmuxWindow] != name {
 			m.prevWindowNames[a.TmuxWindow] = name
@@ -2493,6 +2499,7 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 	}
 
 	if len(failedNames) > 0 {
+		sort.Strings(failedNames)
 		return ciStatusFailed, failedNames, completed, total
 	}
 	if hasPending {
