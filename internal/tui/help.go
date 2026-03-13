@@ -54,7 +54,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[p]rompts", Description: "Manage custom agent prompts"},
 		{FooterText: "[P]rojects", Description: "Manage registered projects"},
 		{FooterText: "[K]ill session", Description: "Kill all agents and the tmux session"},
-		{FooterText: "[u]pdate", Description: "Check for and install updates", HideFromFooter: true},
+		{FooterText: "[u]pdate", Description: "Check for and install updates"},
 	},
 	ViewSelectProject: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
