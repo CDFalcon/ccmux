@@ -1228,6 +1228,11 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedIndex = 0
 		atomic.StoreInt64(m.downloadProgress, 0)
 		return m, checkForUpdateCmd(m.betaChannel)
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		idx := int(msg.String()[0] - '1')
+		if idx < len(m.agents) {
+			return m, m.jumpToAgentCmd(m.agents[idx])
+		}
 	}
 	return m, nil
 }

@@ -107,31 +107,37 @@ func renderMainView(m model) string {
 		b.WriteString(dimStyle.Render("  No agents running"))
 		b.WriteString("\n")
 	} else {
-		for _, a := range m.agents {
+		for i, a := range m.agents {
+			var prefix string
+			if i < 9 {
+				prefix = dimStyle.Render(fmt.Sprintf("[%d]", i+1)) + " "
+			} else {
+				prefix = "    "
+			}
 			statsStr := formatAgentOneLiner(m.agentResources[a.ID])
 
 			if a.Status == agent.StatusCleaningUp {
 				spin := styledSpinner(m.spinnerFrame, agentCleaningUpStyle)
 				status := agentCleaningUpStyle.Render("cleaning up")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusKilling {
 				spin := styledSpinner(m.spinnerFrame, agentKillingStyle)
 				status := agentKillingStyle.Render("killing")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusSpawning {
 				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
 				status := agentSpawningStyle.Render("spawning")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusRunning {
 				spin := styledSpinner(m.spinnerFrame, agentRunningStyle)
 				status := agentRunningStyle.Render("running")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusWaitingCI {
@@ -142,12 +148,12 @@ func renderMainView(m model) string {
 					ciLabel = fmt.Sprintf("waiting on CI - %d/%d checks left", remaining, p.Total)
 				}
 				status := agentWaitingCIStyle.Render(ciLabel)
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else {
 				status := renderAgentStatus(a.Status)
-				line := fmt.Sprintf("  - %s: %s [%s]%s", a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
+				line := fmt.Sprintf("%s- %s: %s [%s]%s", prefix, a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			}

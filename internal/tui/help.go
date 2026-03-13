@@ -49,6 +49,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewMain: {
 		{FooterText: "[q]uick action", Description: "Pop and act on the next quick action in the queue (e.g. PR review)"},
 		{FooterText: "[n]ew task", Description: "Spawn a new Claude agent"},
+		{FooterText: "[1-9] jump to agent", Description: "Jump directly to the numbered agent's tmux window"},
 		{FooterText: "[i]nfo on agent", Description: "View agent details and jump to its tmux window"},
 		{FooterText: "[k]ill agent", Description: "Terminate a running agent"},
 		{FooterText: "[p]rompts", Description: "Manage custom agent prompts"},
