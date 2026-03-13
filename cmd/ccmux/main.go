@@ -12,7 +12,7 @@ import (
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/logging"
-	"github.com/CDFalcon/ccmux/internal/repo"
+	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
@@ -39,7 +39,7 @@ With a session-id argument, uses that specific session.
 
 Examples:
   ccmux              # Start or attach to "default" session
-  ccmux my-repo   # Start or attach to "my-project" session`,
+  ccmux my-project   # Start or attach to "my-project" session`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionID := defaultSessionID
@@ -170,7 +170,7 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	repoStore, err := repo.NewStore()
+	projectStore, err := project.NewStore()
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	restart, err := tui.Run(agentStore, queueManager, repoStore, promptStore, tmuxManager, sessionID)
+	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
 	if err != nil {
 		return err
 	}
@@ -195,7 +195,7 @@ func runSession(sessionID string) error {
 }
 
 func spawnCmd() *cobra.Command {
-	var repoName string
+	var projectName string
 	var baseBranch string
 	var worktreeName string
 	var promptContent string
@@ -206,10 +206,10 @@ func spawnCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task := args[0]
-			logging.Log("spawn: starting for task=%q repo=%q branch=%q worktreeName=%q", task, repoName, baseBranch, worktreeName)
+			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q", task, projectName, baseBranch, worktreeName)
 
-			if repoName == "" {
-				return fmt.Errorf("--repo is required")
+			if projectName == "" {
+				return fmt.Errorf("--project is required")
 			}
 
 			if baseBranch == "" {
@@ -220,13 +220,13 @@ func spawnCmd() *cobra.Command {
 			agentID := generateID()
 			logging.Log("spawn: generated agentID=%s sessionID=%s", agentID, sessionID)
 
-			repoStore, err := repo.NewStore()
+			projectStore, err := project.NewStore()
 			if err != nil {
 				return err
 			}
-			proj, err := repoStore.Get(repoName)
+			proj, err := projectStore.Get(projectName)
 			if err != nil {
-				return fmt.Errorf("repo not found: %s", repoName)
+				return fmt.Errorf("project not found: %s", projectName)
 			}
 
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
@@ -255,7 +255,7 @@ func spawnCmd() *cobra.Command {
 			a := &agent.Agent{
 				ID:           agentID,
 				Task:         task,
-				RepoName:     repoName,
+				ProjectName:  projectName,
 				WorktreeName: sanitizeWorktreeName(worktreeName),
 				TmuxWindow:   windowID,
 				BaseBranch:   baseBranch,
@@ -270,11 +270,11 @@ func spawnCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&repoName,   "repo", "", "Repo to use")
+	cmd.Flags().StringVar(&projectName, "project", "", "Project to use")
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
 	cmd.Flags().StringVar(&promptContent, "prompts", "", "Custom prompt content to inject into the agent's system prompt")
-	cmd.MarkFlagRequired("repo")
+	cmd.MarkFlagRequired("project")
 
 	return cmd
 }
@@ -749,7 +749,7 @@ func doCleanup(agentID, action string) error {
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
 
-	repoRoot, err := repo.GetRepoRoot(a.WorktreePath)
+	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
 	if err == nil {
 		wtManager := worktree.NewManager(repoRoot)
 		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
@@ -801,7 +801,7 @@ func killSessionCmd() *cobra.Command {
 
 			agents, _ := agentStore.List()
 			for _, a := range agents {
-				repoRoot, err := repo.GetRepoRoot(a.WorktreePath)
+				repoRoot, err := project.GetRepoRoot(a.WorktreePath)
 				if err == nil {
 					wtManager := worktree.NewManager(repoRoot)
 					os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
@@ -894,7 +894,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 
 	for _, a := range toCleanup {
 		logging.Log("recovery: cleaning up stale agent %s", a.ID)
-		repoRoot, err := repo.GetRepoRoot(a.WorktreePath)
+		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
 		if err == nil {
 			wtManager := worktree.NewManager(repoRoot)
 			os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))

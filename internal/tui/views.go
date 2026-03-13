@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/repo"
+	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -19,7 +19,7 @@ type ViewState int
 
 const (
 	ViewMain ViewState = iota
-	ViewSelectRepo
+	ViewSelectProject
 	ViewNewTaskBranch
 	ViewNewTaskBranchInput
 	ViewNewTaskInput
@@ -29,12 +29,12 @@ const (
 	ViewReview
 	ViewConfirmMerge
 	ViewConfirmKill
-	ViewManageRepos
-	ViewAddRepoName
-	ViewAddRepoPath
-	ViewAddRepoFastWT
-	ViewConfirmRemoveRepo
-	ViewEditRepo
+	ViewManageProjects
+	ViewAddProjectName
+	ViewAddProjectPath
+	ViewAddProjectFastWT
+	ViewConfirmRemoveProject
+	ViewEditProject
 	ViewConfirmKillSession
 	ViewAgentInfo
 	ViewUpdate
@@ -43,7 +43,7 @@ const (
 	ViewAddPromptName
 	ViewAddPromptContent
 	ViewAddPromptDefault
-	ViewAddPromptRepos
+	ViewAddPromptProjects
 	ViewEditPrompt
 	ViewConfirmRemovePrompt
 	ViewNewTaskSelectPrompts
@@ -93,7 +93,7 @@ func renderMainView(m model) string {
 	b.WriteString(renderLogo())
 	b.WriteString("\n")
 	if m.updateAvailable && m.updateVersion != "" {
-		b.WriteString("  " + dimStyle.Render(version.Version) + " - " + repoStyle.Render("[u]pdate to latest remote ("+m.updateVersion+")"))
+		b.WriteString("  " + dimStyle.Render(version.Version) + " - " + projectStyle.Render("[u]pdate to latest remote ("+m.updateVersion+")"))
 	} else if !m.updateAvailable && m.updateVersion != "" {
 		b.WriteString("  " + dimStyle.Render(version.Version+" - latest"))
 	} else {
@@ -172,17 +172,17 @@ func renderMainView(m model) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("# Repos (%d)", len(m.repos))))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("# Projects (%d)", len(m.projects))))
 	b.WriteString("\n")
-	if len(m.repos) == 0 {
-		b.WriteString(dimStyle.Render("  No repos registered. Press [P] to add one."))
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("  No projects registered. Press [P] to add one."))
 		b.WriteString("\n")
 	} else {
-		for _, p := range m.repos {
+		for _, p := range m.projects {
 			if p.IsSettingUp() {
 				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
 				status := agentSpawningStyle.Render("setting up")
-				b.WriteString(fmt.Sprintf("  %s %s [%s]\n", spin, repoStyle.Render(p.Name), status))
+				b.WriteString(fmt.Sprintf("  %s %s [%s]\n", spin, projectStyle.Render(p.Name), status))
 			} else {
 				extras := dimStyle.Render(p.EffectivePath())
 				if p.DefaultBaseBranch != "" {
@@ -191,7 +191,7 @@ func renderMainView(m model) string {
 				if p.UseFastWorktrees {
 					extras += "  " + dimStyle.Render("fast-worktrees")
 				}
-				b.WriteString(fmt.Sprintf("  - %s %s\n", repoStyle.Render(p.Name), extras))
+				b.WriteString(fmt.Sprintf("  - %s %s\n", projectStyle.Render(p.Name), extras))
 			}
 		}
 	}
@@ -208,17 +208,17 @@ func renderMainView(m model) string {
 	return b.String()
 }
 
-func renderSelectRepoView(m model) string {
+func renderSelectProjectView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Select Repo"))
+	b.WriteString(titleStyle.Render("# Select Project"))
 	b.WriteString("\n\n")
 
-	if len(m.repos) == 0 {
-		b.WriteString(dimStyle.Render("No repos registered"))
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("No projects registered"))
 		b.WriteString("\n\n")
 	} else {
-		for i, p := range m.repos {
+		for i, p := range m.projects {
 			style := queueItemStyle
 			if i == m.selectedIndex {
 				style = selectedItemStyle
@@ -236,7 +236,7 @@ func renderSelectRepoView(m model) string {
 		b.WriteString("\n")
 	}
 
-	help := helpFooter(ViewSelectRepo)
+	help := helpFooter(ViewSelectProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -248,9 +248,9 @@ func renderNewTaskBranchView(m model) string {
 	b.WriteString(titleStyle.Render("# New Task - Base Branch"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 	}
 
@@ -293,9 +293,9 @@ func renderNewTaskBranchInputView(m model) string {
 	b.WriteString(titleStyle.Render("# New Task - Specify Branch"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 	}
 
@@ -304,8 +304,8 @@ func renderNewTaskBranchInputView(m model) string {
 	b.WriteString("\n\n")
 
 	defaultBranch := "origin/master"
-	if m.selectedRepo != nil && m.selectedRepo.DefaultBaseBranch != "" {
-		defaultBranch = m.selectedRepo.DefaultBaseBranch
+	if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+		defaultBranch = m.selectedProj.DefaultBaseBranch
 	}
 	b.WriteString(dimStyle.Render("Leave empty for " + defaultBranch))
 	b.WriteString("\n\n")
@@ -322,9 +322,9 @@ func renderNewTaskInputView(m model) string {
 	b.WriteString(titleStyle.Render("# New Task"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 		b.WriteString("\n")
 	}
@@ -345,9 +345,9 @@ func renderNewTaskWorktreeNameView(m model) string {
 	b.WriteString(titleStyle.Render("# New Task - Branch Name (optional)"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(m.spawnTask)))
@@ -420,7 +420,7 @@ func renderInterveneInputView(m model) string {
 	b.WriteString("\n\n")
 
 	if m.interveneAgent != nil {
-		b.WriteString(fmt.Sprintf("Agent: %s\n", repoStyle.Render(m.interveneAgent.ID)))
+		b.WriteString(fmt.Sprintf("Agent: %s\n", projectStyle.Render(m.interveneAgent.ID)))
 		b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(truncate(m.interveneAgent.Task, 50))))
 		b.WriteString("\n")
 	}
@@ -520,17 +520,17 @@ func renderConfirmKillView(m model) string {
 	return b.String()
 }
 
-func renderManageReposView(m model) string {
+func renderManageProjectsView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Manage Repos"))
+	b.WriteString(titleStyle.Render("# Manage Projects"))
 	b.WriteString("\n\n")
 
-	if len(m.repos) == 0 {
-		b.WriteString(dimStyle.Render("No repos registered"))
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("No projects registered"))
 		b.WriteString("\n\n")
 	} else {
-		for i, p := range m.repos {
+		for i, p := range m.projects {
 			style := queueItemStyle
 			if i == m.selectedIndex {
 				style = selectedItemStyle
@@ -547,12 +547,12 @@ func renderManageReposView(m model) string {
 		}
 		b.WriteString("\n")
 
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.repos) {
-			selected := m.repos[m.selectedIndex]
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			selected := m.projects[m.selectedIndex]
 			if selected.IsSettingUp() {
 				b.WriteString(headerStyle.Render("## Setting up"))
 				b.WriteString("\n")
-				b.WriteString(dimStyle.Render("  Importing repo for fast worktrees..."))
+				b.WriteString(dimStyle.Render("  Importing project for fast worktrees..."))
 				b.WriteString("\n")
 				b.WriteString(dimStyle.Render("  Press [enter] to view progress"))
 				b.WriteString("\n\n")
@@ -576,63 +576,63 @@ func renderManageReposView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := helpFooter(ViewManageRepos)
+	help := helpFooter(ViewManageProjects)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
 
-func renderAddRepoNameView(m model) string {
+func renderAddProjectNameView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Repo - Name"))
+	b.WriteString(titleStyle.Render("# Add Project - Name"))
 	b.WriteString("\n\n")
 
-	b.WriteString("Enter repo name:\n")
-	b.WriteString(inputStyle.Render(m.repoForm.nameInput.View()))
+	b.WriteString("Enter project name:\n")
+	b.WriteString(inputStyle.Render(m.projectForm.nameInput.View()))
 	b.WriteString("\n\n")
 
-	b.WriteString(dimStyle.Render("A short identifier for the repo (e.g., 'myapp', 'backend')"))
+	b.WriteString(dimStyle.Render("A short identifier for the project (e.g., 'myapp', 'backend')"))
 	b.WriteString("\n\n")
 
-	help := helpFooter(ViewAddRepoName)
+	help := helpFooter(ViewAddProjectName)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
 
-func renderAddRepoPathView(m model) string {
+func renderAddProjectPathView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Repo - Path"))
+	b.WriteString(titleStyle.Render("# Add Project - Path"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Repo: %s\n\n", repoStyle.Render(m.newRepoName)))
+	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.newProjectName)))
 
 	b.WriteString("Enter path to git repository:\n")
-	b.WriteString(inputStyle.Render(m.repoForm.pathInput.View()))
+	b.WriteString(inputStyle.Render(m.projectForm.pathInput.View()))
 	b.WriteString("\n\n")
 
 	b.WriteString(dimStyle.Render("Full path to the repo root (e.g., '/home/user/projects/myapp')"))
 	b.WriteString("\n\n")
 
-	help := helpFooter(ViewAddRepoPath)
+	help := helpFooter(ViewAddProjectPath)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
 
-func renderAddRepoFastWTView(m model) string {
+func renderAddProjectFastWTView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Repo - Fast Worktrees"))
+	b.WriteString(titleStyle.Render("# Add Project - Fast Worktrees"))
 	b.WriteString("\n\n")
 
 	b.WriteString("Enable fast worktrees? (y/n)\n\n")
 	b.WriteString(dimStyle.Render("Runs 'proj import' to enable near-instant worktree creation."))
 	b.WriteString("\n\n")
 
-	help := helpFooter(ViewAddRepoFastWT)
+	help := helpFooter(ViewAddProjectFastWT)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -641,12 +641,12 @@ func renderAddRepoFastWTView(m model) string {
 func renderProjImportingView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Setting Up Repo"))
+	b.WriteString(titleStyle.Render("# Setting Up Project"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Repo: %s\n\n", repoStyle.Render(m.projSetupName)))
+	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.projSetupName)))
 
-	b.WriteString(fmt.Sprintf("%s Importing repo (this may take a while)...\n\n", spinner(m.spinnerFrame)))
+	b.WriteString(fmt.Sprintf("%s Importing project (this may take a while)...\n\n", spinner(m.spinnerFrame)))
 
 	var lines []string
 	if buf, ok := m.projSetupBuffers[m.projSetupName]; ok {
@@ -674,28 +674,28 @@ func renderProjImportingView(m model) string {
 	return b.String()
 }
 
-func renderEditRepoView(m model) string {
+func renderEditProjectView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Edit Repo"))
+	b.WriteString(titleStyle.Render("# Edit Project"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n\n", repoStyle.Render(m.selectedRepo.Name)))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.selectedProj.Name)))
 	}
 
 	fields := []struct {
 		label string
 		input string
 	}{
-		{"Path:", m.editRepoForm.pathInput.View()},
-		{"Default base branch:", m.editRepoForm.baseBranchInput.View()},
-		{"Fast worktrees (yes/no):", m.editRepoForm.fastWTInput.View()},
+		{"Path:", m.editProjectForm.pathInput.View()},
+		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
+		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
 	}
 
 	for i, f := range fields {
 		marker := "  "
-		if i == m.editRepoForm.focusIndex {
+		if i == m.editProjectForm.focusIndex {
 			marker = "> "
 		}
 		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
@@ -703,27 +703,27 @@ func renderEditRepoView(m model) string {
 		b.WriteString("\n\n")
 	}
 
-	help := helpFooter(ViewEditRepo)
+	help := helpFooter(ViewEditProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
 
-func renderConfirmRemoveRepoView(m model) string {
+func renderConfirmRemoveProjectView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Remove Repo"))
+	b.WriteString(titleStyle.Render("# Remove Project"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Remove repo '%s'?\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Remove project '%s'?\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("This only removes the registration, not the actual files."))
 		b.WriteString("\n\n")
 	}
 
-	help := helpFooter(ViewConfirmRemoveRepo)
+	help := helpFooter(ViewConfirmRemoveProject)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
@@ -1052,26 +1052,26 @@ func renderUpdateView(m model) string {
 	b.WriteString(titleStyle.Render("# Update"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Current version: %s\n", repoStyle.Render(version.Version)))
+	b.WriteString(fmt.Sprintf("Current version: %s\n", projectStyle.Render(version.Version)))
 
 	if m.updateChecking {
 		b.WriteString(fmt.Sprintf("\n%s Checking for updates...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
 	} else if m.updateError != "" {
 		b.WriteString(fmt.Sprintf("\n%s\n", errorStyle.Render(m.updateError)))
 	} else if m.changelogLoading {
-		b.WriteString(fmt.Sprintf("Latest version:  %s\n", repoStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
 		b.WriteString(fmt.Sprintf("\n%s Loading changelog...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
 	} else if m.updateAvailable && !m.updateDownloading && !m.updateComplete {
-		b.WriteString(fmt.Sprintf("Latest version:  %s\n", repoStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
 		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
 		b.WriteString("\n")
 	} else if m.updateDownloading {
-		b.WriteString(fmt.Sprintf("Latest version:  %s\n", repoStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("Latest version:  %s\n", projectStyle.Render(m.updateVersion)))
 		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
 		pct := atomic.LoadInt64(m.downloadProgress)
 		b.WriteString(fmt.Sprintf("\n%s Downloading update... %d%%\n", styledSpinner(m.spinnerFrame, agentRunningStyle), pct))
 	} else if m.updateComplete {
-		b.WriteString(fmt.Sprintf("Updated to:      %s\n", repoStyle.Render(m.updateVersion)))
+		b.WriteString(fmt.Sprintf("Updated to:      %s\n", projectStyle.Render(m.updateVersion)))
 		renderChangelog(&b, m.changelogEntries, m.selectedIndex, false, m.spinnerFrame)
 		b.WriteString("\n")
 		b.WriteString(agentReadyStyle.Render("Update complete!"))
@@ -1116,8 +1116,8 @@ func renderManagePromptsView(m model) string {
 			if p.IsDefault {
 				tags += dimStyle.Render(" (default)")
 			}
-			if len(p.RepoNames) > 0 {
-				tags += dimStyle.Render(fmt.Sprintf(" [%s]", strings.Join(p.RepoNames, ", ")))
+			if len(p.ProjectNames) > 0 {
+				tags += dimStyle.Render(fmt.Sprintf(" [%s]", strings.Join(p.ProjectNames, ", ")))
 			}
 			line := fmt.Sprintf("%s%s", p.Name, tags)
 			b.WriteString(style.Render(line))
@@ -1174,7 +1174,7 @@ func renderAddPromptContentView(m model) string {
 	b.WriteString(titleStyle.Render("# Add Prompt - Content"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Name: %s\n\n", repoStyle.Render(m.newPromptName)))
+	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
 
 	b.WriteString("Enter prompt content:\n")
 	b.WriteString(inputStyle.Render(m.promptForm.contentInput.View()))
@@ -1195,7 +1195,7 @@ func renderAddPromptDefaultView(m model) string {
 	b.WriteString(titleStyle.Render("# Add Prompt - Default"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Name: %s\n\n", repoStyle.Render(m.newPromptName)))
+	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
 
 	b.WriteString("Set as default?")
 	b.WriteString("\n\n")
@@ -1209,34 +1209,34 @@ func renderAddPromptDefaultView(m model) string {
 	return b.String()
 }
 
-func renderAddPromptReposView(m model) string {
+func renderAddPromptProjectsView(m model) string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("# Add Prompt - Repos"))
+	b.WriteString(titleStyle.Render("# Add Prompt - Projects"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Name: %s\n\n", repoStyle.Render(m.newPromptName)))
+	b.WriteString(fmt.Sprintf("Name: %s\n\n", projectStyle.Render(m.newPromptName)))
 
-	b.WriteString(renderRepoToggleList(m.repos, m.promptRepoEnabled, m.promptRepoIndex))
+	b.WriteString(renderProjectToggleList(m.projects, m.promptProjectEnabled, m.promptProjectIndex))
 
-	help := helpFooter(ViewAddPromptRepos)
+	help := helpFooter(ViewAddPromptProjects)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
 }
 
-func renderRepoToggleList(repos []*repo.Repo, enabled map[string]bool, selectedIdx int) string {
+func renderProjectToggleList(projects []*project.Project, enabled map[string]bool, selectedIdx int) string {
 	var b strings.Builder
 
-	if len(repos) == 0 {
-		b.WriteString(dimStyle.Render("No repos configured. Prompt will apply to all repos."))
+	if len(projects) == 0 {
+		b.WriteString(dimStyle.Render("No projects configured. Prompt will apply to all projects."))
 		b.WriteString("\n\n")
 		return b.String()
 	}
 
-	b.WriteString("Toggle repos (none selected = all repos):\n\n")
+	b.WriteString("Toggle projects (none selected = all projects):\n\n")
 
-	for i, p := range repos {
+	for i, p := range projects {
 		style := queueItemStyle
 		if i == selectedIdx {
 			style = selectedItemStyle
@@ -1261,7 +1261,7 @@ func renderEditPromptView(m model) string {
 	b.WriteString("\n\n")
 
 	if m.selectedPrompt != nil {
-		b.WriteString(fmt.Sprintf("Prompt: %s\n\n", repoStyle.Render(m.selectedPrompt.Name)))
+		b.WriteString(fmt.Sprintf("Prompt: %s\n\n", projectStyle.Render(m.selectedPrompt.Name)))
 	}
 
 	fields := []struct {
@@ -1287,18 +1287,18 @@ func renderEditPromptView(m model) string {
 	if m.editPromptForm.focusIndex == 3 {
 		marker = "> "
 	}
-	b.WriteString(fmt.Sprintf("%sRepos (none = all):\n", marker))
-	if len(m.repos) == 0 {
-		b.WriteString(dimStyle.Render("  No repos configured"))
+	b.WriteString(fmt.Sprintf("%sProjects (none = all):\n", marker))
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("  No projects configured"))
 		b.WriteString("\n\n")
 	} else {
-		for i, p := range m.repos {
+		for i, p := range m.projects {
 			checkbox := "[ ]"
-			if m.promptRepoEnabled[p.Name] {
+			if m.promptProjectEnabled[p.Name] {
 				checkbox = "[x]"
 			}
 			style := dimStyle
-			if m.editPromptForm.focusIndex == 3 && i == m.promptRepoIndex {
+			if m.editPromptForm.focusIndex == 3 && i == m.promptProjectIndex {
 				style = selectedItemStyle
 			}
 			b.WriteString(style.Render(fmt.Sprintf("  %s %s", checkbox, p.Name)))
@@ -1320,7 +1320,7 @@ func renderConfirmRemovePromptView(m model) string {
 	b.WriteString("\n\n")
 
 	if m.selectedPrompt != nil {
-		b.WriteString(fmt.Sprintf("Remove prompt '%s'?\n", repoStyle.Render(m.selectedPrompt.Name)))
+		b.WriteString(fmt.Sprintf("Remove prompt '%s'?\n", projectStyle.Render(m.selectedPrompt.Name)))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("This cannot be undone."))
 		b.WriteString("\n\n")
@@ -1338,16 +1338,16 @@ func renderNewTaskSelectPromptsView(m model) string {
 	b.WriteString(titleStyle.Render("# New Task - Select Prompts"))
 	b.WriteString("\n\n")
 
-	if m.selectedRepo != nil {
-		b.WriteString(fmt.Sprintf("Repo: %s\n", repoStyle.Render(m.selectedRepo.Name)))
-		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedRepo.EffectivePath())))
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(m.spawnTask)))
 	b.WriteString("\n")
 
 	if len(m.spawnFilteredPrompts) == 0 {
-		b.WriteString(dimStyle.Render("No prompts available for this repo. Press [enter] to continue without prompts."))
+		b.WriteString(dimStyle.Render("No prompts available for this project. Press [enter] to continue without prompts."))
 		b.WriteString("\n\n")
 	} else {
 		b.WriteString("Toggle prompts on/off:\n\n")

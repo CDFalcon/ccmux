@@ -1,4 +1,4 @@
-package repo
+package project
 
 import (
 	"bufio"
@@ -29,13 +29,13 @@ func NewStore() (*Store, error) {
 	}
 
 	return &Store{
-		filePath: filepath.Join(ccmuxDir, "repos.json"),
+		filePath: filepath.Join(ccmuxDir, "projects.json"),
 	}, nil
 }
 
 func (s *Store) load() (*storeData, error) {
 	data := &storeData{
-		Repos: make(map[string]*Repo),
+		Projects: make(map[string]*Project),
 	}
 
 	raw, err := os.ReadFile(s.filePath)
@@ -43,7 +43,7 @@ func (s *Store) load() (*storeData, error) {
 		return data, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to read repos file: %w", err)
+		return nil, fmt.Errorf("failed to read projects file: %w", err)
 	}
 
 	var envelope struct {
@@ -54,12 +54,12 @@ func (s *Store) load() (*storeData, error) {
 	if envelope.Version < CurrentSchemaVersion {
 		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
 		if err != nil {
-			return nil, fmt.Errorf("failed to migrate repos file: %w", err)
+			return nil, fmt.Errorf("failed to migrate projects file: %w", err)
 		}
 	}
 
 	if err := json.Unmarshal(raw, data); err != nil {
-		return nil, fmt.Errorf("failed to parse repos file: %w", err)
+		return nil, fmt.Errorf("failed to parse projects file: %w", err)
 	}
 
 	data.Version = CurrentSchemaVersion
@@ -72,41 +72,41 @@ func (s *Store) save(data *storeData) error {
 
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal repos: %w", err)
+		return fmt.Errorf("failed to marshal projects: %w", err)
 	}
 
 	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
-		return fmt.Errorf("failed to write repos file: %w", err)
+		return fmt.Errorf("failed to write projects file: %w", err)
 	}
 
 	return nil
 }
 
-func (s *Store) Add(r *Repo) error {
+func (s *Store) Add(project *Project) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	absPath, err := filepath.Abs(r.Path)
+	absPath, err := filepath.Abs(project.Path)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	r.Path = absPath
+	project.Path = absPath
 
-	if r.FastWorktreePath != "" {
-		absFWP, err := filepath.Abs(r.FastWorktreePath)
+	if project.FastWorktreePath != "" {
+		absFWP, err := filepath.Abs(project.FastWorktreePath)
 		if err != nil {
 			return fmt.Errorf("failed to get absolute fast worktree path: %w", err)
 		}
-		r.FastWorktreePath = absFWP
+		project.FastWorktreePath = absFWP
 	}
 
-	if r.UseFastWorktrees && !r.IsSettingUp() {
-		effectivePath := r.EffectivePath()
+	if project.UseFastWorktrees && !project.IsSettingUp() {
+		effectivePath := project.EffectivePath()
 		if !IsProjDirectory(effectivePath) {
 			return fmt.Errorf("path is not a proj directory (missing .repo): %s", effectivePath)
 		}
-	} else if !r.UseFastWorktrees && !isGitRepo(r.Path) {
-		return fmt.Errorf("path is not a git repository: %s", r.Path)
+	} else if !project.UseFastWorktrees && !isGitRepo(project.Path) {
+		return fmt.Errorf("path is not a git repository: %s", project.Path)
 	}
 
 	data, err := s.load()
@@ -114,16 +114,16 @@ func (s *Store) Add(r *Repo) error {
 		return err
 	}
 
-	if _, exists := data.Repos[r.Name]; exists {
-		return fmt.Errorf("repo with name %s already exists", r.Name)
+	if _, exists := data.Projects[project.Name]; exists {
+		return fmt.Errorf("project with name %s already exists", project.Name)
 	}
 
-	data.Repos[r.Name] = r
+	data.Projects[project.Name] = project
 
 	return s.save(data)
 }
 
-func (s *Store) Get(name string) (*Repo, error) {
+func (s *Store) Get(name string) (*Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -132,15 +132,15 @@ func (s *Store) Get(name string) (*Repo, error) {
 		return nil, err
 	}
 
-	r, exists := data.Repos[name]
+	project, exists := data.Projects[name]
 	if !exists {
-		return nil, fmt.Errorf("repo %s not found", name)
+		return nil, fmt.Errorf("project %s not found", name)
 	}
 
-	return r, nil
+	return project, nil
 }
 
-func (s *Store) List() ([]*Repo, error) {
+func (s *Store) List() ([]*Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -149,19 +149,19 @@ func (s *Store) List() ([]*Repo, error) {
 		return nil, err
 	}
 
-	repos := make([]*Repo, 0, len(data.Repos))
-	for _, r := range data.Repos {
-		repos = append(repos, r)
+	projects := make([]*Project, 0, len(data.Projects))
+	for _, project := range data.Projects {
+		projects = append(projects, project)
 	}
 
-	sort.Slice(repos, func(i, j int) bool {
-		return repos[i].Name < repos[j].Name
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].Name < projects[j].Name
 	})
 
-	return repos, nil
+	return projects, nil
 }
 
-func (s *Store) Update(name string, fn func(p *Repo)) error {
+func (s *Store) Update(name string, fn func(p *Project)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -170,9 +170,9 @@ func (s *Store) Update(name string, fn func(p *Repo)) error {
 		return err
 	}
 
-	p, exists := data.Repos[name]
+	p, exists := data.Projects[name]
 	if !exists {
-		return fmt.Errorf("repo %s not found", name)
+		return fmt.Errorf("project %s not found", name)
 	}
 
 	fn(p)
@@ -198,11 +198,11 @@ func (s *Store) Remove(name string) error {
 		return err
 	}
 
-	if _, exists := data.Repos[name]; !exists {
-		return fmt.Errorf("repo %s not found", name)
+	if _, exists := data.Projects[name]; !exists {
+		return fmt.Errorf("project %s not found", name)
 	}
 
-	delete(data.Repos, name)
+	delete(data.Projects, name)
 
 	return s.save(data)
 }

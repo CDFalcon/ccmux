@@ -20,7 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/repo"
+	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/tmux"
@@ -33,10 +33,10 @@ type model struct {
 	previousView ViewState
 	agents       []*agent.Agent
 	queueItems    []*queue.QueueItem
-	repos         []*repo.Repo
+	projects      []*project.Project
 	selectedIndex int
 	selectedAgent *agent.Agent
-	selectedRepo  *repo.Repo
+	selectedProj  *project.Project
 	err           error
 
 	// Task spawn inputs
@@ -51,11 +51,11 @@ type model struct {
 	spawnPromptEnabled    map[string]bool
 	spawnFilteredPrompts  []*prompt.Prompt
 
-	// Repo form inputs
-	repoForm        repoFormModel
-	editRepoForm    editRepoFormModel
-	newRepoName     string
-	newRepoPath      string
+	// Project form inputs
+	projectForm     projectFormModel
+	editProjectForm editProjectFormModel
+	newProjectName  string
+	newProjectPath  string
 
 	// Prompt form inputs
 	prompts              []*prompt.Prompt
@@ -64,14 +64,14 @@ type model struct {
 	newPromptName        string
 	newPromptIsDefault   bool
 	selectedPrompt       *prompt.Prompt
-	promptRepoEnabled map[string]bool
-	promptRepoIndex   int
+	promptProjectEnabled map[string]bool
+	promptProjectIndex   int
 
 	// Intervention input
 	interveneInput textarea.Model
 	interveneAgent *agent.Agent
 
-	// Repo setup state (per-repo import buffers)
+	// Project setup state (per-project import buffers)
 	projSetupBuffers map[string]*projImportBuffer
 	projSetupName    string
 
@@ -113,7 +113,7 @@ type model struct {
 
 	agentStore   *agent.Store
 	queueManager *queue.Queue
-	repoStore *repo.Store
+	projectStore *project.Store
 	promptStore  *prompt.Store
 	tmuxManager  *tmux.Manager
 	sessionID    string
@@ -156,13 +156,13 @@ type branchEntry struct {
 	isManual bool
 }
 
-type repoFormModel struct {
+type projectFormModel struct {
 	nameInput  textinput.Model
 	pathInput  textinput.Model
 	focusIndex int // 0=name, 1=path
 }
 
-type editRepoFormModel struct {
+type editProjectFormModel struct {
 	pathInput       textinput.Model
 	baseBranchInput textinput.Model
 	fastWTInput     textinput.Model
@@ -240,7 +240,7 @@ func (ef *editPromptFormModel) focusCurrent() {
 	case 2:
 		ef.defaultInput.Focus()
 	case 3:
-		// repos field - no text input to focus
+		// projects field - no text input to focus
 	}
 }
 
@@ -256,38 +256,38 @@ func (ef *editPromptFormModel) loadFromPrompt(p *prompt.Prompt) {
 	ef.focusCurrent()
 }
 
-func promptRepoEnabledFromPrompt(p *prompt.Prompt) map[string]bool {
+func promptProjectEnabledFromPrompt(p *prompt.Prompt) map[string]bool {
 	enabled := make(map[string]bool)
-	for _, name := range p.RepoNames {
+	for _, name := range p.ProjectNames {
 		enabled[name] = true
 	}
 	return enabled
 }
 
-func newRepoForm() repoFormModel {
+func newProjectForm() projectFormModel {
 	nameInput := textinput.New()
-	nameInput.Placeholder = "my-repo"
+	nameInput.Placeholder = "my-project"
 	nameInput.Width = 50
 	nameInput.CharLimit = 50
 
 	pathInput := textinput.New()
-	pathInput.Placeholder = "/home/user/repos/my-repo"
+	pathInput.Placeholder = "/home/user/projects/my-project"
 	pathInput.Width = 50
 	pathInput.CharLimit = 200
 
-	return repoFormModel{
+	return projectFormModel{
 		nameInput:  nameInput,
 		pathInput:  pathInput,
 		focusIndex: 0,
 	}
 }
 
-func (pf *repoFormModel) blurAll() {
+func (pf *projectFormModel) blurAll() {
 	pf.nameInput.Blur()
 	pf.pathInput.Blur()
 }
 
-func (pf *repoFormModel) reset() {
+func (pf *projectFormModel) reset() {
 	pf.nameInput.SetValue("")
 	pf.pathInput.SetValue("")
 	pf.focusIndex = 0
@@ -295,9 +295,9 @@ func (pf *repoFormModel) reset() {
 	pf.nameInput.Focus()
 }
 
-func newEditRepoForm() editRepoFormModel {
+func newEditProjectForm() editProjectFormModel {
 	pathInput := textinput.New()
-	pathInput.Placeholder = "/home/user/repos/my-repo"
+	pathInput.Placeholder = "/home/user/projects/my-project"
 	pathInput.Width = 50
 	pathInput.CharLimit = 200
 
@@ -311,7 +311,7 @@ func newEditRepoForm() editRepoFormModel {
 	fastWTInput.Width = 10
 	fastWTInput.CharLimit = 5
 
-	return editRepoFormModel{
+	return editProjectFormModel{
 		pathInput:       pathInput,
 		baseBranchInput: baseBranchInput,
 		fastWTInput:     fastWTInput,
@@ -319,13 +319,13 @@ func newEditRepoForm() editRepoFormModel {
 	}
 }
 
-func (ef *editRepoFormModel) blurAll() {
+func (ef *editProjectFormModel) blurAll() {
 	ef.pathInput.Blur()
 	ef.baseBranchInput.Blur()
 	ef.fastWTInput.Blur()
 }
 
-func (ef *editRepoFormModel) focusCurrent() {
+func (ef *editProjectFormModel) focusCurrent() {
 	ef.blurAll()
 	switch ef.focusIndex {
 	case 0:
@@ -337,7 +337,7 @@ func (ef *editRepoFormModel) focusCurrent() {
 	}
 }
 
-func (ef *editRepoFormModel) loadFromRepo(p *repo.Repo) {
+func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	ef.pathInput.SetValue(p.Path)
 	ef.baseBranchInput.SetValue(p.DefaultBaseBranch)
 	if p.UseFastWorktrees {
@@ -349,7 +349,7 @@ func (ef *editRepoFormModel) loadFromRepo(p *repo.Repo) {
 	ef.focusCurrent()
 }
 
-func findRepoPath(name string) string {
+func findProjectPath(name string) string {
 	if name == "" {
 		return ""
 	}
@@ -401,8 +401,8 @@ func getLocalBranches(repoPath string) []string {
 func (m model) branchEntries() []branchEntry {
 	var entries []branchEntry
 	defaultBranch := "origin/master"
-	if m.selectedRepo != nil && m.selectedRepo.DefaultBaseBranch != "" {
-		defaultBranch = m.selectedRepo.DefaultBaseBranch
+	if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+		defaultBranch = m.selectedProj.DefaultBaseBranch
 	}
 	entries = append(entries, branchEntry{tag: "(default)", name: defaultBranch, value: defaultBranch})
 	entries = append(entries, branchEntry{name: "Manually specify branch...", isManual: true})
@@ -434,8 +434,8 @@ func (m *model) fuzzyFilterBranches() {
 	allBranches := make([]string, len(m.branchOptions))
 	copy(allBranches, m.branchOptions)
 
-	if m.selectedRepo != nil {
-		remoteCmd := exec.Command("git", "-C", m.selectedRepo.Path, "branch", "-r", "--format=%(refname:short)")
+	if m.selectedProj != nil {
+		remoteCmd := exec.Command("git", "-C", m.selectedProj.Path, "branch", "-r", "--format=%(refname:short)")
 		if remoteOutput, err := remoteCmd.Output(); err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(remoteOutput)), "\n") {
 				line = strings.TrimSpace(line)
@@ -458,7 +458,7 @@ type spinnerTickMsg time.Time
 type refreshMsg struct {
 	agents       []*agent.Agent
 	queueItems   []*queue.QueueItem
-	repos     []*repo.Repo
+	projects     []*project.Project
 	prompts      []*prompt.Prompt
 	resources    map[string]*AgentResources
 	prevCPUTicks map[int]int64
@@ -525,7 +525,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, repoStore *repo.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -553,8 +553,8 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, repoStore 
 		branchFilter:      branchFilter,
 		worktreeNameInput: worktreeNameInput,
 		interveneInput:    interveneInput,
-		repoForm:       newRepoForm(),
-		editRepoForm:   newEditRepoForm(),
+		projectForm:       newProjectForm(),
+		editProjectForm:   newEditProjectForm(),
 		promptForm:        newPromptForm(),
 		editPromptForm:    newEditPromptForm(),
 		spawnPromptEnabled: make(map[string]bool),
@@ -569,7 +569,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, repoStore 
 		projSetupBuffers:  make(map[string]*projImportBuffer),
 		agentStore:        agentStore,
 		queueManager:      queueManager,
-		repoStore:      repoStore,
+		projectStore:      projectStore,
 		promptStore:       promptStore,
 		tmuxManager:       tmuxManager,
 		sessionID:         sessionID,
@@ -601,7 +601,7 @@ func spinnerTickCmd() tea.Cmd {
 func (m model) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
 		agents, _ := m.agentStore.List()
-		repos, _ := m.repoStore.List()
+		projects, _ := m.projectStore.List()
 
 		now := time.Now()
 		const idleThreshold = 10 * time.Second
@@ -678,14 +678,14 @@ func (m model) refreshCmd() tea.Cmd {
 			queueItems, _ = m.queueManager.List()
 		}
 
-		fastWTRepos := make(map[string]bool)
-		for _, p := range repos {
+		fastWTProjects := make(map[string]bool)
+		for _, p := range projects {
 			if p.UseFastWorktrees {
-				fastWTRepos[p.Name] = true
+				fastWTProjects[p.Name] = true
 			}
 		}
 		resources, newCPUTicks := queryAllAgentResources(
-			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTRepos,
+			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects,
 		)
 
 		prompts, _ := m.promptStore.List()
@@ -693,7 +693,7 @@ func (m model) refreshCmd() tea.Cmd {
 		return refreshMsg{
 			agents:       agents,
 			queueItems:   queueItems,
-			repos:     repos,
+			projects:     projects,
 			prompts:      prompts,
 			resources:    resources,
 			prevCPUTicks: newCPUTicks,
@@ -752,7 +752,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinnerTickMsg:
 		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading
 		if !shouldAnimate {
-			for _, p := range m.repos {
+			for _, p := range m.projects {
 				if p.IsSettingUp() {
 					shouldAnimate = true
 					break
@@ -777,7 +777,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		m.agents = msg.agents
 		m.queueItems = msg.queueItems
-		m.repos = msg.repos
+		m.projects = msg.projects
 		m.prompts = msg.prompts
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
@@ -912,7 +912,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projSetupCompleteMsg:
 		delete(m.projSetupBuffers, msg.name)
 		if m.view == ViewProjImporting && m.projSetupName == msg.name {
-			m.view = ViewManageRepos
+			m.view = ViewManageProjects
 			m.projSetupName = ""
 		}
 		return m, m.refreshCmd()
@@ -921,7 +921,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.projSetupBuffers, msg.name)
 		m.err = msg.err
 		if m.view == ViewProjImporting && m.projSetupName == msg.name {
-			m.view = ViewManageRepos
+			m.view = ViewManageProjects
 			m.projSetupName = ""
 		}
 		return m, tea.Batch(clearMessageCmd(), m.refreshCmd())
@@ -960,29 +960,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	if m.view == ViewAddRepoName {
+	if m.view == ViewAddProjectName {
 		var cmd tea.Cmd
-		m.repoForm.nameInput, cmd = m.repoForm.nameInput.Update(msg)
+		m.projectForm.nameInput, cmd = m.projectForm.nameInput.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
-	if m.view == ViewAddRepoPath {
+	if m.view == ViewAddProjectPath {
 		var cmd tea.Cmd
-		m.repoForm.pathInput, cmd = m.repoForm.pathInput.Update(msg)
+		m.projectForm.pathInput, cmd = m.projectForm.pathInput.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
-	if m.view == ViewEditRepo {
+	if m.view == ViewEditProject {
 		var cmd tea.Cmd
-		switch m.editRepoForm.focusIndex {
+		switch m.editProjectForm.focusIndex {
 		case 0:
-			m.editRepoForm.pathInput, cmd = m.editRepoForm.pathInput.Update(msg)
+			m.editProjectForm.pathInput, cmd = m.editProjectForm.pathInput.Update(msg)
 		case 1:
-			m.editRepoForm.baseBranchInput, cmd = m.editRepoForm.baseBranchInput.Update(msg)
+			m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 		case 2:
-			m.editRepoForm.fastWTInput, cmd = m.editRepoForm.fastWTInput.Update(msg)
+			m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1028,8 +1028,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case ViewMain:
 		return m.handleMainKeys(msg)
-	case ViewSelectRepo:
-		return m.handleSelectRepoKeys(msg)
+	case ViewSelectProject:
+		return m.handleSelectProjectKeys(msg)
 	case ViewNewTaskBranch:
 		return m.handleNewTaskBranchKeys(msg)
 	case ViewNewTaskBranchInput:
@@ -1048,14 +1048,14 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmMergeKeys(msg)
 	case ViewConfirmKill:
 		return m.handleConfirmKillKeys(msg)
-	case ViewManageRepos:
-		return m.handleManageReposKeys(msg)
-	case ViewAddRepoName:
-		return m.handleAddRepoNameKeys(msg)
-	case ViewAddRepoPath:
-		return m.handleAddRepoPathKeys(msg)
-	case ViewAddRepoFastWT:
-		return m.handleAddRepoFastWTKeys(msg)
+	case ViewManageProjects:
+		return m.handleManageProjectsKeys(msg)
+	case ViewAddProjectName:
+		return m.handleAddProjectNameKeys(msg)
+	case ViewAddProjectPath:
+		return m.handleAddProjectPathKeys(msg)
+	case ViewAddProjectFastWT:
+		return m.handleAddProjectFastWTKeys(msg)
 	case ViewProjImporting:
 		return m.handleProjImportingKeys(msg)
 	case ViewManagePrompts:
@@ -1066,18 +1066,18 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAddPromptContentKeys(msg)
 	case ViewAddPromptDefault:
 		return m.handleAddPromptDefaultKeys(msg)
-	case ViewAddPromptRepos:
-		return m.handleAddPromptReposKeys(msg)
+	case ViewAddPromptProjects:
+		return m.handleAddPromptProjectsKeys(msg)
 	case ViewEditPrompt:
 		return m.handleEditPromptKeys(msg)
 	case ViewConfirmRemovePrompt:
 		return m.handleConfirmRemovePromptKeys(msg)
 	case ViewNewTaskSelectPrompts:
 		return m.handleNewTaskSelectPromptsKeys(msg)
-	case ViewEditRepo:
-		return m.handleEditRepoKeys(msg)
-	case ViewConfirmRemoveRepo:
-		return m.handleConfirmRemoveRepoKeys(msg)
+	case ViewEditProject:
+		return m.handleEditProjectKeys(msg)
+	case ViewConfirmRemoveProject:
+		return m.handleConfirmRemoveProjectKeys(msg)
 	case ViewConfirmKillSession:
 		return m.handleConfirmKillSessionKeys(msg)
 	case ViewAgentInfo:
@@ -1111,11 +1111,11 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "n":
-		if len(m.repos) == 0 {
-			m.err = fmt.Errorf("no repos registered. Press [R] to add one")
+		if len(m.projects) == 0 {
+			m.err = fmt.Errorf("no projects registered. Press [P] to add one")
 			return m, clearMessageCmd()
 		}
-		m.view = ViewSelectRepo
+		m.view = ViewSelectProject
 		m.selectedIndex = 0
 	case "k":
 		m.view = ViewConfirmKill
@@ -1129,7 +1129,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewManagePrompts
 		m.selectedIndex = 0
 	case "P":
-		m.view = ViewManageRepos
+		m.view = ViewManageProjects
 		m.selectedIndex = 0
 	case "u":
 		m.view = ViewUpdate
@@ -1148,28 +1148,28 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleSelectRepoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewMain
-		m.selectedRepo = nil
+		m.selectedProj = nil
 	case "up", "k":
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
 		}
 	case "down", "j":
-		if m.selectedIndex < len(m.repos)-1 {
+		if m.selectedIndex < len(m.projects)-1 {
 			m.selectedIndex++
 		}
 	case "enter":
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.repos) {
-			p := m.repos[m.selectedIndex]
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			p := m.projects[m.selectedIndex]
 			if p.IsSettingUp() {
 				m.err = fmt.Errorf("project '%s' is still being set up", p.Name)
 				return m, clearMessageCmd()
 			}
-			m.selectedRepo = p
-			m.branchOptions = getLocalBranches(m.selectedRepo.Path)
+			m.selectedProj = p
+			m.branchOptions = getLocalBranches(m.selectedProj.Path)
 			m.branchFilter.SetValue("")
 			m.filteredBranches = nil
 			m.view = ViewNewTaskBranch
@@ -1193,7 +1193,7 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedIndex = 0
 			return m, nil
 		}
-		m.view = ViewSelectRepo
+		m.view = ViewSelectProject
 		m.selectedIndex = 0
 		return m, nil
 	case "up":
@@ -1245,8 +1245,8 @@ func (m model) handleNewTaskBranchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		branch := m.branchInput.Value()
 		if branch == "" {
 			branch = "origin/master"
-			if m.selectedRepo != nil && m.selectedRepo.DefaultBaseBranch != "" {
-				branch = m.selectedRepo.DefaultBaseBranch
+			if m.selectedProj != nil && m.selectedProj.DefaultBaseBranch != "" {
+				branch = m.selectedProj.DefaultBaseBranch
 			}
 		}
 		m.spawnBranch = branch
@@ -1281,7 +1281,7 @@ func (m model) handleNewTaskInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawnPromptEnabled = make(map[string]bool)
 		m.spawnFilteredPrompts = nil
 		for _, p := range m.prompts {
-			if m.selectedRepo != nil && !p.AppliesToRepo(m.selectedRepo.Name) {
+			if m.selectedProj != nil && !p.AppliesToProject(m.selectedProj.Name) {
 				continue
 			}
 			m.spawnFilteredPrompts = append(m.spawnFilteredPrompts, p)
@@ -1318,7 +1318,7 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	case "enter":
 		worktreeName := m.worktreeNameInput.Value()
 		task := m.spawnTask
-		proj := m.selectedRepo
+		proj := m.selectedProj
 		branch := m.spawnBranch
 		promptContent := enabledPromptContent(m.spawnFilteredPrompts, m.spawnPromptEnabled)
 		m.view = ViewMain
@@ -1326,7 +1326,7 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.taskInput.Blur()
 		m.worktreeNameInput.SetValue("")
 		m.worktreeNameInput.Blur()
-		m.selectedRepo = nil
+		m.selectedProj = nil
 		m.spawnBranch = ""
 		m.spawnTask = ""
 		m.spawnPromptEnabled = make(map[string]bool)
@@ -1479,7 +1479,7 @@ func (m model) handleConfirmKillKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleManageReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewMain
@@ -1488,155 +1488,155 @@ func (m model) handleManageReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedIndex--
 		}
 	case "down", "j":
-		if m.selectedIndex < len(m.repos)-1 {
+		if m.selectedIndex < len(m.projects)-1 {
 			m.selectedIndex++
 		}
 	case "a":
-		m.view = ViewAddRepoName
-		m.repoForm.reset()
-		m.newRepoName = ""
-		m.newRepoPath = ""
-		m.repoForm.nameInput.Focus()
+		m.view = ViewAddProjectName
+		m.projectForm.reset()
+		m.newProjectName = ""
+		m.newProjectPath = ""
+		m.projectForm.nameInput.Focus()
 		return m, textinput.Blink
 	case "enter":
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.repos) {
-			p := m.repos[m.selectedIndex]
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			p := m.projects[m.selectedIndex]
 			if p.IsSettingUp() {
 				m.projSetupName = p.Name
 				m.view = ViewProjImporting
 				return m, nil
 			}
-			m.selectedRepo = p
-			m.view = ViewEditRepo
-			m.editRepoForm.loadFromRepo(m.selectedRepo)
+			m.selectedProj = p
+			m.view = ViewEditProject
+			m.editProjectForm.loadFromProject(m.selectedProj)
 			return m, textinput.Blink
 		}
 	case "d":
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.repos) {
-			m.selectedRepo = m.repos[m.selectedIndex]
-			m.view = ViewConfirmRemoveRepo
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
+			m.selectedProj = m.projects[m.selectedIndex]
+			m.view = ViewConfirmRemoveProject
 		}
 	}
 	return m, nil
 }
 
-func (m model) handleEditRepoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.editRepoForm.blurAll()
-		m.view = ViewManageRepos
-		m.selectedRepo = nil
+		m.editProjectForm.blurAll()
+		m.view = ViewManageProjects
+		m.selectedProj = nil
 		return m, nil
 	case "tab":
-		m.editRepoForm.focusIndex = (m.editRepoForm.focusIndex + 1) % 3
-		m.editRepoForm.focusCurrent()
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 3
+		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editRepoForm.focusIndex = (m.editRepoForm.focusIndex + 2) % 3
-		m.editRepoForm.focusCurrent()
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 2) % 3
+		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "enter":
-		if m.selectedRepo == nil {
+		if m.selectedProj == nil {
 			return m, nil
 		}
-		path := m.editRepoForm.pathInput.Value()
-		baseBranch := m.editRepoForm.baseBranchInput.Value()
-		fastWTStr := strings.ToLower(strings.TrimSpace(m.editRepoForm.fastWTInput.Value()))
+		path := m.editProjectForm.pathInput.Value()
+		baseBranch := m.editProjectForm.baseBranchInput.Value()
+		fastWTStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.fastWTInput.Value()))
 		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
-		projName := m.selectedRepo.Name
-		alreadyHasFastWT := m.selectedRepo.UseFastWorktrees && m.selectedRepo.FastWorktreePath != ""
-		m.editRepoForm.blurAll()
-		m.selectedRepo = nil
-		m.view = ViewManageRepos
+		projName := m.selectedProj.Name
+		alreadyHasFastWT := m.selectedProj.UseFastWorktrees && m.selectedProj.FastWorktreePath != ""
+		m.editProjectForm.blurAll()
+		m.selectedProj = nil
+		m.view = ViewManageProjects
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateRepoCmd(projName, path, baseBranch, useFastWT)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT)
 	}
 
 	var cmd tea.Cmd
-	switch m.editRepoForm.focusIndex {
+	switch m.editProjectForm.focusIndex {
 	case 0:
-		m.editRepoForm.pathInput, cmd = m.editRepoForm.pathInput.Update(msg)
+		m.editProjectForm.pathInput, cmd = m.editProjectForm.pathInput.Update(msg)
 	case 1:
-		m.editRepoForm.baseBranchInput, cmd = m.editRepoForm.baseBranchInput.Update(msg)
+		m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 	case 2:
-		m.editRepoForm.fastWTInput, cmd = m.editRepoForm.fastWTInput.Update(msg)
+		m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
 	}
 	return m, cmd
 }
 
-func (m model) handleAddRepoNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleAddProjectNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.view = ViewManageRepos
-		m.repoForm.reset()
+		m.view = ViewManageProjects
+		m.projectForm.reset()
 		return m, nil
 	case "enter":
-		name := m.repoForm.nameInput.Value()
+		name := m.projectForm.nameInput.Value()
 		if name == "" {
 			return m, nil
 		}
-		m.newRepoName = name
-		m.view = ViewAddRepoPath
+		m.newProjectName = name
+		m.view = ViewAddProjectPath
 		// Auto-detect path
-		if found := findRepoPath(name); found != "" {
-			m.repoForm.pathInput.SetValue(found)
+		if found := findProjectPath(name); found != "" {
+			m.projectForm.pathInput.SetValue(found)
 		} else {
-			m.repoForm.pathInput.SetValue("")
+			m.projectForm.pathInput.SetValue("")
 		}
-		m.repoForm.pathInput.Focus()
+		m.projectForm.pathInput.Focus()
 		return m, textinput.Blink
 	}
 
 	var cmd tea.Cmd
-	m.repoForm.nameInput, cmd = m.repoForm.nameInput.Update(msg)
+	m.projectForm.nameInput, cmd = m.projectForm.nameInput.Update(msg)
 	return m, cmd
 }
 
-func (m model) handleAddRepoPathKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleAddProjectPathKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.view = ViewAddRepoName
-		m.repoForm.nameInput.SetValue(m.newRepoName)
-		m.repoForm.nameInput.Focus()
+		m.view = ViewAddProjectName
+		m.projectForm.nameInput.SetValue(m.newProjectName)
+		m.projectForm.nameInput.Focus()
 		return m, textinput.Blink
 	case "enter":
-		path := m.repoForm.pathInput.Value()
+		path := m.projectForm.pathInput.Value()
 		if path == "" {
 			return m, nil
 		}
-		m.newRepoPath = path
-		if repo.IsProjDirectory(path) && repo.IsProjInstalled() {
-			m.view = ViewManageRepos
-			return m, m.addRepoCmd(m.newRepoName, m.newRepoPath, true)
+		m.newProjectPath = path
+		if project.IsProjDirectory(path) && project.IsProjInstalled() {
+			m.view = ViewManageProjects
+			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 		}
-		if !repo.IsProjInstalled() {
-			m.view = ViewManageRepos
-			return m, m.addRepoCmd(m.newRepoName, m.newRepoPath, false)
+		if !project.IsProjInstalled() {
+			m.view = ViewManageProjects
+			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
 		}
-		m.view = ViewAddRepoFastWT
+		m.view = ViewAddProjectFastWT
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	m.repoForm.pathInput, cmd = m.repoForm.pathInput.Update(msg)
+	m.projectForm.pathInput, cmd = m.projectForm.pathInput.Update(msg)
 	return m, cmd
 }
 
-func (m model) handleAddRepoFastWTKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleAddProjectFastWTKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.view = ViewAddRepoPath
-		m.repoForm.pathInput.Focus()
+		m.view = ViewAddProjectPath
+		m.projectForm.pathInput.Focus()
 		return m, textinput.Blink
 	case "y":
-		m.projSetupBuffers[m.newRepoName] = &projImportBuffer{}
-		m.view = ViewManageRepos
-		return m, m.addRepoCmd(m.newRepoName, m.newRepoPath, true)
+		m.projSetupBuffers[m.newProjectName] = &projImportBuffer{}
+		m.view = ViewManageProjects
+		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 	case "n":
-		m.view = ViewManageRepos
-		return m, m.addRepoCmd(m.newRepoName, m.newRepoPath, false)
+		m.view = ViewManageProjects
+		return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
 	}
 	return m, nil
 }
@@ -1645,24 +1645,24 @@ func (m model) handleProjImportingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.projSetupName = ""
-		m.view = ViewManageRepos
+		m.view = ViewManageProjects
 	}
 	return m, nil
 }
 
-func (m model) handleConfirmRemoveRepoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleConfirmRemoveProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
-		if m.selectedRepo != nil {
-			projToRemove := m.selectedRepo
-			m.selectedRepo = nil
-			m.view = ViewManageRepos
+		if m.selectedProj != nil {
+			projToRemove := m.selectedProj
+			m.selectedProj = nil
+			m.view = ViewManageProjects
 			m.selectedIndex = 0
-			return m, m.removeRepoCmd(projToRemove.Name)
+			return m, m.removeProjectCmd(projToRemove.Name)
 		}
 	case "n", "esc":
-		m.selectedRepo = nil
-		m.view = ViewManageRepos
+		m.selectedProj = nil
+		m.view = ViewManageProjects
 	}
 	return m, nil
 }
@@ -1691,8 +1691,8 @@ func (m model) handleManagePromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedPrompt = m.prompts[m.selectedIndex]
 			m.view = ViewEditPrompt
 			m.editPromptForm.loadFromPrompt(m.selectedPrompt)
-			m.promptRepoEnabled = promptRepoEnabledFromPrompt(m.selectedPrompt)
-			m.promptRepoIndex = 0
+			m.promptProjectEnabled = promptProjectEnabledFromPrompt(m.selectedPrompt)
+			m.promptProjectIndex = 0
 			return m, textinput.Blink
 		}
 	case "d":
@@ -1758,41 +1758,41 @@ func (m model) handleAddPromptDefaultKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case "y":
 		m.newPromptIsDefault = true
-		m.promptRepoEnabled = make(map[string]bool)
-		m.promptRepoIndex = 0
-		m.view = ViewAddPromptRepos
+		m.promptProjectEnabled = make(map[string]bool)
+		m.promptProjectIndex = 0
+		m.view = ViewAddPromptProjects
 		return m, nil
 	case "n":
 		m.newPromptIsDefault = false
-		m.promptRepoEnabled = make(map[string]bool)
-		m.promptRepoIndex = 0
-		m.view = ViewAddPromptRepos
+		m.promptProjectEnabled = make(map[string]bool)
+		m.promptProjectIndex = 0
+		m.view = ViewAddPromptProjects
 		return m, nil
 	}
 	return m, nil
 }
 
-func (m model) handleAddPromptReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleAddPromptProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = ViewAddPromptDefault
 		return m, nil
 	case "up", "k":
-		if m.promptRepoIndex > 0 {
-			m.promptRepoIndex--
+		if m.promptProjectIndex > 0 {
+			m.promptProjectIndex--
 		}
 	case "down", "j":
-		if m.promptRepoIndex < len(m.repos)-1 {
-			m.promptRepoIndex++
+		if m.promptProjectIndex < len(m.projects)-1 {
+			m.promptProjectIndex++
 		}
 	case " ":
-		if m.promptRepoIndex >= 0 && m.promptRepoIndex < len(m.repos) {
-			p := m.repos[m.promptRepoIndex]
-			m.promptRepoEnabled[p.Name] = !m.promptRepoEnabled[p.Name]
+		if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
+			p := m.projects[m.promptProjectIndex]
+			m.promptProjectEnabled[p.Name] = !m.promptProjectEnabled[p.Name]
 		}
 	case "enter":
 		isDefault := m.newPromptIsDefault
-		projectNames := m.enabledRepoNames()
+		projectNames := m.enabledProjectNames()
 		m.view = ViewManagePrompts
 		m.selectedIndex = 0
 		return m, m.addPromptCmd(m.newPromptName, m.promptForm.contentInput.Value(), isDefault, projectNames)
@@ -1800,10 +1800,10 @@ func (m model) handleAddPromptReposKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) enabledRepoNames() []string {
+func (m model) enabledProjectNames() []string {
 	var names []string
-	for _, p := range m.repos {
-		if m.promptRepoEnabled[p.Name] {
+	for _, p := range m.projects {
+		if m.promptProjectEnabled[p.Name] {
 			names = append(names, p.Name)
 		}
 	}
@@ -1840,7 +1840,7 @@ func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		content := m.editPromptForm.contentInput.Value()
 		defaultStr := strings.ToLower(strings.TrimSpace(m.editPromptForm.defaultInput.Value()))
 		isDefault := defaultStr == "yes" || defaultStr == "true" || defaultStr == "y"
-		projectNames := m.enabledRepoNames()
+		projectNames := m.enabledProjectNames()
 		promptID := m.selectedPrompt.ID
 		m.editPromptForm.blurAll()
 		m.selectedPrompt = nil
@@ -1851,17 +1851,17 @@ func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editPromptForm.focusIndex == 3 {
 		switch msg.String() {
 		case "up", "k":
-			if m.promptRepoIndex > 0 {
-				m.promptRepoIndex--
+			if m.promptProjectIndex > 0 {
+				m.promptProjectIndex--
 			}
 		case "down", "j":
-			if m.promptRepoIndex < len(m.repos)-1 {
-				m.promptRepoIndex++
+			if m.promptProjectIndex < len(m.projects)-1 {
+				m.promptProjectIndex++
 			}
 		case " ":
-			if m.promptRepoIndex >= 0 && m.promptRepoIndex < len(m.repos) {
-				p := m.repos[m.promptRepoIndex]
-				m.promptRepoEnabled[p.Name] = !m.promptRepoEnabled[p.Name]
+			if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
+				p := m.projects[m.promptProjectIndex]
+				m.promptProjectEnabled[p.Name] = !m.promptProjectEnabled[p.Name]
 			}
 		}
 		return m, nil
@@ -1931,7 +1931,7 @@ func (m model) addPromptCmd(name, content string, isDefault bool, projectNames [
 			Name:         name,
 			Content:      content,
 			IsDefault:    isDefault,
-			RepoNames: projectNames,
+			ProjectNames: projectNames,
 		}
 		if err := m.promptStore.Add(p); err != nil {
 			return errMsg{err}
@@ -1946,7 +1946,7 @@ func (m model) updatePromptCmd(id, name, content string, isDefault bool, project
 			p.Name = name
 			p.Content = content
 			p.IsDefault = isDefault
-			p.RepoNames = projectNames
+			p.ProjectNames = projectNames
 		}); err != nil {
 			return errMsg{err}
 		}
@@ -2065,8 +2065,8 @@ func (m model) updateWindowNames() {
 		}
 		var name string
 		var base string
-		if a.WorktreeName != "" && a.RepoName != "" {
-			base = a.RepoName + ":" + a.WorktreeName
+		if a.WorktreeName != "" && a.ProjectName != "" {
+			base = a.ProjectName + ":" + a.WorktreeName
 		} else {
 			base = a.ID[:8]
 		}
@@ -2117,13 +2117,13 @@ func (m model) detachCmd() tea.Cmd {
 	}
 }
 
-func (m model) addRepoCmd(name, path string, useFastWT bool) tea.Cmd {
+func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
 		needsImport := false
 		if useFastWT {
-			if repo.IsProjDirectory(path) {
+			if project.IsProjDirectory(path) {
 				fastWTPath = path
 			} else {
 				needsImport = true
@@ -2131,28 +2131,28 @@ func (m model) addRepoCmd(name, path string, useFastWT bool) tea.Cmd {
 		}
 		setupStatus := ""
 		if needsImport {
-			setupStatus = repo.SetupStatusSettingUp
+			setupStatus = project.SetupStatusSettingUp
 		}
-		p := &repo.Repo{
+		p := &project.Project{
 			Name:             name,
 			Path:             path,
 			FastWorktreePath: fastWTPath,
 			UseFastWorktrees: useFastWT,
 			SetupStatus:      setupStatus,
 		}
-		if err := m.repoStore.Add(p); err != nil {
+		if err := m.projectStore.Add(p); err != nil {
 			return errMsg{err}
 		}
 		if needsImport {
-			projDir, err := repo.ProjImport(path, buf.addLine)
+			projDir, err := project.ProjImport(path, buf.addLine)
 			if err != nil {
-				m.repoStore.Update(name, func(p *repo.Repo) {
+				m.projectStore.Update(name, func(p *project.Project) {
 					p.SetupStatus = ""
 					p.UseFastWorktrees = false
 				})
 				return projSetupFailedMsg{name: name, err: err}
 			}
-			m.repoStore.Update(name, func(p *repo.Repo) {
+			m.projectStore.Update(name, func(p *project.Project) {
 				p.FastWorktreePath = projDir
 				p.SetupStatus = ""
 			})
@@ -2162,22 +2162,22 @@ func (m model) addRepoCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateRepoCmd(name, path, baseBranch string, useFastWT bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
 		needsImport := false
 		if useFastWT && path != "" {
-			existing, _ := m.repoStore.Get(name)
-			if existing != nil && existing.FastWorktreePath != "" && repo.IsProjDirectory(existing.FastWorktreePath) {
+			existing, _ := m.projectStore.Get(name)
+			if existing != nil && existing.FastWorktreePath != "" && project.IsProjDirectory(existing.FastWorktreePath) {
 				fastWTPath = existing.FastWorktreePath
-			} else if repo.IsProjDirectory(path) {
+			} else if project.IsProjDirectory(path) {
 				fastWTPath = path
 			} else {
 				needsImport = true
 			}
 		}
-		err := m.repoStore.Update(name, func(p *repo.Repo) {
+		err := m.projectStore.Update(name, func(p *project.Project) {
 			if path != "" {
 				p.Path = path
 			}
@@ -2187,22 +2187,22 @@ func (m model) updateRepoCmd(name, path, baseBranch string, useFastWT bool) tea.
 			p.DefaultBaseBranch = baseBranch
 			p.UseFastWorktrees = useFastWT
 			if needsImport {
-				p.SetupStatus = repo.SetupStatusSettingUp
+				p.SetupStatus = project.SetupStatusSettingUp
 			}
 		})
 		if err != nil {
 			return errMsg{err}
 		}
 		if needsImport {
-			projDir, err := repo.ProjImport(path, buf.addLine)
+			projDir, err := project.ProjImport(path, buf.addLine)
 			if err != nil {
-				m.repoStore.Update(name, func(p *repo.Repo) {
+				m.projectStore.Update(name, func(p *project.Project) {
 					p.SetupStatus = ""
 					p.UseFastWorktrees = false
 				})
 				return projSetupFailedMsg{name: name, err: err}
 			}
-			m.repoStore.Update(name, func(p *repo.Repo) {
+			m.projectStore.Update(name, func(p *project.Project) {
 				p.FastWorktreePath = projDir
 				p.SetupStatus = ""
 			})
@@ -2212,22 +2212,22 @@ func (m model) updateRepoCmd(name, path, baseBranch string, useFastWT bool) tea.
 	}
 }
 
-func (m model) removeRepoCmd(name string) tea.Cmd {
+func (m model) removeProjectCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := m.repoStore.Remove(name); err != nil {
+		if err := m.projectStore.Remove(name); err != nil {
 			return errMsg{err}
 		}
 		return successMsg{fmt.Sprintf("Removed project '%s'", name)}
 	}
 }
 
-func (m model) spawnAgentCmd(task string, proj *repo.Repo, branch string, worktreeName string, promptContent string) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, promptContent string) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to get executable: %w", err)}
 		}
-		args := []string{"spawn", task, "--repo", proj.Name, "--branch", branch}
+		args := []string{"spawn", task, "--project", proj.Name, "--branch", branch}
 		if worktreeName != "" {
 			args = append(args, "--worktree-name", worktreeName)
 		}
@@ -2752,8 +2752,8 @@ func (m model) View() string {
 	switch m.view {
 	case ViewMain:
 		content = renderMainView(m)
-	case ViewSelectRepo:
-		content = renderSelectRepoView(m)
+	case ViewSelectProject:
+		content = renderSelectProjectView(m)
 	case ViewNewTaskBranch:
 		content = renderNewTaskBranchView(m)
 	case ViewNewTaskBranchInput:
@@ -2772,14 +2772,14 @@ func (m model) View() string {
 		content = renderConfirmMergeView(m)
 	case ViewConfirmKill:
 		content = renderConfirmKillView(m)
-	case ViewManageRepos:
-		content = renderManageReposView(m)
-	case ViewAddRepoName:
-		content = renderAddRepoNameView(m)
-	case ViewAddRepoPath:
-		content = renderAddRepoPathView(m)
-	case ViewAddRepoFastWT:
-		content = renderAddRepoFastWTView(m)
+	case ViewManageProjects:
+		content = renderManageProjectsView(m)
+	case ViewAddProjectName:
+		content = renderAddProjectNameView(m)
+	case ViewAddProjectPath:
+		content = renderAddProjectPathView(m)
+	case ViewAddProjectFastWT:
+		content = renderAddProjectFastWTView(m)
 	case ViewProjImporting:
 		content = renderProjImportingView(m)
 	case ViewManagePrompts:
@@ -2790,18 +2790,18 @@ func (m model) View() string {
 		content = renderAddPromptContentView(m)
 	case ViewAddPromptDefault:
 		content = renderAddPromptDefaultView(m)
-	case ViewAddPromptRepos:
-		content = renderAddPromptReposView(m)
+	case ViewAddPromptProjects:
+		content = renderAddPromptProjectsView(m)
 	case ViewEditPrompt:
 		content = renderEditPromptView(m)
 	case ViewConfirmRemovePrompt:
 		content = renderConfirmRemovePromptView(m)
 	case ViewNewTaskSelectPrompts:
 		content = renderNewTaskSelectPromptsView(m)
-	case ViewEditRepo:
-		content = renderEditRepoView(m)
-	case ViewConfirmRemoveRepo:
-		content = renderConfirmRemoveRepoView(m)
+	case ViewEditProject:
+		content = renderEditProjectView(m)
+	case ViewConfirmRemoveProject:
+		content = renderConfirmRemoveProjectView(m)
 	case ViewConfirmKillSession:
 		content = renderConfirmKillSessionView(m)
 	case ViewAgentInfo:
@@ -2817,8 +2817,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, repoStore *repo.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
-	m := initialModel(agentStore, queueManager, repoStore, promptStore, tmuxManager, sessionID)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

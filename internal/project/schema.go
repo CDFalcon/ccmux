@@ -1,10 +1,10 @@
-package repo
+package project
 
-const CurrentSchemaVersion = 5
+const CurrentSchemaVersion = 4
 
 const SetupStatusSettingUp = "setting_up"
 
-type Repo struct {
+type Project struct {
 	Name              string `json:"name"`
 	Path              string `json:"path"`
 	FastWorktreePath  string `json:"fast_worktree_path,omitempty"`
@@ -13,18 +13,18 @@ type Repo struct {
 	SetupStatus       string `json:"setup_status,omitempty"`
 }
 
-func (p *Repo) IsSettingUp() bool {
+func (p *Project) IsSettingUp() bool {
 	return p.SetupStatus == SetupStatusSettingUp
 }
 
-func (p *Repo) EffectivePath() string {
+func (p *Project) EffectivePath() string {
 	if p.UseFastWorktrees && p.FastWorktreePath != "" {
 		return p.FastWorktreePath
 	}
 	return p.Path
 }
 
-func (p *Repo) EffectiveBaseBranch() string {
+func (p *Project) EffectiveBaseBranch() string {
 	if p.DefaultBaseBranch == "" {
 		return "origin/master"
 	}
@@ -33,5 +33,5 @@ func (p *Repo) EffectiveBaseBranch() string {
 
 type storeData struct {
 	Version  int                 `json:"version"`
-	Repos map[string]*Repo `json:"repos"`
+	Projects map[string]*Project `json:"projects"`
 }

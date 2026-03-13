@@ -31,7 +31,7 @@ var (
 			Foreground(royalBlue).
 			MarginBottom(1)
 
-	repoStyle = lipgloss.NewStyle().
+	projectStyle = lipgloss.NewStyle().
 			Foreground(royalBlue).
 			Bold(true)
 

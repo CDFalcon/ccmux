@@ -1,4 +1,4 @@
-package repo
+package project
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 func setupTestStore(t *testing.T) (*Store, string, func()) {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "ccmux-repo-test")
+	tmpDir, err := os.MkdirTemp("", "ccmux-project-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestAdd_ShouldStoreProject_GivenValidProject(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	project := &Repo{
+	project := &Project{
 		Name: "test-project",
 		Path: repoDir,
 	}
@@ -80,7 +80,7 @@ func TestAdd_ShouldFail_GivenNonGitRepo(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "non-git")
 	defer os.RemoveAll(tmpDir)
 
-	project := &Repo{
+	project := &Project{
 		Name: "bad-project",
 		Path: tmpDir,
 	}
@@ -98,10 +98,10 @@ func TestAdd_ShouldFail_GivenDuplicateName(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "dup", Path: repoDir})
+	store.Add(&Project{Name: "dup", Path: repoDir})
 
 	// Execute.
-	err := store.Add(&Repo{Name: "dup", Path: repoDir})
+	err := store.Add(&Project{Name: "dup", Path: repoDir})
 
 	// Assert.
 	if err == nil {
@@ -113,8 +113,8 @@ func TestList_ShouldReturnAllProjects_GivenMultipleProjects(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "proj-a", Path: repoDir})
-	store.Add(&Repo{Name: "proj-b", Path: repoDir})
+	store.Add(&Project{Name: "proj-a", Path: repoDir})
+	store.Add(&Project{Name: "proj-b", Path: repoDir})
 
 	// Execute.
 	projects, err := store.List()
@@ -132,8 +132,8 @@ func TestList_ShouldReturnSortedByName_GivenMultipleProjects(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "zebra", Path: repoDir})
-	store.Add(&Repo{Name: "alpha", Path: repoDir})
+	store.Add(&Project{Name: "zebra", Path: repoDir})
+	store.Add(&Project{Name: "alpha", Path: repoDir})
 
 	// Execute.
 	projects, err := store.List()
@@ -151,7 +151,7 @@ func TestRemove_ShouldDeleteProject_GivenValidName(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "to-remove", Path: repoDir})
+	store.Add(&Project{Name: "to-remove", Path: repoDir})
 
 	// Execute.
 	err := store.Remove("to-remove")
@@ -170,10 +170,10 @@ func TestUpdate_ShouldModifyProject_GivenValidName(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "updatable", Path: repoDir})
+	store.Add(&Project{Name: "updatable", Path: repoDir})
 
 	// Execute.
-	err := store.Update("updatable", func(p *Repo) {
+	err := store.Update("updatable", func(p *Project) {
 		p.DefaultBaseBranch = "origin/main"
 	})
 
@@ -193,7 +193,7 @@ func TestUpdate_ShouldFail_GivenNonExistentProject(t *testing.T) {
 	defer cleanup()
 
 	// Execute.
-	err := store.Update("ghost", func(p *Repo) {
+	err := store.Update("ghost", func(p *Project) {
 		p.DefaultBaseBranch = "origin/main"
 	})
 
@@ -205,7 +205,7 @@ func TestUpdate_ShouldFail_GivenNonExistentProject(t *testing.T) {
 
 func TestEffectiveBaseBranch_ShouldReturnDefault_GivenEmptyValue(t *testing.T) {
 	// Setup.
-	p := &Repo{Name: "test"}
+	p := &Project{Name: "test"}
 
 	// Execute.
 	result := p.EffectiveBaseBranch()
@@ -218,7 +218,7 @@ func TestEffectiveBaseBranch_ShouldReturnDefault_GivenEmptyValue(t *testing.T) {
 
 func TestEffectiveBaseBranch_ShouldReturnCustom_GivenNonEmptyValue(t *testing.T) {
 	// Setup.
-	p := &Repo{Name: "test", DefaultBaseBranch: "origin/main"}
+	p := &Project{Name: "test", DefaultBaseBranch: "origin/main"}
 
 	// Execute.
 	result := p.EffectiveBaseBranch()
@@ -238,7 +238,7 @@ func TestAdd_ShouldStoreProject_GivenFastWorktreesEnabled(t *testing.T) {
 	repoDir := filepath.Join(tmpDir, ".repo")
 	os.MkdirAll(repoDir, 0755)
 
-	project := &Repo{
+	project := &Project{
 		Name:             "fast-project",
 		Path:             tmpDir,
 		UseFastWorktrees: true,
@@ -267,7 +267,7 @@ func TestAdd_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "no-proj")
 	defer os.RemoveAll(tmpDir)
 
-	project := &Repo{
+	project := &Project{
 		Name:             "bad-fast-project",
 		Path:             tmpDir,
 		UseFastWorktrees: true,
@@ -347,10 +347,10 @@ func TestUpdate_ShouldToggleFastWorktrees_GivenProjDirectory(t *testing.T) {
 	defer cleanup()
 	projDir := t.TempDir()
 	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
-	store.Add(&Repo{Name: "toggleable", Path: projDir, UseFastWorktrees: true})
+	store.Add(&Project{Name: "toggleable", Path: projDir, UseFastWorktrees: true})
 
 	// Execute.
-	err := store.Update("toggleable", func(p *Repo) {
+	err := store.Update("toggleable", func(p *Project) {
 		p.UseFastWorktrees = true
 	})
 
@@ -368,10 +368,10 @@ func TestUpdate_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "not-proj", Path: repoDir})
+	store.Add(&Project{Name: "not-proj", Path: repoDir})
 
 	// Execute.
-	err := store.Update("not-proj", func(p *Repo) {
+	err := store.Update("not-proj", func(p *Project) {
 		p.UseFastWorktrees = true
 	})
 
@@ -385,11 +385,11 @@ func TestUpdate_ShouldFail_GivenNonGitRepoPath(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "will-break", Path: repoDir})
+	store.Add(&Project{Name: "will-break", Path: repoDir})
 	badDir := t.TempDir()
 
 	// Execute.
-	err := store.Update("will-break", func(p *Repo) {
+	err := store.Update("will-break", func(p *Project) {
 		p.Path = badDir
 	})
 
@@ -447,7 +447,7 @@ func TestProjImport_ShouldFail_GivenNoProjInstalled(t *testing.T) {
 
 func TestEffectivePath_ShouldReturnFastWorktreePath_GivenFastWorktreesEnabled(t *testing.T) {
 	// Setup.
-	p := &Repo{
+	p := &Project{
 		Name:             "test",
 		Path:             "/home/user/repo",
 		FastWorktreePath: "/proj/projects/repo",
@@ -465,7 +465,7 @@ func TestEffectivePath_ShouldReturnFastWorktreePath_GivenFastWorktreesEnabled(t 
 
 func TestEffectivePath_ShouldReturnBasePath_GivenFastWorktreesDisabled(t *testing.T) {
 	// Setup.
-	p := &Repo{
+	p := &Project{
 		Name:             "test",
 		Path:             "/home/user/repo",
 		FastWorktreePath: "/proj/projects/repo",
@@ -483,7 +483,7 @@ func TestEffectivePath_ShouldReturnBasePath_GivenFastWorktreesDisabled(t *testin
 
 func TestEffectivePath_ShouldReturnBasePath_GivenNoFastWorktreePath(t *testing.T) {
 	// Setup.
-	p := &Repo{
+	p := &Project{
 		Name:             "test",
 		Path:             "/home/user/repo",
 		UseFastWorktrees: true,
@@ -510,7 +510,7 @@ func TestAdd_ShouldStoreBothPaths_GivenFastWorktreesEnabled(t *testing.T) {
 	cmd.Dir = repoDir
 	cmd.Run()
 
-	project := &Repo{
+	project := &Project{
 		Name:             "dual-path",
 		Path:             repoDir,
 		FastWorktreePath: projDir,
@@ -540,7 +540,7 @@ func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) 
 	projDir := t.TempDir()
 	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
 
-	store.Add(&Repo{
+	store.Add(&Project{
 		Name:             "revertable",
 		Path:             repoDir,
 		FastWorktreePath: projDir,
@@ -548,7 +548,7 @@ func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) 
 	})
 
 	// Execute.
-	err := store.Update("revertable", func(p *Repo) {
+	err := store.Update("revertable", func(p *Project) {
 		p.UseFastWorktrees = false
 	})
 
@@ -564,7 +564,7 @@ func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) 
 
 func TestIsSettingUp_ShouldReturnTrue_GivenSettingUpStatus(t *testing.T) {
 	// Setup.
-	p := &Repo{Name: "test", SetupStatus: SetupStatusSettingUp}
+	p := &Project{Name: "test", SetupStatus: SetupStatusSettingUp}
 
 	// Execute.
 	result := p.IsSettingUp()
@@ -577,7 +577,7 @@ func TestIsSettingUp_ShouldReturnTrue_GivenSettingUpStatus(t *testing.T) {
 
 func TestIsSettingUp_ShouldReturnFalse_GivenEmptyStatus(t *testing.T) {
 	// Setup.
-	p := &Repo{Name: "test"}
+	p := &Project{Name: "test"}
 
 	// Execute.
 	result := p.IsSettingUp()
@@ -592,10 +592,10 @@ func TestSetupStatus_ShouldPersist_GivenStore(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "setup-test", Path: repoDir})
+	store.Add(&Project{Name: "setup-test", Path: repoDir})
 
 	// Execute.
-	err := store.Update("setup-test", func(p *Repo) {
+	err := store.Update("setup-test", func(p *Project) {
 		p.SetupStatus = SetupStatusSettingUp
 	})
 
@@ -614,7 +614,7 @@ func TestAdd_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T) {
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	p := &Repo{
+	p := &Project{
 		Name:             "importing-project",
 		Path:             repoDir,
 		UseFastWorktrees: true,
@@ -641,10 +641,10 @@ func TestUpdate_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	store.Add(&Repo{Name: "will-import", Path: repoDir})
+	store.Add(&Project{Name: "will-import", Path: repoDir})
 
 	// Execute.
-	err := store.Update("will-import", func(p *Repo) {
+	err := store.Update("will-import", func(p *Project) {
 		p.UseFastWorktrees = true
 		p.SetupStatus = SetupStatusSettingUp
 	})
@@ -662,7 +662,7 @@ func TestUpdate_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T
 	}
 }
 
-func TestMigrationV3ToCurrent_ShouldSetFastWorktreePath_GivenFastWorktreeRepo(t *testing.T) {
+func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *testing.T) {
 	// Setup.
 	v3Data := `{
 		"version": 3,
@@ -680,7 +680,7 @@ func TestMigrationV3ToCurrent_ShouldSetFastWorktreePath_GivenFastWorktreeRepo(t 
 	}`
 
 	// Execute.
-	result, err := migrations.Migrate([]byte(v3Data), 3, CurrentSchemaVersion)
+	result, err := migrations.Migrate([]byte(v3Data), 3, 4)
 
 	// Assert.
 	if err != nil {
@@ -690,14 +690,14 @@ func TestMigrationV3ToCurrent_ShouldSetFastWorktreePath_GivenFastWorktreeRepo(t 
 	if err := json.Unmarshal(result, &store); err != nil {
 		t.Fatalf("failed to parse migrated data: %v", err)
 	}
-	if store.Version != CurrentSchemaVersion {
-		t.Errorf("expected version %d, got %d", CurrentSchemaVersion, store.Version)
+	if store.Version != 4 {
+		t.Errorf("expected version 4, got %d", store.Version)
 	}
-	fastProj := store.Repos["fast-proj"]
+	fastProj := store.Projects["fast-proj"]
 	if fastProj.FastWorktreePath != "/proj/projects/myrepo" {
 		t.Errorf("expected fast worktree path '/proj/projects/myrepo', got '%s'", fastProj.FastWorktreePath)
 	}
-	normalProj := store.Repos["normal-proj"]
+	normalProj := store.Projects["normal-proj"]
 	if normalProj.FastWorktreePath != "" {
 		t.Errorf("expected empty fast worktree path for normal project, got '%s'", normalProj.FastWorktreePath)
 	}
