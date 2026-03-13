@@ -1054,6 +1054,12 @@ func renderUpdateView(m model) string {
 
 	b.WriteString(fmt.Sprintf("Current version: %s\n", projectStyle.Render(version.Version)))
 
+	channelName := "stable"
+	if m.betaChannel {
+		channelName = "beta"
+	}
+	b.WriteString(fmt.Sprintf("Update channel:  %s\n", projectStyle.Render(channelName)))
+
 	if m.updateChecking {
 		b.WriteString(fmt.Sprintf("\n%s Checking for updates...\n", styledSpinner(m.spinnerFrame, agentRunningStyle)))
 	} else if m.updateError != "" {
@@ -1084,14 +1090,19 @@ func renderUpdateView(m model) string {
 
 	b.WriteString("\n")
 
+	betaToggle := "[b]eta"
+	if m.betaChannel {
+		betaToggle = "un[b]eta"
+	}
+
 	if m.updateComplete {
 		b.WriteString(renderFooter(withHelpKey("[r]estart"), m.ctrlCPressed))
 	} else if m.updateAvailable && !m.updateDownloading && !m.updateComplete && !m.changelogLoading {
-		b.WriteString(renderFooter(withHelpKey("[c]onfirm  [esc] cancel"), m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey(fmt.Sprintf("[c]onfirm  %s  [esc] cancel", betaToggle)), m.ctrlCPressed))
 	} else if m.updateError != "" {
-		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey(fmt.Sprintf("%s  [esc] back", betaToggle)), m.ctrlCPressed))
 	} else if !m.updateChecking && !m.updateDownloading && !m.changelogLoading {
-		b.WriteString(renderFooter(withHelpKey("[esc] back"), m.ctrlCPressed))
+		b.WriteString(renderFooter(withHelpKey(fmt.Sprintf("%s  [esc] back", betaToggle)), m.ctrlCPressed))
 	}
 
 	return b.String()

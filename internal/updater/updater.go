@@ -22,8 +22,21 @@ type ChangelogEntry struct {
 
 const repo = "colby-duke-ai/ccmux"
 
-func CheckForUpdate() (latestVersion string, hasUpdate bool, err error) {
-	cmd := exec.Command("gh", "release", "view", "--repo", repo, "--json", "tagName", "-q", ".tagName")
+func CheckForUpdate(beta bool) (latestVersion string, hasUpdate bool, err error) {
+	var cmd *exec.Cmd
+	if beta {
+		cmd = exec.Command("gh", "release", "list",
+			"--repo", repo,
+			"--json", "tagName",
+			"--limit", "1",
+			"-q", ".[0].tagName")
+	} else {
+		cmd = exec.Command("gh", "release", "list",
+			"--repo", repo,
+			"--json", "tagName,isPrerelease",
+			"--limit", "50",
+			"-q", `[.[] | select(.isPrerelease == false)][0].tagName`)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", false, fmt.Errorf("failed to check for updates: %w", err)

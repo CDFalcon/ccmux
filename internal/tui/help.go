@@ -191,6 +191,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewUpdate: {
 		{FooterText: "[↑/↓/j/k] scroll", Description: "Navigate the changelog"},
 		{FooterText: "[c]onfirm", Description: "Download and install the update"},
+		{FooterText: "[b]eta / un[b]eta", Description: "Toggle beta update channel (pre-release builds on every PR merge)"},
 		{FooterText: "[r]estart", Description: "Restart after update completes"},
 		{FooterText: "[esc] cancel", Description: "Cancel and return to main view"},
 	},

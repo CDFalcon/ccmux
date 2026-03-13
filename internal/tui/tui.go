@@ -23,6 +23,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/settings"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
@@ -84,6 +85,7 @@ type model struct {
 	updateError       string
 	changelogEntries  []updater.ChangelogEntry
 	changelogLoading  bool
+	betaChannel       bool
 
 	// Kill agent confirmation
 	confirmKillAgent *agent.Agent
@@ -111,12 +113,13 @@ type model struct {
 	downloadProgress *int64
 	restartRequested bool
 
-	agentStore   *agent.Store
-	queueManager *queue.Queue
-	projectStore *project.Store
-	promptStore  *prompt.Store
-	tmuxManager  *tmux.Manager
-	sessionID    string
+	agentStore    *agent.Store
+	queueManager  *queue.Queue
+	projectStore  *project.Store
+	promptStore   *prompt.Store
+	settingsStore *settings.Store
+	tmuxManager   *tmux.Manager
+	sessionID     string
 }
 
 type projImportBuffer struct {
@@ -525,7 +528,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -571,9 +574,22 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		queueManager:      queueManager,
 		projectStore:      projectStore,
 		promptStore:       promptStore,
+		settingsStore:     settingsStore,
 		tmuxManager:       tmuxManager,
 		sessionID:         sessionID,
+		betaChannel:       loadBetaChannel(settingsStore),
 	}
+}
+
+func loadBetaChannel(store *settings.Store) bool {
+	if store == nil {
+		return false
+	}
+	s, err := store.Get()
+	if err != nil {
+		return false
+	}
+	return s.BetaChannel
 }
 
 func (m model) Init() tea.Cmd {
@@ -581,7 +597,7 @@ func (m model) Init() tea.Cmd {
 		tickCmd(),
 		spinnerTickCmd(),
 		m.refreshCmd(),
-		checkForUpdateCmd(),
+		checkForUpdateCmd(m.betaChannel),
 		updateCheckTickCmd(),
 	)
 }
@@ -713,9 +729,9 @@ func clearCtrlCCmd() tea.Cmd {
 	})
 }
 
-func checkForUpdateCmd() tea.Cmd {
+func checkForUpdateCmd(beta bool) tea.Cmd {
 	return func() tea.Msg {
-		latest, available, err := updater.CheckForUpdate()
+		latest, available, err := updater.CheckForUpdate(beta)
 		return updateCheckResultMsg{version: latest, available: available, err: err}
 	}
 }
@@ -865,7 +881,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateCheckTickMsg:
 		if !m.updateChecking && !m.updateDownloading {
 			m.updateChecking = true
-			return m, tea.Batch(checkForUpdateCmd(), updateCheckTickCmd())
+			return m, tea.Batch(checkForUpdateCmd(m.betaChannel), updateCheckTickCmd())
 		}
 		return m, updateCheckTickCmd()
 
@@ -1143,7 +1159,7 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.changelogLoading = false
 		m.selectedIndex = 0
 		atomic.StoreInt64(m.downloadProgress, 0)
-		return m, checkForUpdateCmd()
+		return m, checkForUpdateCmd(m.betaChannel)
 	}
 	return m, nil
 }
@@ -2024,6 +2040,21 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.changelogEntries) > 0 && m.selectedIndex < len(m.changelogEntries)-1 {
 			m.selectedIndex++
 		}
+	case "b":
+		if !m.updateDownloading && !m.updateComplete {
+			m.betaChannel = !m.betaChannel
+			if m.settingsStore != nil {
+				m.settingsStore.SetBetaChannel(m.betaChannel)
+			}
+			m.updateChecking = true
+			m.updateAvailable = false
+			m.updateVersion = ""
+			m.updateError = ""
+			m.changelogEntries = nil
+			m.changelogLoading = false
+			m.selectedIndex = 0
+			return m, checkForUpdateCmd(m.betaChannel)
+		}
 	}
 	return m, nil
 }
@@ -2817,8 +2848,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, promptStore, settingsStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

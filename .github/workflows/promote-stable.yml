@@ -1,0 +1,29 @@
+name: Promote to Stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to promote to stable (e.g. v2025.03.13.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote release to stable
+        run: |
+          TAG="${{ inputs.tag }}"
+          RELEASE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json tagName,isDraft,isPrerelease -q '.')
+          if [ -z "$RELEASE" ]; then
+            echo "Release $TAG not found"
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease=false --latest
+          echo "Promoted $TAG to stable (latest)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

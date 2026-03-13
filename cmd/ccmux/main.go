@@ -15,6 +15,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/settings"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -90,7 +91,14 @@ func updateCmd() *cobra.Command {
 			fmt.Printf("Current version: %s\n", version.Version)
 			fmt.Println("Checking for updates...")
 
-			latest, available, err := updater.CheckForUpdate()
+			beta := false
+			if store, err := settings.NewStore(); err == nil {
+				if s, err := store.Get(); err == nil {
+					beta = s.BetaChannel
+				}
+			}
+
+			latest, available, err := updater.CheckForUpdate(beta)
 			if err != nil {
 				return fmt.Errorf("failed to check for updates: %w", err)
 			}
@@ -180,7 +188,12 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, tmuxManager, sessionID)
+	settingsStore, err := settings.NewStore()
+	if err != nil {
+		return err
+	}
+
+	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, settingsStore, tmuxManager, sessionID)
 	if err != nil {
 		return err
 	}
