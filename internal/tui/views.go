@@ -566,6 +566,12 @@ func renderManageProjectsView(m model) string {
 					fastWtStatus = "yes (proj)"
 				}
 				b.WriteString(fmt.Sprintf("  Fast worktrees: %s\n", dimStyle.Render(fastWtStatus)))
+				if selected.StartupScript != "" {
+					b.WriteString(fmt.Sprintf("  Startup:        %s\n", dimStyle.Render(selected.StartupScript)))
+				}
+				if selected.TeardownScript != "" {
+					b.WriteString(fmt.Sprintf("  Teardown:       %s\n", dimStyle.Render(selected.TeardownScript)))
+				}
 				b.WriteString("\n")
 			}
 		}
