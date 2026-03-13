@@ -2,6 +2,7 @@ package updater
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,14 @@ import (
 
 	"github.com/CDFalcon/ccmux/internal/version"
 )
+
+func cmdErrorWithStderr(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Sprintf("%s: %s", err.Error(), strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return err.Error()
+}
 
 type ChangelogEntry struct {
 	Number int    `json:"number"`
@@ -39,7 +48,7 @@ func CheckForUpdate(beta bool) (latestVersion string, hasUpdate bool, err error)
 	}
 	output, err := cmd.Output()
 	if err != nil {
-		return "", false, fmt.Errorf("failed to check for updates: %w", err)
+		return "", false, fmt.Errorf("failed to check for updates: %s", cmdErrorWithStderr(err))
 	}
 
 	latest := strings.TrimSpace(string(output))
@@ -193,7 +202,7 @@ func FetchChangelog(currentVersion, latestVersion string) ([]ChangelogEntry, err
 		"--jq", "[.commits[].commit.message]")
 	compareOutput, err := compareCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to compare versions: %w", err)
+		return nil, fmt.Errorf("failed to compare versions: %s", cmdErrorWithStderr(err))
 	}
 
 	var messages []string
@@ -225,7 +234,7 @@ func FetchChangelog(currentVersion, latestVersion string) ([]ChangelogEntry, err
 		"--limit", "100")
 	listOutput, err := listCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list PRs: %w", err)
+		return nil, fmt.Errorf("failed to list PRs: %s", cmdErrorWithStderr(err))
 	}
 
 	var allPRs []ChangelogEntry

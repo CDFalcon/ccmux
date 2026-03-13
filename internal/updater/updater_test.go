@@ -1,10 +1,40 @@
 package updater
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCmdErrorWithStderr_ShouldIncludeStderr_GivenExitError(t *testing.T) {
+	// Setup.
+	cmd := exec.Command("sh", "-c", "echo 'some error details' >&2; exit 1")
+	_, err := cmd.Output()
+
+	// Execute.
+	result := cmdErrorWithStderr(err)
+
+	// Assert.
+	if !strings.Contains(result, "some error details") {
+		t.Errorf("expected stderr in output, got: %s", result)
+	}
+}
+
+func TestCmdErrorWithStderr_ShouldReturnErrorString_GivenPlainError(t *testing.T) {
+	// Setup.
+	err := fmt.Errorf("plain error")
+
+	// Execute.
+	result := cmdErrorWithStderr(err)
+
+	// Assert.
+	if result != "plain error" {
+		t.Errorf("expected 'plain error', got: %s", result)
+	}
+}
 
 func TestNeedsElevation_ShouldReturnFalse_GivenWritableDirectory(t *testing.T) {
 	// Setup.
