@@ -36,6 +36,16 @@ func getWindowOption(t *testing.T, target, option string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func getPaneOption(t *testing.T, target, option string) string {
+	t.Helper()
+	cmd := exec.Command("tmux", "show-options", "-p", "-t", target, option)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func getHook(t *testing.T, session, hook string) string {
 	t.Helper()
 	cmd := exec.Command("tmux", "show-hooks", "-t", session)
@@ -86,7 +96,7 @@ func TestEnsureRemainOnExit_ShouldRemoveStaleHook_GivenSessionWithHook(t *testin
 	}
 }
 
-func TestEnsureRemainOnExit_ShouldSetRemainOnExitOnFirstWindow_GivenCleanSession(t *testing.T) {
+func TestEnsureRemainOnExit_ShouldSetRemainOnExitOnFirstPane_GivenCleanSession(t *testing.T) {
 	skipIfNoTmux(t)
 
 	// Setup.
@@ -96,9 +106,9 @@ func TestEnsureRemainOnExit_ShouldSetRemainOnExitOnFirstWindow_GivenCleanSession
 	mgr.EnsureRemainOnExit()
 
 	// Assert.
-	opt := getWindowOption(t, mgr.FirstWindowTarget(), "remain-on-exit")
+	opt := getPaneOption(t, mgr.FirstWindowTarget(), "remain-on-exit")
 	if !strings.Contains(opt, "on") {
-		t.Errorf("expected remain-on-exit on for first window, got: %q", opt)
+		t.Errorf("expected remain-on-exit on for first pane, got: %q", opt)
 	}
 }
 
@@ -125,7 +135,7 @@ func TestNewWindow_ShouldNotInheritRemainOnExit_GivenHookRemoved(t *testing.T) {
 	}
 }
 
-func TestCreateWindow_ShouldSetRemainOnExit_GivenAgentWindow(t *testing.T) {
+func TestCreateWindow_ShouldSetRemainOnExitOnPane_GivenAgentWindow(t *testing.T) {
 	skipIfNoTmux(t)
 
 	// Setup.
@@ -138,8 +148,33 @@ func TestCreateWindow_ShouldSetRemainOnExit_GivenAgentWindow(t *testing.T) {
 	}
 
 	// Assert.
-	opt := getWindowOption(t, windowID, "remain-on-exit")
+	opt := getPaneOption(t, windowID, "remain-on-exit")
 	if !strings.Contains(opt, "on") {
-		t.Errorf("agent window should have remain-on-exit on, got: %q", opt)
+		t.Errorf("agent pane should have remain-on-exit on, got: %q", opt)
+	}
+}
+
+func TestSplitPane_ShouldNotInheritRemainOnExit_GivenAgentWindowWithRemainOnExit(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-split-roe")
+	windowID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute.
+	cmd := exec.Command("tmux", "split-window", "-d", "-t", windowID, "-P", "-F", "#{pane_id}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to split pane: %s: %v", string(out), err)
+	}
+	splitPaneID := strings.TrimSpace(string(out))
+
+	// Assert.
+	opt := getPaneOption(t, splitPaneID, "remain-on-exit")
+	if strings.Contains(opt, "on") {
+		t.Errorf("split pane should not have remain-on-exit, got: %q", opt)
 	}
 }
