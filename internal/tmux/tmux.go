@@ -55,10 +55,10 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create tmux session: %s: %w", string(output), err)
 	}
-	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
 	m.ForwardEnv()
 	m.SourceUserConfig()
 	m.SetupAgentNavigation()
+	m.SetWindowRemainOnExit(m.FirstWindowTarget())
 	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
 		return fmt.Errorf("failed to start command in session: %w", err)
 	}
@@ -98,7 +98,9 @@ func (m *Manager) CreateWindow(workingDir, command, name string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("failed to create window: %s: %w", string(output), err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	windowID := strings.TrimSpace(string(output))
+	m.SetWindowRemainOnExit(windowID)
+	return windowID, nil
 }
 
 func (m *Manager) KillWindow(windowID string) error {
@@ -191,7 +193,11 @@ func (m *Manager) RenameWindow(windowID, name string) error {
 }
 
 func (m *Manager) EnsureRemainOnExit() {
-	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-new-window", "set-option -w remain-on-exit on").Run()
+	m.SetWindowRemainOnExit(m.FirstWindowTarget())
+}
+
+func (m *Manager) SetWindowRemainOnExit(windowID string) {
+	exec.Command("tmux", "set-option", "-w", "-t", windowID, "remain-on-exit", "on").Run()
 }
 
 func (m *Manager) SetupAgentNavigation() {
