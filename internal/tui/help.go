@@ -58,8 +58,9 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewSelectProject: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
+		{FooterText: "[/] search", Description: "Filter projects by name"},
 		{FooterText: "[enter] choose", Description: "Choose the selected project"},
-		{FooterText: "[esc] back", Description: "Return to main view"},
+		{FooterText: "[esc] back", Description: "Return to main view or clear search"},
 	},
 	ViewNewTaskBranch: {
 		{FooterText: "[↑/↓] select", Description: "Navigate the branch list"},

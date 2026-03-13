@@ -46,6 +46,8 @@ type model struct {
 	branchOptions         []string
 	branchFilter          textinput.Model
 	filteredBranches      []string
+	projectFilter         textinput.Model
+	filteredProjects      []*project.Project
 	spawnBranch           string
 	spawnTask             string
 	worktreeNameInput     textinput.Model
@@ -478,6 +480,32 @@ func (m *model) fuzzyFilterBranches() {
 	}
 }
 
+func (m *model) fuzzyFilterProjects() {
+	query := m.projectFilter.Value()
+	if query == "" {
+		m.filteredProjects = nil
+		return
+	}
+
+	names := make([]string, len(m.projects))
+	for i, p := range m.projects {
+		names[i] = p.Name
+	}
+
+	matches := fuzzy.Find(query, names)
+	m.filteredProjects = make([]*project.Project, len(matches))
+	for i, match := range matches {
+		m.filteredProjects[i] = m.projects[match.Index]
+	}
+}
+
+func (m model) visibleProjects() []*project.Project {
+	if m.projectFilter.Value() != "" && m.filteredProjects != nil {
+		return m.filteredProjects
+	}
+	return m.projects
+}
+
 type tickMsg time.Time
 type spinnerTickMsg time.Time
 type refreshMsg struct {
@@ -562,6 +590,11 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	branchFilter.Width = 50
 	branchFilter.CharLimit = 100
 
+	projectFilter := textinput.New()
+	projectFilter.Placeholder = "Type to search projects..."
+	projectFilter.Width = 50
+	projectFilter.CharLimit = 100
+
 	worktreeNameInput := textinput.New()
 	worktreeNameInput.Placeholder = "e.g. fix-auth-bug (optional)"
 	worktreeNameInput.Width = 50
@@ -576,6 +609,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		taskInput:         taskInput,
 		branchInput:       branchInput,
 		branchFilter:      branchFilter,
+		projectFilter:     projectFilter,
 		worktreeNameInput: worktreeNameInput,
 		interveneInput:    interveneInput,
 		projectForm:       newProjectForm(),
@@ -977,6 +1011,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs for blink cursor
+	if m.view == ViewSelectProject && m.projectFilter.Focused() {
+		var cmd tea.Cmd
+		m.projectFilter, cmd = m.projectFilter.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if m.view == ViewNewTaskBranch {
 		var cmd tea.Cmd
 		m.branchFilter, cmd = m.branchFilter.Update(msg)
@@ -1159,6 +1198,9 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = ViewSelectProject
 		m.selectedIndex = 0
+		m.projectFilter.SetValue("")
+		m.projectFilter.Blur()
+		m.filteredProjects = nil
 	case "k":
 		m.view = ViewConfirmKill
 		m.selectedIndex = 0
@@ -1191,21 +1233,74 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	projects := m.visibleProjects()
+
+	if m.projectFilter.Focused() {
+		switch msg.String() {
+		case "esc":
+			if m.projectFilter.Value() != "" {
+				m.projectFilter.SetValue("")
+				m.filteredProjects = nil
+				m.selectedIndex = 0
+			}
+			m.projectFilter.Blur()
+			return m, nil
+		case "up":
+			if m.selectedIndex > 0 {
+				m.selectedIndex--
+			}
+			return m, nil
+		case "down":
+			if m.selectedIndex < len(projects)-1 {
+				m.selectedIndex++
+			}
+			return m, nil
+		case "enter":
+			if m.selectedIndex >= 0 && m.selectedIndex < len(projects) {
+				p := projects[m.selectedIndex]
+				if p.IsSettingUp() {
+					m.err = fmt.Errorf("project '%s' is still being set up", p.Name)
+					return m, clearMessageCmd()
+				}
+				m.selectedProj = p
+				m.projectFilter.SetValue("")
+				m.projectFilter.Blur()
+				m.filteredProjects = nil
+				m.branchOptions = getLocalBranches(m.selectedProj.Path)
+				m.branchFilter.SetValue("")
+				m.filteredBranches = nil
+				m.view = ViewNewTaskBranch
+				m.selectedIndex = 0
+				m.branchFilter.Focus()
+				return m, textinput.Blink
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.projectFilter, cmd = m.projectFilter.Update(msg)
+		m.fuzzyFilterProjects()
+		m.selectedIndex = 0
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.view = ViewMain
 		m.selectedProj = nil
+	case "/":
+		m.projectFilter.Focus()
+		return m, textinput.Blink
 	case "up", "k":
 		if m.selectedIndex > 0 {
 			m.selectedIndex--
 		}
 	case "down", "j":
-		if m.selectedIndex < len(m.projects)-1 {
+		if m.selectedIndex < len(projects)-1 {
 			m.selectedIndex++
 		}
 	case "enter":
-		if m.selectedIndex >= 0 && m.selectedIndex < len(m.projects) {
-			p := m.projects[m.selectedIndex]
+		if m.selectedIndex >= 0 && m.selectedIndex < len(projects) {
+			p := projects[m.selectedIndex]
 			if p.IsSettingUp() {
 				m.err = fmt.Errorf("project '%s' is still being set up", p.Name)
 				return m, clearMessageCmd()
