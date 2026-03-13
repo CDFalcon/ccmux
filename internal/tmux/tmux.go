@@ -211,6 +211,15 @@ func (m *Manager) SetupAgentNavigation() {
 	exec.Command("tmux", "set-option", "-t", m.sessionName, "status-right", statusFmt).Run()
 }
 
+func (m *Manager) IsPaneDead(windowID string) (bool, error) {
+	cmd := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_dead}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to check pane status: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)) == "1", nil
+}
+
 func (m *Manager) RespawnDeadPane(windowID, command string) error {
 	cmd := exec.Command("tmux", "respawn-pane", "-t", windowID, command)
 	output, err := cmd.CombinedOutput()

@@ -103,7 +103,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewConfirmKill: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the agent list"},
-		{FooterText: "[enter] select", Description: "Select agent to kill (shows confirmation)"},
+		{FooterText: "[enter] select", Description: "Select agent to kill or restart (shows confirmation)"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
 	ViewManageProjects: {

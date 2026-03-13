@@ -523,8 +523,8 @@ func renderConfirmKillView(m model) string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(truncate(m.confirmKillAgent.Task, MaxTaskDisplayLen)))
 		b.WriteString("\n\n")
-		b.WriteString("Press [y] to confirm or [esc] to go back.\n\n")
-		help := "[y]es  [esc] back  [F1] help"
+		b.WriteString("Press [y] to kill, [r] to restart (resume with --continue), or [esc] to go back.\n\n")
+		help := "[y]es  [r]estart  [esc] back  [F1] help"
 		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	} else {
 		b.WriteString(renderAgentSelector(m, "No agents to kill"))
@@ -812,6 +812,8 @@ func getItemIcon(itemType queue.ItemType) string {
 		return "🔀"
 	case queue.ItemTypeIdle:
 		return "💤"
+	case queue.ItemTypeDead:
+		return "🛑"
 	default:
 		return "•"
 	}

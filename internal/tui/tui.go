@@ -683,11 +683,14 @@ func (m model) refreshCmd() tea.Cmd {
 
 		idleItemByAgent := make(map[string]*queue.QueueItem)
 		prReadyByAgent := make(map[string]bool)
+		deadItemByAgent := make(map[string]bool)
 		for _, item := range queueItems {
 			if item.Type == queue.ItemTypeIdle {
 				idleItemByAgent[item.AgentID] = item
 			} else if item.Type == queue.ItemTypePRReady {
 				prReadyByAgent[item.AgentID] = true
+			} else if item.Type == queue.ItemTypeDead {
+				deadItemByAgent[item.AgentID] = true
 			}
 		}
 
@@ -743,6 +746,24 @@ func (m model) refreshCmd() tea.Cmd {
 					changed = true
 				}
 			}
+		}
+
+		for _, a := range agents {
+			if a.TmuxWindow == "" || deadItemByAgent[a.ID] {
+				continue
+			}
+			if a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusMerged {
+				continue
+			}
+			dead, err := m.tmuxManager.IsPaneDead(a.TmuxWindow)
+			if err != nil || !dead {
+				continue
+			}
+			if _, hasIdle := idleItemByAgent[a.ID]; hasIdle {
+				continue
+			}
+			m.queueManager.Add(queue.ItemTypeDead, a.ID, "Pane exited - kill or restart", "")
+			changed = true
 		}
 
 		if changed {
@@ -1190,6 +1211,18 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = ViewReview
 			m.selectedIndex = 0
 			return m, nil
+		case queue.ItemTypeDead:
+			m.view = ViewConfirmKill
+			m.selectedIndex = 0
+			for i, a := range m.agents {
+				if a.ID == item.AgentID {
+					m.confirmKillAgent = a
+					m.selectedIndex = i
+					break
+				}
+			}
+			m.queueManager.RemoveByAgentAndType(item.AgentID, queue.ItemTypeDead)
+			return m, nil
 		}
 	case "n":
 		if len(m.projects) == 0 {
@@ -1596,6 +1629,11 @@ func (m model) handleConfirmKillKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmKillAgent = nil
 			m.view = ViewMain
 			return m, m.killAgentCmd(selected)
+		case "r":
+			selected := m.confirmKillAgent
+			m.confirmKillAgent = nil
+			m.view = ViewMain
+			return m, m.restartAgentCmd(selected)
 		case "esc", "n":
 			m.confirmKillAgent = nil
 		}
@@ -2910,6 +2948,107 @@ func (m model) killAgentCmd(a *agent.Agent) tea.Cmd {
 		}
 		return successMsg{fmt.Sprintf("Killed agent %s", agentID)}
 	}
+}
+
+func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
+	agentID := a.ID
+	worktreePath := a.WorktreePath
+	tmuxWindow := a.TmuxWindow
+	baseBranch := a.BaseBranch
+	return func() tea.Msg {
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusRunning
+		})
+		m.queueManager.RemoveByAgent(agentID)
+
+		scriptPath, err := writeRestartScript(agentID, worktreePath, baseBranch)
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to write restart script: %w", err)}
+		}
+
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create restart window: %w", err)}
+		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
+
+		return successMsg{fmt.Sprintf("Agent %s restarted", agentID)}
+	}
+}
+
+func writeRestartScript(agentID, worktreePath, baseBranch string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-restart.sh")
+	promptsFile := filepath.Join(launcherDir, agentID+"-prompts.txt")
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID="%s"
+
+cd "%s"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Restarting agent (--continue)...${RESET}"
+echo ""
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+unset CLAUDECODE
+
+PR_BASE_BRANCH="%s"
+PR_BASE_BRANCH="${PR_BASE_BRANCH#origin/}"
+
+SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+
+IMPORTANT: Your previous session was restarted. You are being resumed with --continue. Review your progress so far and continue where you left off.
+
+When done with your task:
+1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+2. Run: ccmux ci-wait <pr-url>"
+
+CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD_PATH" ]; then
+  CLAUDE_MD_CONTENT=$(cat "$CLAUDE_MD_PATH")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${CLAUDE_MD_CONTENT}"
+fi
+
+PROMPTS_FILE="%s"
+if [ -f "$PROMPTS_FILE" ]; then
+  PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${PROMPTS_CONTENT}"
+fi
+
+claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
+
+ccmux agent-stopped "$AGENT_ID"
+`, agentID, worktreePath, baseBranch, promptsFile)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
 }
 
 func (m model) View() string {
