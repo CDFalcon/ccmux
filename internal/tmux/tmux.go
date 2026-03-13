@@ -57,6 +57,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	}
 	m.ForwardEnv()
 	m.SourceUserConfig()
+	m.DisableSessionRemainOnExit()
 	m.SetupAgentNavigation()
 	m.SetPaneRemainOnExit(m.FirstWindowTarget())
 	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
@@ -194,11 +195,16 @@ func (m *Manager) RenameWindow(windowID, name string) error {
 
 func (m *Manager) EnsureRemainOnExit() {
 	m.RemoveRemainOnExitHook()
+	m.DisableSessionRemainOnExit()
 	m.SetPaneRemainOnExit(m.FirstWindowTarget())
 }
 
 func (m *Manager) RemoveRemainOnExitHook() {
 	exec.Command("tmux", "set-hook", "-u", "-t", m.sessionName, "after-new-window").Run()
+}
+
+func (m *Manager) DisableSessionRemainOnExit() {
+	exec.Command("tmux", "set-option", "-t", m.sessionName, "remain-on-exit", "off").Run()
 }
 
 func (m *Manager) SetPaneRemainOnExit(windowID string) {

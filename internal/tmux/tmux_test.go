@@ -135,6 +135,29 @@ func TestNewWindow_ShouldNotInheritRemainOnExit_GivenHookRemoved(t *testing.T) {
 	}
 }
 
+func TestNewWindow_ShouldNotInheritRemainOnExit_GivenSessionLevelRemainOnExit(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-session-roe")
+	exec.Command("tmux", "set-option", "-t", mgr.SessionName(), "remain-on-exit", "on").Run()
+	mgr.EnsureRemainOnExit()
+
+	// Execute.
+	cmd := exec.Command("tmux", "new-window", "-d", "-t", mgr.SessionName(), "-P", "-F", "#{pane_id}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create new window: %s: %v", string(out), err)
+	}
+	newPaneID := strings.TrimSpace(string(out))
+
+	// Assert.
+	opt := getPaneOption(t, newPaneID, "remain-on-exit")
+	if strings.Contains(opt, "on") {
+		t.Errorf("user-created window pane should not have remain-on-exit, got: %q", opt)
+	}
+}
+
 func TestCreateWindow_ShouldSetRemainOnExitOnPane_GivenAgentWindow(t *testing.T) {
 	skipIfNoTmux(t)
 
