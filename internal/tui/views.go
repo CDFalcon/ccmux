@@ -214,11 +214,20 @@ func renderSelectProjectView(m model) string {
 	b.WriteString(titleStyle.Render("# Select Project"))
 	b.WriteString("\n\n")
 
-	if len(m.projects) == 0 {
-		b.WriteString(dimStyle.Render("No projects registered"))
+	b.WriteString("Search:\n")
+	b.WriteString(inputStyle.Render(m.projectFilter.View()))
+	b.WriteString("\n\n")
+
+	projects := m.visibleProjects()
+	if len(projects) == 0 {
+		if m.projectFilter.Value() != "" {
+			b.WriteString(dimStyle.Render("No matching projects"))
+		} else {
+			b.WriteString(dimStyle.Render("No projects registered"))
+		}
 		b.WriteString("\n\n")
 	} else {
-		for i, p := range m.projects {
+		for i, p := range projects {
 			style := queueItemStyle
 			if i == m.selectedIndex {
 				style = selectedItemStyle
