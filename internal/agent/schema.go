@@ -46,7 +46,7 @@ func (s Status) DisplayName() string {
 type Agent struct {
 	ID           string    `json:"id"`
 	Task         string    `json:"task"`
-	ProjectName  string    `json:"project_name,omitempty"`
+	RepoName     string    `json:"repo_name,omitempty"`
 	WorktreeName string    `json:"worktree_name,omitempty"`
 	WorktreePath string    `json:"worktree_path"`
 	BranchName   string    `json:"branch_name"`

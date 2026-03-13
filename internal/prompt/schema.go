@@ -9,17 +9,17 @@ type Prompt struct {
 	Name         string    `json:"name"`
 	Content      string    `json:"content"`
 	IsDefault    bool      `json:"is_default"`
-	ProjectNames []string  `json:"project_names,omitempty"`
+	RepoNames []string  `json:"repo_names,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-func (p *Prompt) AppliesToProject(projectName string) bool {
-	if len(p.ProjectNames) == 0 {
+func (p *Prompt) AppliesToRepo(repoName string) bool {
+	if len(p.RepoNames) == 0 {
 		return true
 	}
-	for _, name := range p.ProjectNames {
-		if name == projectName {
+	for _, name := range p.RepoNames {
+		if name == repoName {
 			return true
 		}
 	}

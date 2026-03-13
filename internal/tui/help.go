@@ -15,7 +15,7 @@ type helpCommand struct {
 
 var viewTitles = map[ViewState]string{
 	ViewMain:                 "Main",
-	ViewSelectProject:        "Select Project",
+	ViewSelectRepo:        "Select Repo",
 	ViewNewTaskBranch:        "New Task - Base Branch",
 	ViewNewTaskBranchInput:   "New Task - Specify Branch",
 	ViewNewTaskInput:         "New Task",
@@ -25,21 +25,21 @@ var viewTitles = map[ViewState]string{
 	ViewReview:               "Review PR",
 	ViewConfirmMerge:         "Confirm Cleanup",
 	ViewConfirmKill:          "Kill Agent",
-	ViewManageProjects:       "Manage Projects",
-	ViewAddProjectName:       "Add Project (Name)",
-	ViewAddProjectPath:       "Add Project (Path)",
-	ViewAddProjectFastWT:     "Add Project (Fast Worktrees)",
-	ViewEditProject:          "Edit Project",
-	ViewConfirmRemoveProject: "Remove Project",
+	ViewManageRepos:       "Manage Repos",
+	ViewAddRepoName:       "Add Repo (Name)",
+	ViewAddRepoPath:       "Add Repo (Path)",
+	ViewAddRepoFastWT:     "Add Repo (Fast Worktrees)",
+	ViewEditRepo:          "Edit Repo",
+	ViewConfirmRemoveRepo: "Remove Repo",
 	ViewConfirmKillSession:   "Kill Session",
 	ViewAgentInfo:            "Info on Agent",
 	ViewUpdate:               "Update",
-	ViewProjImporting:        "Setting Up Project",
+	ViewProjImporting:        "Setting Up Repo",
 	ViewManagePrompts:        "Manage Prompts",
 	ViewAddPromptName:        "Add Prompt (Name)",
 	ViewAddPromptContent:     "Add Prompt (Content)",
 	ViewAddPromptDefault:     "Add Prompt (Default)",
-	ViewAddPromptProjects:   "Add Prompt (Projects)",
+	ViewAddPromptRepos:   "Add Prompt (Repos)",
 	ViewEditPrompt:           "Edit Prompt",
 	ViewConfirmRemovePrompt:  "Remove Prompt",
 	ViewNewTaskSelectPrompts: "New Task - Select Prompts",
@@ -52,13 +52,13 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[i]nfo on agent", Description: "View agent details and jump to its tmux window"},
 		{FooterText: "[k]ill agent", Description: "Terminate a running agent"},
 		{FooterText: "[p]rompts", Description: "Manage custom agent prompts"},
-		{FooterText: "[P]rojects", Description: "Manage registered projects"},
+		{FooterText: "[R]epos", Description: "Manage registered repos"},
 		{FooterText: "[K]ill session", Description: "Kill all agents and the tmux session"},
 		{FooterText: "[u]pdate", Description: "Check for and install updates", HideFromFooter: true},
 	},
-	ViewSelectProject: {
-		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
-		{FooterText: "[enter] choose", Description: "Choose the selected project"},
+	ViewSelectRepo: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the repo list"},
+		{FooterText: "[enter] choose", Description: "Choose the selected repo"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
 	ViewNewTaskBranch: {
@@ -104,38 +104,38 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[enter] select", Description: "Select agent to kill (shows confirmation)"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
-	ViewManageProjects: {
-		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
-		{FooterText: "[a]dd project", Description: "Register a new project"},
-		{FooterText: "[enter] edit selected", Description: "Edit the selected project"},
-		{FooterText: "[d]elete selected", Description: "Remove the selected project"},
+	ViewManageRepos: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the repo list"},
+		{FooterText: "[a]dd repo", Description: "Register a new repo"},
+		{FooterText: "[enter] edit selected", Description: "Edit the selected repo"},
+		{FooterText: "[d]elete selected", Description: "Remove the selected repo"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
-	ViewEditProject: {
+	ViewEditRepo: {
 		{FooterText: "[tab] next field", Description: "Move to the next field"},
 		{FooterText: "[shift+tab] prev field", Description: "Move to the previous field"},
 		{FooterText: "[enter] save", Description: "Save changes"},
-		{FooterText: "[esc] cancel", Description: "Cancel and return to project management"},
+		{FooterText: "[esc] cancel", Description: "Cancel and return to repo management"},
 	},
-	ViewAddProjectName: {
+	ViewAddRepoName: {
 		{FooterText: "[enter] next", Description: "Proceed to path entry"},
-		{FooterText: "[esc] cancel", Description: "Cancel and return to project management"},
+		{FooterText: "[esc] cancel", Description: "Cancel and return to repo management"},
 	},
-	ViewAddProjectPath: {
-		{FooterText: "[enter] create project", Description: "Create the project registration"},
+	ViewAddRepoPath: {
+		{FooterText: "[enter] create repo", Description: "Create the repo registration"},
 		{FooterText: "[esc] back", Description: "Return to name entry"},
 	},
-	ViewAddProjectFastWT: {
-		{FooterText: "[y]es", Description: "Enable fast worktrees (proj) for this project"},
+	ViewAddRepoFastWT: {
+		{FooterText: "[y]es", Description: "Enable fast worktrees (proj) for this repo"},
 		{FooterText: "[n]o", Description: "Use standard git worktrees"},
 		{FooterText: "[esc] back", Description: "Return to path entry"},
 	},
-	ViewConfirmRemoveProject: {
-		{FooterText: "[y]es", Description: "Confirm project removal"},
+	ViewConfirmRemoveRepo: {
+		{FooterText: "[y]es", Description: "Confirm repo removal"},
 		{FooterText: "[n]o", Description: "Cancel and go back"},
 	},
 	ViewProjImporting: {
-		{FooterText: "[esc] back", Description: "Return to project management (import continues)"},
+		{FooterText: "[esc] back", Description: "Return to repo management (import continues)"},
 	},
 	ViewManagePrompts: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the prompt list"},
@@ -157,9 +157,9 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[n]o", Description: "Skip default and proceed"},
 		{FooterText: "[esc] back", Description: "Return to content entry"},
 	},
-	ViewAddPromptProjects: {
-		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
-		{FooterText: "[space] toggle", Description: "Enable or disable for project"},
+	ViewAddPromptRepos: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the repo list"},
+		{FooterText: "[space] toggle", Description: "Enable or disable for repo"},
 		{FooterText: "[enter] create prompt", Description: "Create the prompt"},
 		{FooterText: "[esc] back", Description: "Return to default setting"},
 	},
