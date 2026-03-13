@@ -232,7 +232,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent, proj.StartupScript)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -279,7 +279,7 @@ func spawnCmd() *cobra.Command {
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -417,6 +417,14 @@ ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH"
 echo "✓ Agent registered"
 echo ""
 
+STARTUP_SCRIPT="%s"
+if [ -n "$STARTUP_SCRIPT" ] && [ -f "$STARTUP_SCRIPT" ]; then
+  echo "→ Running startup script: $STARTUP_SCRIPT"
+  bash "$STARTUP_SCRIPT"
+  echo "✓ Startup script completed"
+  echo ""
+fi
+
 echo -e "${DIM}Starting Claude Code...${RESET}"
 echo ""
 
@@ -455,7 +463,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, promptsFilePath(agentID))
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, startupScript, promptsFilePath(agentID))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -745,6 +753,8 @@ func doCleanup(agentID, action string) error {
 		return err
 	}
 
+	runTeardownScript(a.ProjectName)
+
 	tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
@@ -774,6 +784,30 @@ func doCleanup(agentID, action string) error {
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
+}
+
+func runTeardownScript(projectName string) {
+	if projectName == "" {
+		return
+	}
+	projectStore, err := project.NewStore()
+	if err != nil {
+		return
+	}
+	proj, err := projectStore.Get(projectName)
+	if err != nil || proj.TeardownScript == "" {
+		return
+	}
+	if _, err := os.Stat(proj.TeardownScript); err != nil {
+		return
+	}
+	fmt.Printf("Running teardown script: %s\n", proj.TeardownScript)
+	cmd := exec.Command("bash", proj.TeardownScript)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: teardown script failed: %v\n", err)
+	}
 }
 
 func killSessionCmd() *cobra.Command {

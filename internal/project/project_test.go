@@ -662,6 +662,92 @@ func TestUpdate_ShouldSucceed_GivenFastWorktreesWithSettingUpStatus(t *testing.T
 	}
 }
 
+func TestUpdate_ShouldPersistScripts_GivenStartupAndTeardownScripts(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "scripted", Path: repoDir})
+
+	// Execute.
+	err := store.Update("scripted", func(p *Project) {
+		p.StartupScript = "/path/to/startup.sh"
+		p.TeardownScript = "/path/to/teardown.sh"
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("scripted")
+	if retrieved.StartupScript != "/path/to/startup.sh" {
+		t.Errorf("expected startup script '/path/to/startup.sh', got '%s'", retrieved.StartupScript)
+	}
+	if retrieved.TeardownScript != "/path/to/teardown.sh" {
+		t.Errorf("expected teardown script '/path/to/teardown.sh', got '%s'", retrieved.TeardownScript)
+	}
+}
+
+func TestAdd_ShouldOmitScripts_GivenNoScriptsSet(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	store.Add(&Project{Name: "no-scripts", Path: repoDir})
+
+	// Assert.
+	raw, _ := os.ReadFile(store.filePath)
+	var data map[string]interface{}
+	json.Unmarshal(raw, &data)
+	projects := data["projects"].(map[string]interface{})
+	proj := projects["no-scripts"].(map[string]interface{})
+	if _, exists := proj["startup_script"]; exists {
+		t.Error("expected startup_script to be omitted from JSON")
+	}
+	if _, exists := proj["teardown_script"]; exists {
+		t.Error("expected teardown_script to be omitted from JSON")
+	}
+}
+
+func TestMigrationV4ToV5_ShouldPreserveExistingFields(t *testing.T) {
+	// Setup.
+	v4Data := `{
+		"version": 4,
+		"projects": {
+			"my-proj": {
+				"name": "my-proj",
+				"path": "/home/user/repo",
+				"default_base_branch": "origin/main"
+			}
+		}
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v4Data), 4, 5)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	proj := store.Projects["my-proj"]
+	if proj.Path != "/home/user/repo" {
+		t.Errorf("expected path '/home/user/repo', got '%s'", proj.Path)
+	}
+	if proj.DefaultBaseBranch != "origin/main" {
+		t.Errorf("expected base branch 'origin/main', got '%s'", proj.DefaultBaseBranch)
+	}
+	if proj.StartupScript != "" {
+		t.Errorf("expected empty startup script, got '%s'", proj.StartupScript)
+	}
+	if proj.TeardownScript != "" {
+		t.Errorf("expected empty teardown script, got '%s'", proj.TeardownScript)
+	}
+}
+
 func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *testing.T) {
 	// Setup.
 	v3Data := `{

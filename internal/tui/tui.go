@@ -163,10 +163,12 @@ type projectFormModel struct {
 }
 
 type editProjectFormModel struct {
-	pathInput       textinput.Model
-	baseBranchInput textinput.Model
-	fastWTInput     textinput.Model
-	focusIndex      int // 0=path, 1=baseBranch, 2=fastWT
+	pathInput            textinput.Model
+	baseBranchInput      textinput.Model
+	fastWTInput          textinput.Model
+	startupScriptInput   textinput.Model
+	teardownScriptInput  textinput.Model
+	focusIndex           int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript
 }
 
 type promptFormModel struct {
@@ -311,11 +313,23 @@ func newEditProjectForm() editProjectFormModel {
 	fastWTInput.Width = 10
 	fastWTInput.CharLimit = 5
 
+	startupScriptInput := textinput.New()
+	startupScriptInput.Placeholder = "/path/to/startup.sh"
+	startupScriptInput.Width = 50
+	startupScriptInput.CharLimit = 200
+
+	teardownScriptInput := textinput.New()
+	teardownScriptInput.Placeholder = "/path/to/teardown.sh"
+	teardownScriptInput.Width = 50
+	teardownScriptInput.CharLimit = 200
+
 	return editProjectFormModel{
-		pathInput:       pathInput,
-		baseBranchInput: baseBranchInput,
-		fastWTInput:     fastWTInput,
-		focusIndex:      0,
+		pathInput:           pathInput,
+		baseBranchInput:     baseBranchInput,
+		fastWTInput:         fastWTInput,
+		startupScriptInput:  startupScriptInput,
+		teardownScriptInput: teardownScriptInput,
+		focusIndex:          0,
 	}
 }
 
@@ -323,6 +337,8 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.pathInput.Blur()
 	ef.baseBranchInput.Blur()
 	ef.fastWTInput.Blur()
+	ef.startupScriptInput.Blur()
+	ef.teardownScriptInput.Blur()
 }
 
 func (ef *editProjectFormModel) focusCurrent() {
@@ -334,6 +350,10 @@ func (ef *editProjectFormModel) focusCurrent() {
 		ef.baseBranchInput.Focus()
 	case 2:
 		ef.fastWTInput.Focus()
+	case 3:
+		ef.startupScriptInput.Focus()
+	case 4:
+		ef.teardownScriptInput.Focus()
 	}
 }
 
@@ -345,6 +365,8 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	} else {
 		ef.fastWTInput.SetValue("")
 	}
+	ef.startupScriptInput.SetValue(p.StartupScript)
+	ef.teardownScriptInput.SetValue(p.TeardownScript)
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -983,6 +1005,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 		case 2:
 			m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+		case 3:
+			m.editProjectForm.startupScriptInput, cmd = m.editProjectForm.startupScriptInput.Update(msg)
+		case 4:
+			m.editProjectForm.teardownScriptInput, cmd = m.editProjectForm.teardownScriptInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1528,11 +1554,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedProj = nil
 		return m, nil
 	case "tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 3
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 5
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 2) % 3
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 4) % 5
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "enter":
@@ -1543,6 +1569,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		baseBranch := m.editProjectForm.baseBranchInput.Value()
 		fastWTStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.fastWTInput.Value()))
 		useFastWT := fastWTStr == "yes" || fastWTStr == "true" || fastWTStr == "y"
+		startupScript := strings.TrimSpace(m.editProjectForm.startupScriptInput.Value())
+		teardownScript := strings.TrimSpace(m.editProjectForm.teardownScriptInput.Value())
 		projName := m.selectedProj.Name
 		alreadyHasFastWT := m.selectedProj.UseFastWorktrees && m.selectedProj.FastWorktreePath != ""
 		m.editProjectForm.blurAll()
@@ -1551,7 +1579,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript)
 	}
 
 	var cmd tea.Cmd
@@ -1562,6 +1590,10 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editProjectForm.baseBranchInput, cmd = m.editProjectForm.baseBranchInput.Update(msg)
 	case 2:
 		m.editProjectForm.fastWTInput, cmd = m.editProjectForm.fastWTInput.Update(msg)
+	case 3:
+		m.editProjectForm.startupScriptInput, cmd = m.editProjectForm.startupScriptInput.Update(msg)
+	case 4:
+		m.editProjectForm.teardownScriptInput, cmd = m.editProjectForm.teardownScriptInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -2162,7 +2194,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
@@ -2186,6 +2218,8 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool) t
 			}
 			p.DefaultBaseBranch = baseBranch
 			p.UseFastWorktrees = useFastWT
+			p.StartupScript = startupScript
+			p.TeardownScript = teardownScript
 			if needsImport {
 				p.SetupStatus = project.SetupStatusSettingUp
 			}

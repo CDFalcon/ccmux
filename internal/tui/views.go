@@ -691,6 +691,8 @@ func renderEditProjectView(m model) string {
 		{"Path:", m.editProjectForm.pathInput.View()},
 		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
 		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
+		{"Startup script:", m.editProjectForm.startupScriptInput.View()},
+		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 	}
 
 	for i, f := range fields {
