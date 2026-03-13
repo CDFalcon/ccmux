@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
-	"github.com/CDFalcon/ccmux/internal/repo"
 )
 
 func newTestModel() model {
@@ -231,8 +231,8 @@ func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T)
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewSelectRepo {
-		t.Errorf("expected ViewSelectRepo, got %d", rm.view)
+	if rm.view != ViewSelectProject {
+		t.Errorf("expected ViewSelectProject, got %d", rm.view)
 	}
 }
 
@@ -311,9 +311,9 @@ func TestHandleKeyPress_ShouldShowHelp_GivenF1OnNonInputView(t *testing.T) {
 	}
 }
 
-func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectRepoView(t *testing.T) {
+func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.T) {
 	// Setup/Execute.
-	footer := helpFooter(ViewSelectRepo)
+	footer := helpFooter(ViewSelectProject)
 
 	// Assert.
 	expected := "[↑/↓/j/k] select  [enter] choose  [esc] back  [F1] help"
@@ -322,54 +322,54 @@ func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectRepoView(t *testing.T) 
 	}
 }
 
-func TestHandleAddRepoPathKeys_ShouldCreateRepo_GivenEnterWithPathNoProjInstalled(t *testing.T) {
+func TestHandleAddProjectPathKeys_ShouldCreateProject_GivenEnterWithPathNoProjInstalled(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewAddRepoPath
-	m.newRepoName = "test-proj"
-	m.repoForm = newRepoForm()
-	m.repoForm.pathInput.SetValue("/some/path")
+	m.view = ViewAddProjectPath
+	m.newProjectName = "test-proj"
+	m.projectForm = newProjectForm()
+	m.projectForm.pathInput.SetValue("/some/path")
 
 	// Execute.
-	result, _ := m.handleAddRepoPathKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	result, _ := m.handleAddProjectPathKeys(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Assert.
 	rm := result.(model)
-	if rm.newRepoPath != "/some/path" {
-		t.Errorf("expected path '/some/path', got '%s'", rm.newRepoPath)
+	if rm.newProjectPath != "/some/path" {
+		t.Errorf("expected path '/some/path', got '%s'", rm.newProjectPath)
 	}
 }
 
-func TestHandleAddRepoFastWTKeys_ShouldGoBack_GivenEsc(t *testing.T) {
+func TestHandleAddProjectFastWTKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewAddRepoFastWT
-	m.repoForm = newRepoForm()
+	m.view = ViewAddProjectFastWT
+	m.projectForm = newProjectForm()
 
 	// Execute.
-	result, _ := m.handleAddRepoFastWTKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	result, _ := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyEsc})
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewAddRepoPath {
-		t.Errorf("expected ViewAddRepoPath, got %d", rm.view)
+	if rm.view != ViewAddProjectPath {
+		t.Errorf("expected ViewAddProjectPath, got %d", rm.view)
 	}
 }
 
-func TestHandleAddRepoFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T) {
+func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewAddRepoFastWT
-	m.newRepoName = "test"
-	m.newRepoPath = "/some/path"
+	m.view = ViewAddProjectFastWT
+	m.newProjectName = "test"
+	m.newProjectPath = "/some/path"
 
 	// Execute.
-	result, cmd := m.handleAddRepoFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	result, cmd := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewManageRepos {
-		t.Errorf("expected ViewManageRepos, got %d", rm.view)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
 	}
 	if _, ok := rm.projSetupBuffers["test"]; !ok {
 		t.Error("expected projSetupBuffers to contain buffer for 'test'")
@@ -379,26 +379,26 @@ func TestHandleAddRepoFastWTKeys_ShouldGoToManageProjects_GivenYes(t *testing.T)
 	}
 }
 
-func TestHandleAddRepoFastWTKeys_ShouldGoToManageProjects_GivenNo(t *testing.T) {
+func TestHandleAddProjectFastWTKeys_ShouldGoToManageProjects_GivenNo(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewAddRepoFastWT
-	m.newRepoName = "test"
-	m.newRepoPath = "/some/path"
+	m.view = ViewAddProjectFastWT
+	m.newProjectName = "test"
+	m.newProjectPath = "/some/path"
 
 	// Execute.
-	result, _ := m.handleAddRepoFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	result, _ := m.handleAddProjectFastWTKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewManageRepos {
-		t.Errorf("expected ViewManageRepos, got %d", rm.view)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
 	}
 }
 
 func TestHelpFooter_ShouldIncludeYesNo_GivenFastWTView(t *testing.T) {
 	// Setup/Execute.
-	footer := helpFooter(ViewAddRepoFastWT)
+	footer := helpFooter(ViewAddProjectFastWT)
 
 	// Assert.
 	if !strings.Contains(footer, "[y]es") {
@@ -421,8 +421,8 @@ func TestHandleProjImportingKeys_ShouldGoBack_GivenEsc(t *testing.T) {
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewManageRepos {
-		t.Errorf("expected ViewManageRepos, got %d", rm.view)
+	if rm.view != ViewManageProjects {
+		t.Errorf("expected ViewManageProjects, got %d", rm.view)
 	}
 	if rm.projSetupName != "" {
 		t.Errorf("expected projSetupName cleared, got '%s'", rm.projSetupName)
@@ -512,40 +512,40 @@ func TestHelpFooter_ShouldIncludeEscBack_GivenProjImportingView(t *testing.T) {
 	}
 }
 
-func TestHandleSelectRepoKeys_ShouldRejectSettingUpRepo_GivenEnter(t *testing.T) {
+func TestHandleSelectProjectKeys_ShouldRejectSettingUpProject_GivenEnter(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewSelectRepo
-	m.repos = []*repo.Repo{
-		{Name: "test", Path: "/test", SetupStatus: repo.SetupStatusSettingUp},
+	m.view = ViewSelectProject
+	m.projects = []*project.Project{
+		{Name: "test", Path: "/test", SetupStatus: project.SetupStatusSettingUp},
 	}
 	m.selectedIndex = 0
 
 	// Execute.
-	result, _ := m.handleSelectRepoKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	result, _ := m.handleSelectProjectKeys(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Assert.
 	rm := result.(model)
 	if rm.err == nil {
 		t.Error("expected error when selecting a setting-up project")
 	}
-	if rm.view != ViewSelectRepo {
-		t.Errorf("expected to stay on ViewSelectRepo, got %d", rm.view)
+	if rm.view != ViewSelectProject {
+		t.Errorf("expected to stay on ViewSelectProject, got %d", rm.view)
 	}
 }
 
 func TestHandleManageProjectsKeys_ShouldShowImportLog_GivenEnterOnSettingUpProject(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewManageRepos
-	m.repos = []*repo.Repo{
-		{Name: "test", Path: "/test", SetupStatus: repo.SetupStatusSettingUp},
+	m.view = ViewManageProjects
+	m.projects = []*project.Project{
+		{Name: "test", Path: "/test", SetupStatus: project.SetupStatusSettingUp},
 	}
 	m.selectedIndex = 0
 	m.projSetupBuffers["test"] = &projImportBuffer{}
 
 	// Execute.
-	result, _ := m.handleManageReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	result, _ := m.handleManageProjectsKeys(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Assert.
 	rm := result.(model)
@@ -560,20 +560,20 @@ func TestHandleManageProjectsKeys_ShouldShowImportLog_GivenEnterOnSettingUpProje
 func TestHandleManageProjectsKeys_ShouldEditProject_GivenEnterOnReadyProject(t *testing.T) {
 	// Setup.
 	m := newTestModel()
-	m.view = ViewManageRepos
-	m.repos = []*repo.Repo{
+	m.view = ViewManageProjects
+	m.projects = []*project.Project{
 		{Name: "test", Path: "/test"},
 	}
 	m.selectedIndex = 0
-	m.editRepoForm = newEditRepoForm()
+	m.editProjectForm = newEditProjectForm()
 
 	// Execute.
-	result, _ := m.handleManageReposKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	result, _ := m.handleManageProjectsKeys(tea.KeyMsg{Type: tea.KeyEnter})
 
 	// Assert.
 	rm := result.(model)
-	if rm.view != ViewEditRepo {
-		t.Errorf("expected ViewEditRepo, got %d", rm.view)
+	if rm.view != ViewEditProject {
+		t.Errorf("expected ViewEditProject, got %d", rm.view)
 	}
 }
 
@@ -967,9 +967,9 @@ func TestHandleNewTaskInputKeys_ShouldSkipPromptSelection_GivenNoMatchingPrompts
 	m := newTestModel()
 	m.view = ViewNewTaskInput
 	m.taskInput.SetValue("do something")
-	m.selectedRepo = &repo.Repo{Name: "my-proj"}
+	m.selectedProj = &project.Project{Name: "my-proj"}
 	m.prompts = []*prompt.Prompt{
-		{ID: "1", Name: "other", RepoNames: []string{"other-proj"}},
+		{ID: "1", Name: "other", ProjectNames: []string{"other-proj"}},
 	}
 
 	// Execute.

@@ -43,7 +43,7 @@ func queryAllAgentResources(
 	totalMemKB int64,
 	clkTck int64,
 	prevCPUTicks map[int]int64,
-	fastWTRepos map[string]bool,
+	fastWTProjects map[string]bool,
 ) (map[string]*AgentResources, map[int]int64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
@@ -66,7 +66,7 @@ func queryAllAgentResources(
 	for _, a := range agents {
 		if a.WorktreePath != "" {
 			wg.Add(1)
-			isFastWT := fastWTRepos[a.RepoName]
+			isFastWT := fastWTProjects[a.ProjectName]
 			go func(id, path string, fastWT bool) {
 				defer wg.Done()
 				if fastWT {

@@ -238,25 +238,25 @@ func TestUpdate_ShouldUpdateTimestamp_GivenModification(t *testing.T) {
 	}
 }
 
-func TestAppliesToRepo_ShouldReturnTrue_GivenNoRepoNames(t *testing.T) {
+func TestAppliesToProject_ShouldReturnTrue_GivenNoProjectNames(t *testing.T) {
 	// Setup.
 	p := &Prompt{Name: "global", Content: "content"}
 
 	// Execute.
-	result := p.AppliesToRepo("any-repo")
+	result := p.AppliesToProject("any-project")
 
 	// Assert.
 	if !result {
-		t.Error("expected prompt with no repo names to apply to any project")
+		t.Error("expected prompt with no project names to apply to any project")
 	}
 }
 
-func TestAppliesToRepo_ShouldReturnTrue_GivenMatchingRepo(t *testing.T) {
+func TestAppliesToProject_ShouldReturnTrue_GivenMatchingProject(t *testing.T) {
 	// Setup.
-	p := &Prompt{Name: "scoped", Content: "content", RepoNames: []string{"proj-a", "proj-b"}}
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a", "proj-b"}}
 
 	// Execute.
-	result := p.AppliesToRepo("proj-b")
+	result := p.AppliesToProject("proj-b")
 
 	// Assert.
 	if !result {
@@ -264,12 +264,12 @@ func TestAppliesToRepo_ShouldReturnTrue_GivenMatchingRepo(t *testing.T) {
 	}
 }
 
-func TestAppliesToRepo_ShouldReturnFalse_GivenNonMatchingRepo(t *testing.T) {
+func TestAppliesToProject_ShouldReturnFalse_GivenNonMatchingProject(t *testing.T) {
 	// Setup.
-	p := &Prompt{Name: "scoped", Content: "content", RepoNames: []string{"proj-a"}}
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a"}}
 
 	// Execute.
-	result := p.AppliesToRepo("proj-c")
+	result := p.AppliesToProject("proj-c")
 
 	// Assert.
 	if result {
@@ -277,11 +277,11 @@ func TestAppliesToRepo_ShouldReturnFalse_GivenNonMatchingRepo(t *testing.T) {
 	}
 }
 
-func TestAdd_ShouldPersistRepoNames_GivenScopedPrompt(t *testing.T) {
+func TestAdd_ShouldPersistProjectNames_GivenScopedPrompt(t *testing.T) {
 	// Setup.
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
-	p := &Prompt{Name: "scoped", Content: "content", RepoNames: []string{"proj-a", "proj-b"}}
+	p := &Prompt{Name: "scoped", Content: "content", ProjectNames: []string{"proj-a", "proj-b"}}
 
 	// Execute.
 	err := store.Add(p)
@@ -291,11 +291,11 @@ func TestAdd_ShouldPersistRepoNames_GivenScopedPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	retrieved, _ := store.Get(p.ID)
-	if len(retrieved.RepoNames) != 2 {
-		t.Fatalf("expected 2 repo names, got %d", len(retrieved.RepoNames))
+	if len(retrieved.ProjectNames) != 2 {
+		t.Fatalf("expected 2 project names, got %d", len(retrieved.ProjectNames))
 	}
-	if retrieved.RepoNames[0] != "proj-a" || retrieved.RepoNames[1] != "proj-b" {
-		t.Errorf("expected repo names [proj-a, proj-b], got %v", retrieved.RepoNames)
+	if retrieved.ProjectNames[0] != "proj-a" || retrieved.ProjectNames[1] != "proj-b" {
+		t.Errorf("expected project names [proj-a, proj-b], got %v", retrieved.ProjectNames)
 	}
 }
 

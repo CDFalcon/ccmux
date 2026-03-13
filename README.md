@@ -10,7 +10,7 @@
 
 # ccmux — Colby's Claude MUltipleXer
 
-A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git repos.
+A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
 When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up.
 
@@ -56,9 +56,9 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 1. **Start a session:** `ccmux` (or `ccmux <name>` for a named session).
 
-2. **Register a repo:** Press `r` to open repo management, then `a` to add a git repository.
+2. **Register a project:** Press `p` to open project management, then `a` to add a git repository.
 
-3. **Spawn an agent:** Press `n`, select a repo and base branch, describe the task. ccmux creates a worktree and launches Claude Code.
+3. **Spawn an agent:** Press `n`, select a project and base branch, describe the task. ccmux creates a worktree and launches Claude Code.
 
 4. **Monitor and work the queue:** As agents work, items appear in the quick action queue. Press `q` to pop the top item and take action:
 
