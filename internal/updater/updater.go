@@ -34,17 +34,13 @@ const repo = "colby-duke-ai/ccmux"
 func CheckForUpdate(beta bool) (latestVersion string, hasUpdate bool, err error) {
 	var cmd *exec.Cmd
 	if beta {
-		cmd = exec.Command("gh", "release", "list",
-			"--repo", repo,
-			"--json", "tagName",
-			"--limit", "1",
-			"-q", ".[0].tagName")
+		cmd = exec.Command("gh", "api",
+			fmt.Sprintf("repos/%s/releases", repo),
+			"--jq", ".[0].tag_name")
 	} else {
-		cmd = exec.Command("gh", "release", "list",
-			"--repo", repo,
-			"--json", "tagName,isPrerelease",
-			"--limit", "50",
-			"-q", `[.[] | select(.isPrerelease == false)][0].tagName`)
+		cmd = exec.Command("gh", "api",
+			fmt.Sprintf("repos/%s/releases/latest", repo),
+			"--jq", ".tag_name")
 	}
 	output, err := cmd.Output()
 	if err != nil {
