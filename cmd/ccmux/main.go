@@ -789,7 +789,9 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
 	}
 
@@ -859,7 +861,9 @@ func killSessionCmd() *cobra.Command {
 				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 			}
 
@@ -952,7 +956,9 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 		agentStore.Delete(a.ID)
 	}
@@ -963,7 +969,9 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-prompts.txt"))
 		agentStore.Delete(id)
 	}
