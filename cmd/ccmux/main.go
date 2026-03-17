@@ -393,22 +393,36 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-cat > .claude/settings.json << SETTINGSEOF
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGSEOF
+CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+
+if [ -f .claude/settings.json ]; then
+  EXISTING=$(cat .claude/settings.json)
+  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
+  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+else
+  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+fi
+
+# Prevent ccmux hook files from being committed
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
+mkdir -p "$GIT_COMMON_DIR/info"
+STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
+
+if [ -z "$STOP_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$SETTINGS_TRACKED" ]; then
+  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/settings.json
+fi
+
 echo "✓ Hooks installed"
 echo ""
 
@@ -1072,22 +1086,35 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-cat > .claude/settings.json << SETTINGSEOF
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGSEOF
+CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+
+if [ -f .claude/settings.json ]; then
+  EXISTING=$(cat .claude/settings.json)
+  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
+  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+else
+  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+fi
+
+# Prevent ccmux hook files from being committed
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
+mkdir -p "$GIT_COMMON_DIR/info"
+STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
+
+if [ -z "$STOP_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$SETTINGS_TRACKED" ]; then
+  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/settings.json
+fi
 
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
