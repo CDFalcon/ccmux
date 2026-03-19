@@ -548,6 +548,7 @@ type ciCheckResultMsg struct {
 	completed        int
 	total            int
 	hasMergeConflict bool
+	hasNewReview     bool
 }
 
 type ciStatus int
@@ -886,7 +887,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !checked || time.Since(lastCheck) >= ciPollInterval {
 						m.ciChecking[a.ID] = true
 						m.ciLastChecked[a.ID] = time.Now()
-						cmds = append(cmds, checkPRChecksCmd(a.ID, a.PRURL, a.WorktreePath))
+						cmds = append(cmds, checkPRChecksCmd(a.ID, a.PRURL, a.WorktreePath, a.CIWaitAt))
 					}
 				}
 			}
@@ -929,6 +930,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				delete(m.ciCheckProgress, msg.agentID)
 				return m, m.resumeAgentForMergeConflictCmd(currentAgent)
+			}
+		}
+		if msg.hasNewReview {
+			if currentAgent != nil {
+				if wasWaitingReview {
+					m.queueManager.RemoveByAgentAndType(msg.agentID, queue.ItemTypePRReady)
+				}
+				delete(m.ciCheckProgress, msg.agentID)
+				return m, m.resumeAgentForNewReviewCmd(currentAgent, msg.prURL)
 			}
 		}
 		switch msg.status {
@@ -2730,7 +2740,7 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 	return ciStatusPassed, nil, completed, total
 }
 
-func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
+func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) tea.Cmd {
 	return func() tea.Msg {
 		owner, repo, prNumber, err := parsePRURL(prURL)
 		if err != nil {
@@ -2753,10 +2763,13 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 
 		hasMergeConflict := resp.Mergeable == "CONFLICTING"
 
-		// If statusCheckRollup is null (not just empty), this repo has no CI checks configured.
-		// Treat as passed rather than waiting indefinitely.
+		hasNewReview := false
+		if !ciWaitAt.IsZero() {
+			hasNewReview = checkForNewReviews(ctx, owner, repo, prNumber, ciWaitAt)
+		}
+
 		if resp.StatusCheckRollup == nil {
-			return ciCheckResultMsg{agentID: agentID, status: ciStatusPassed, prURL: prURL, hasMergeConflict: hasMergeConflict}
+			return ciCheckResultMsg{agentID: agentID, status: ciStatusPassed, prURL: prURL, hasMergeConflict: hasMergeConflict, hasNewReview: hasNewReview}
 		}
 
 		status, failedNames, completed, total := evaluateCIChecks(resp.StatusCheckRollup)
@@ -2765,8 +2778,35 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string) tea.Cmd {
 			summary = fmt.Sprintf("CI checks failed: %s", strings.Join(failedNames, ", "))
 		}
 
-		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total, hasMergeConflict: hasMergeConflict}
+		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total, hasMergeConflict: hasMergeConflict, hasNewReview: hasNewReview}
 	}
+}
+
+type prReview struct {
+	SubmittedAt time.Time `json:"submittedAt"`
+	State       string    `json:"state"`
+}
+
+func checkForNewReviews(ctx context.Context, owner, repo, prNumber string, since time.Time) bool {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "reviews")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	var resp struct {
+		Reviews []prReview `json:"reviews"`
+	}
+	if err := json.Unmarshal(output, &resp); err != nil {
+		return false
+	}
+
+	for _, review := range resp.Reviews {
+		if review.SubmittedAt.After(since) {
+			return true
+		}
+	}
+	return false
 }
 
 func getPRTitleFromURL(prURL string) string {
@@ -2927,6 +2967,36 @@ func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to resolve merge conflicts", agentID)}
+	}
+}
+
+func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd {
+	agentID := a.ID
+	worktreePath := a.WorktreePath
+	tmuxWindow := a.TmuxWindow
+	return func() tea.Msg {
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusRunning
+		})
+
+		m.queueManager.RemoveByAgent(agentID)
+
+		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL)
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
+		}
+
+		m.tmuxManager.KillWindow(tmuxWindow)
+		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		if err != nil {
+			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
+		}
+
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.TmuxWindow = newWindowID
+		})
+
+		return successMsg{fmt.Sprintf("Agent %s resumed to address new PR review", agentID)}
 	}
 }
 

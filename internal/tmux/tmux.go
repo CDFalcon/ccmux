@@ -207,6 +207,7 @@ func (m *Manager) DisableSessionRemainOnExit() {
 	exec.Command("tmux", "set-option", "-t", m.sessionName, "remain-on-exit", "off").Run()
 }
 
+
 func (m *Manager) SetPaneRemainOnExit(windowID string) {
 	exec.Command("tmux", "set-option", "-p", "-t", windowID, "remain-on-exit", "on").Run()
 }

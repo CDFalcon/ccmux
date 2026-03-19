@@ -158,6 +158,7 @@ func TestNewWindow_ShouldNotInheritRemainOnExit_GivenSessionLevelRemainOnExit(t 
 	}
 }
 
+
 func TestCreateWindow_ShouldSetRemainOnExitOnPane_GivenAgentWindow(t *testing.T) {
 	skipIfNoTmux(t)
 
