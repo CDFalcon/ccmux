@@ -28,6 +28,7 @@ import (
 const defaultSessionID = "default"
 
 func main() {
+	fmt.Println("ccmux starting up")
 	logging.Init()
 	defer logging.Close()
 
