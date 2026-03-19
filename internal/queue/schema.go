@@ -9,6 +9,7 @@ type ItemType string
 const (
 	ItemTypePRReady ItemType = "pr_ready"
 	ItemTypeIdle    ItemType = "idle"
+	ItemTypeDead    ItemType = "dead"
 )
 
 type QueueItem struct {

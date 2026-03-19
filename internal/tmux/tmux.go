@@ -57,6 +57,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	}
 	m.ForwardEnv()
 	m.SourceUserConfig()
+	m.DisableSessionRemainOnExit()
 	m.SetupAgentNavigation()
 	m.SetPaneRemainOnExit(m.FirstWindowTarget())
 	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
@@ -194,12 +195,18 @@ func (m *Manager) RenameWindow(windowID, name string) error {
 
 func (m *Manager) EnsureRemainOnExit() {
 	m.RemoveRemainOnExitHook()
+	m.DisableSessionRemainOnExit()
 	m.SetPaneRemainOnExit(m.FirstWindowTarget())
 }
 
 func (m *Manager) RemoveRemainOnExitHook() {
 	exec.Command("tmux", "set-hook", "-u", "-t", m.sessionName, "after-new-window").Run()
 }
+
+func (m *Manager) DisableSessionRemainOnExit() {
+	exec.Command("tmux", "set-option", "-t", m.sessionName, "remain-on-exit", "off").Run()
+}
+
 
 func (m *Manager) SetPaneRemainOnExit(windowID string) {
 	exec.Command("tmux", "set-option", "-p", "-t", windowID, "remain-on-exit", "on").Run()
@@ -220,6 +227,15 @@ func (m *Manager) SetupAgentNavigation() {
 		baseIdx,
 	)
 	exec.Command("tmux", "set-option", "-t", m.sessionName, "status-right", statusFmt).Run()
+}
+
+func (m *Manager) IsPaneDead(windowID string) (bool, error) {
+	cmd := exec.Command("tmux", "display-message", "-t", windowID, "-p", "#{pane_dead}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to check pane status: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)) == "1", nil
 }
 
 func (m *Manager) RespawnDeadPane(windowID, command string) error {

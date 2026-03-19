@@ -316,7 +316,7 @@ func TestHelpFooter_ShouldMatchExpectedFormat_GivenSelectProjectView(t *testing.
 	footer := helpFooter(ViewSelectProject)
 
 	// Assert.
-	expected := "[↑/↓/j/k] select  [enter] choose  [esc] back  [F1] help"
+	expected := "[↑/↓/j/k] select  [/] search  [enter] choose  [esc] back  [F1] help"
 	if footer != expected {
 		t.Errorf("expected '%s', got '%s'", expected, footer)
 	}

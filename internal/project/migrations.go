@@ -45,4 +45,7 @@ func init() {
 		store.Version = 4
 		return json.Marshal(store)
 	})
+	migrations.Register(4, func(data []byte) ([]byte, error) {
+		return data, nil
+	})
 }

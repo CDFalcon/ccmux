@@ -1,6 +1,6 @@
 package project
 
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 5
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -11,6 +11,8 @@ type Project struct {
 	DefaultBaseBranch string `json:"default_base_branch,omitempty"`
 	UseFastWorktrees  bool   `json:"use_fast_worktrees,omitempty"`
 	SetupStatus       string `json:"setup_status,omitempty"`
+	StartupScript     string `json:"startup_script,omitempty"`
+	TeardownScript    string `json:"teardown_script,omitempty"`
 }
 
 func (p *Project) IsSettingUp() bool {

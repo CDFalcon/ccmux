@@ -107,31 +107,37 @@ func renderMainView(m model) string {
 		b.WriteString(dimStyle.Render("  No agents running"))
 		b.WriteString("\n")
 	} else {
-		for _, a := range m.agents {
+		for i, a := range m.agents {
+			var prefix string
+			if i < 9 {
+				prefix = dimStyle.Render(fmt.Sprintf("[%d]", i+1)) + " "
+			} else {
+				prefix = "    "
+			}
 			statsStr := formatAgentOneLiner(m.agentResources[a.ID])
 
 			if a.Status == agent.StatusCleaningUp {
 				spin := styledSpinner(m.spinnerFrame, agentCleaningUpStyle)
 				status := agentCleaningUpStyle.Render("cleaning up")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusKilling {
 				spin := styledSpinner(m.spinnerFrame, agentKillingStyle)
 				status := agentKillingStyle.Render("killing")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusSpawning {
 				spin := styledSpinner(m.spinnerFrame, agentSpawningStyle)
 				status := agentSpawningStyle.Render("spawning")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusRunning {
 				spin := styledSpinner(m.spinnerFrame, agentRunningStyle)
 				status := agentRunningStyle.Render("running")
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, spin, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusWaitingCI {
@@ -142,12 +148,12 @@ func renderMainView(m model) string {
 					ciLabel = fmt.Sprintf("waiting on CI - %d/%d checks left", remaining, p.Total)
 				}
 				status := agentWaitingCIStyle.Render(ciLabel)
-				line := fmt.Sprintf("  %s %s: %s [%s]%s", icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			} else {
 				status := renderAgentStatus(a.Status)
-				line := fmt.Sprintf("  - %s: %s [%s]%s", a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
+				line := fmt.Sprintf("%s- %s: %s [%s]%s", prefix, a.ID, truncate(a.Task, MaxTaskDisplayLen), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
 			}
@@ -214,11 +220,20 @@ func renderSelectProjectView(m model) string {
 	b.WriteString(titleStyle.Render("# Select Project"))
 	b.WriteString("\n\n")
 
-	if len(m.projects) == 0 {
-		b.WriteString(dimStyle.Render("No projects registered"))
+	b.WriteString("Search:\n")
+	b.WriteString(inputStyle.Render(m.projectFilter.View()))
+	b.WriteString("\n\n")
+
+	projects := m.visibleProjects()
+	if len(projects) == 0 {
+		if m.projectFilter.Value() != "" {
+			b.WriteString(dimStyle.Render("No matching projects"))
+		} else {
+			b.WriteString(dimStyle.Render("No projects registered"))
+		}
 		b.WriteString("\n\n")
 	} else {
-		for i, p := range m.projects {
+		for i, p := range projects {
 			style := queueItemStyle
 			if i == m.selectedIndex {
 				style = selectedItemStyle
@@ -508,8 +523,8 @@ func renderConfirmKillView(m model) string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(truncate(m.confirmKillAgent.Task, MaxTaskDisplayLen)))
 		b.WriteString("\n\n")
-		b.WriteString("Press [y] to confirm or [esc] to go back.\n\n")
-		help := "[y]es  [esc] back  [F1] help"
+		b.WriteString("Press [y] to kill, [r] to restart (resume with --continue), or [esc] to go back.\n\n")
+		help := "[y]es  [r]estart  [esc] back  [F1] help"
 		b.WriteString(renderFooter(help, m.ctrlCPressed))
 	} else {
 		b.WriteString(renderAgentSelector(m, "No agents to kill"))
@@ -566,6 +581,12 @@ func renderManageProjectsView(m model) string {
 					fastWtStatus = "yes (proj)"
 				}
 				b.WriteString(fmt.Sprintf("  Fast worktrees: %s\n", dimStyle.Render(fastWtStatus)))
+				if selected.StartupScript != "" {
+					b.WriteString(fmt.Sprintf("  Startup:        %s\n", dimStyle.Render(selected.StartupScript)))
+				}
+				if selected.TeardownScript != "" {
+					b.WriteString(fmt.Sprintf("  Teardown:       %s\n", dimStyle.Render(selected.TeardownScript)))
+				}
 				b.WriteString("\n")
 			}
 		}
@@ -691,6 +712,8 @@ func renderEditProjectView(m model) string {
 		{"Path:", m.editProjectForm.pathInput.View()},
 		{"Default base branch:", m.editProjectForm.baseBranchInput.View()},
 		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
+		{"Startup script:", m.editProjectForm.startupScriptInput.View()},
+		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 	}
 
 	for i, f := range fields {
@@ -789,6 +812,8 @@ func getItemIcon(itemType queue.ItemType) string {
 		return "🔀"
 	case queue.ItemTypeIdle:
 		return "💤"
+	case queue.ItemTypeDead:
+		return "🛑"
 	default:
 		return "•"
 	}

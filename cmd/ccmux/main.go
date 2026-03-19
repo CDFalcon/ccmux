@@ -246,7 +246,7 @@ func spawnCmd() *cobra.Command {
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent, proj.StartupScript)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -293,7 +293,7 @@ func spawnCmd() *cobra.Command {
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -394,22 +394,36 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-cat > .claude/settings.json << SETTINGSEOF
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGSEOF
+CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+
+if [ -f .claude/settings.json ]; then
+  EXISTING=$(cat .claude/settings.json)
+  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
+  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+else
+  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+fi
+
+# Prevent ccmux hook files from being committed
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
+mkdir -p "$GIT_COMMON_DIR/info"
+STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
+
+if [ -z "$STOP_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$SETTINGS_TRACKED" ]; then
+  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/settings.json
+fi
+
 echo "✓ Hooks installed"
 echo ""
 
@@ -430,6 +444,14 @@ WINDOW_ID=$(tmux display-message -p '#{window_id}')
 ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH" --branch="$BRANCH_NAME" --base="$BASE_BRANCH" --window="$WINDOW_ID"
 echo "✓ Agent registered"
 echo ""
+
+STARTUP_SCRIPT="%s"
+if [ -n "$STARTUP_SCRIPT" ] && [ -f "$STARTUP_SCRIPT" ]; then
+  echo "→ Running startup script: $STARTUP_SCRIPT"
+  bash "$STARTUP_SCRIPT"
+  echo "✓ Startup script completed"
+  echo ""
+fi
 
 echo -e "${DIM}Starting Claude Code...${RESET}"
 echo ""
@@ -469,7 +491,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, promptsFilePath(agentID))
+`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, startupScript, promptsFilePath(agentID))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -760,6 +782,8 @@ func doCleanup(agentID, action string) error {
 		return err
 	}
 
+	runTeardownScript(a.ProjectName)
+
 	tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
@@ -781,7 +805,9 @@ func doCleanup(agentID, action string) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, agentID+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
 	}
 
@@ -789,6 +815,30 @@ func doCleanup(agentID, action string) error {
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
+}
+
+func runTeardownScript(projectName string) {
+	if projectName == "" {
+		return
+	}
+	projectStore, err := project.NewStore()
+	if err != nil {
+		return
+	}
+	proj, err := projectStore.Get(projectName)
+	if err != nil || proj.TeardownScript == "" {
+		return
+	}
+	if _, err := os.Stat(proj.TeardownScript); err != nil {
+		return
+	}
+	fmt.Printf("Running teardown script: %s\n", proj.TeardownScript)
+	cmd := exec.Command("bash", proj.TeardownScript)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: teardown script failed: %v\n", err)
+	}
 }
 
 func killSessionCmd() *cobra.Command {
@@ -827,7 +877,9 @@ func killSessionCmd() *cobra.Command {
 				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
+				os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
 				os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 			}
 
@@ -920,7 +972,9 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
 		agentStore.Delete(a.ID)
 	}
@@ -931,7 +985,9 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-ci-check.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-ci-fix.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-merge-conflict.sh"))
+		os.Remove(filepath.Join(launcherDir, id+"-restart.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-prompts.txt"))
 		agentStore.Delete(id)
 	}
@@ -1032,22 +1088,35 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-cat > .claude/settings.json << SETTINGSEOF
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGSEOF
+CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+
+if [ -f .claude/settings.json ]; then
+  EXISTING=$(cat .claude/settings.json)
+  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
+  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+else
+  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+fi
+
+# Prevent ccmux hook files from being committed
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
+mkdir -p "$GIT_COMMON_DIR/info"
+STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
+
+if [ -z "$STOP_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$SETTINGS_TRACKED" ]; then
+  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/settings.json
+fi
 
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE

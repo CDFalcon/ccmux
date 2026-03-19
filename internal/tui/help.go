@@ -49,6 +49,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewMain: {
 		{FooterText: "[q]uick action", Description: "Pop and act on the next quick action in the queue (e.g. PR review)"},
 		{FooterText: "[n]ew task", Description: "Spawn a new Claude agent"},
+		{FooterText: "[1-9] jump to agent", Description: "Jump directly to the numbered agent's tmux window"},
 		{FooterText: "[i]nfo on agent", Description: "View agent details and jump to its tmux window"},
 		{FooterText: "[k]ill agent", Description: "Terminate a running agent"},
 		{FooterText: "[p]rompts", Description: "Manage custom agent prompts"},
@@ -58,8 +59,9 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewSelectProject: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
+		{FooterText: "[/] search", Description: "Filter projects by name"},
 		{FooterText: "[enter] choose", Description: "Choose the selected project"},
-		{FooterText: "[esc] back", Description: "Return to main view"},
+		{FooterText: "[esc] back", Description: "Return to main view or clear search"},
 	},
 	ViewNewTaskBranch: {
 		{FooterText: "[↑/↓] select", Description: "Navigate the branch list"},
@@ -101,7 +103,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewConfirmKill: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the agent list"},
-		{FooterText: "[enter] select", Description: "Select agent to kill (shows confirmation)"},
+		{FooterText: "[enter] select", Description: "Select agent to kill or restart (shows confirmation)"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
 	ViewManageProjects: {
