@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/logging"
@@ -629,6 +630,7 @@ func ciWaitCmd() *cobra.Command {
 			return agentStore.Update(agentID, func(a *agent.Agent) {
 				a.Status = agent.StatusWaitingCI
 				a.PRURL = prURL
+				a.CIWaitAt = time.Now()
 			})
 		},
 	}

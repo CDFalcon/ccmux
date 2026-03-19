@@ -53,6 +53,7 @@ type Agent struct {
 	BaseBranch   string    `json:"base_branch"`
 	TmuxWindow   string    `json:"tmux_window"`
 	PRURL        string    `json:"pr_url,omitempty"`
+	CIWaitAt     time.Time `json:"ci_wait_at,omitempty"`
 	Status       Status    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
