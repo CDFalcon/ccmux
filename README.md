@@ -12,7 +12,7 @@
 
 A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
-When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up.
+When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up. Agents will be automatically notified when their PRs fail CI, have merge conflicts, or receive merge conflicts. Users will only be notified to review PRs which are fully ready to merge.
 
 ccmux is designed to not interfere with users' current Claude Code setups. Spawned agents will respect existing Claude .MD's and additional agent prompting is kept to a minimum.
 
@@ -63,4 +63,4 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 4. **Monitor and work the queue:** As agents work, items appear in the quick action queue. Press `q` to pop the top item and take action:
 
    - 💤 **Idle** — agent's terminal has gone quiet (may be stuck). Jump in to check on it or send it a message.
-   - 🔀 **PR Ready** — agent opened a pull request. [`a`]ccept (cleanup agent and worktree), `c`omment (resume agent to address feedback), `r`eject (close PR + cleanup), or `b`rowser (open PR in browser).
+   - 🔀 **PR Ready** — agent opened a pull request. `a`ccept (cleanup agent and worktree), `c`omment (resume agent to address feedback), `r`eject (close PR + cleanup), or `b`rowser (open PR in browser).
