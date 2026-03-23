@@ -549,6 +549,7 @@ type ciCheckResultMsg struct {
 	total            int
 	hasMergeConflict bool
 	hasNewReview     bool
+	isMerged         bool
 }
 
 type ciStatus int
@@ -911,6 +912,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.ciChecking, msg.agentID)
 		if msg.err != nil {
 			return m, nil
+		}
+
+		if msg.isMerged {
+			m.queueManager.RemoveByAgent(msg.agentID)
+			delete(m.ciCheckProgress, msg.agentID)
+			m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusMerged
+			})
+			agentID := msg.agentID
+			return m, func() tea.Msg {
+				go func() {
+					exePath, _ := os.Executable()
+					exec.Command(exePath, "cleanup", agentID).Run()
+				}()
+				return successMsg{fmt.Sprintf("PR merged, cleaning up agent %s", agentID)}
+			}
 		}
 
 		var currentAgent *agent.Agent
@@ -2635,6 +2652,7 @@ type prCheckResult struct {
 type statusCheckRollupResponse struct {
 	StatusCheckRollup []prCheckResult `json:"statusCheckRollup"`
 	Mergeable         string          `json:"mergeable"`
+	State             string          `json:"state"`
 }
 
 func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
@@ -2750,7 +2768,7 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) t
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "statusCheckRollup,mergeable")
+		cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "statusCheckRollup,mergeable,state")
 		output, err := cmd.Output()
 		if err != nil {
 			return ciCheckResultMsg{agentID: agentID, err: err}
@@ -2759,6 +2777,11 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) t
 		var resp statusCheckRollupResponse
 		if err := json.Unmarshal(output, &resp); err != nil {
 			return ciCheckResultMsg{agentID: agentID, err: err}
+		}
+
+		isMerged := resp.State == "MERGED"
+		if isMerged {
+			return ciCheckResultMsg{agentID: agentID, prURL: prURL, isMerged: true}
 		}
 
 		hasMergeConflict := resp.Mergeable == "CONFLICTING"
