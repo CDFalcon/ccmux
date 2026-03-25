@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
@@ -195,7 +196,12 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, settingsStore, tmuxManager, sessionID)
+	dailyCostStore, err := dailycost.NewStore()
+	if err != nil {
+		return err
+	}
+
+	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, tmuxManager, sessionID)
 	if err != nil {
 		return err
 	}
@@ -781,6 +787,14 @@ func doCleanup(agentID, action string) error {
 	a, err := agentStore.Get(agentID)
 	if err != nil {
 		return err
+	}
+
+	dcStore, err := dailycost.NewStore()
+	if err == nil {
+		costs := tui.GetAgentDailyCosts(a.WorktreePath)
+		if len(costs) > 0 {
+			dcStore.AddCosts(costs)
+		}
 	}
 
 	runTeardownScript(a.ProjectName)

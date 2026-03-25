@@ -44,7 +44,7 @@ func queryAllAgentResources(
 	clkTck int64,
 	prevCPUTicks map[int]int64,
 	fastWTProjects map[string]bool,
-) (map[string]*AgentResources, map[int]int64) {
+) (map[string]*AgentResources, map[int]int64, map[string]float64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
 	resources := make(map[string]*AgentResources)
@@ -62,6 +62,11 @@ func queryAllAgentResources(
 		tokens  tokenBreakdown
 	}
 	tokenCh := make(chan tokenResult, len(agents))
+	type dailyCostResult struct {
+		agentID string
+		costs   map[string]float64
+	}
+	dailyCostCh := make(chan dailyCostResult, len(agents))
 
 	for _, a := range agents {
 		if a.WorktreePath != "" {
@@ -80,6 +85,11 @@ func queryAllAgentResources(
 				defer wg.Done()
 				tokenCh <- tokenResult{id, getAgentSessionTokens(path)}
 			}(a.ID, a.WorktreePath)
+			wg.Add(1)
+			go func(id, path string) {
+				defer wg.Done()
+				dailyCostCh <- dailyCostResult{id, getAgentSessionDailyCosts(path)}
+			}(a.ID, a.WorktreePath)
 		}
 	}
 
@@ -87,6 +97,7 @@ func queryAllAgentResources(
 		wg.Wait()
 		close(diskCh)
 		close(tokenCh)
+		close(dailyCostCh)
 	}()
 
 	diskMap := make(map[string]int64)
@@ -99,6 +110,13 @@ func queryAllAgentResources(
 	tokenMap := make(map[string]tokenBreakdown)
 	for r := range tokenCh {
 		tokenMap[r.agentID] = r.tokens
+	}
+
+	liveDailyCosts := make(map[string]float64)
+	for r := range dailyCostCh {
+		for date, cost := range r.costs {
+			liveDailyCosts[date] += cost
+		}
 	}
 
 	newCPUTicks := make(map[int]int64)
@@ -152,7 +170,7 @@ func queryAllAgentResources(
 		resources[a.ID] = res
 	}
 
-	return resources, newCPUTicks
+	return resources, newCPUTicks, liveDailyCosts
 }
 
 func listAllProcesses() map[int]*procInfo {
@@ -385,8 +403,9 @@ type claudeAPIMessage struct {
 }
 
 type claudeMessage struct {
-	Type    string           `json:"type"`
-	Message claudeAPIMessage `json:"message"`
+	Type      string           `json:"type"`
+	Message   claudeAPIMessage `json:"message"`
+	Timestamp string           `json:"timestamp"`
 }
 
 type inputSignature struct {
@@ -541,6 +560,122 @@ func isNewOpus(model string) bool {
 		strings.Contains(model, "opus-4-8") ||
 		strings.Contains(model, "opus-4-9") ||
 		strings.Contains(model, "opus-5")
+}
+
+func GetAgentDailyCosts(worktreePath string) map[string]float64 {
+	return getAgentSessionDailyCosts(worktreePath)
+}
+
+func getAgentSessionDailyCosts(worktreePath string) map[string]float64 {
+	result := make(map[string]float64)
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return result
+	}
+
+	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
+	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return result
+	}
+
+	var jsonlFiles []os.DirEntry
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			jsonlFiles = append(jsonlFiles, e)
+		}
+	}
+	if len(jsonlFiles) == 0 {
+		return result
+	}
+
+	sort.Slice(jsonlFiles, func(i, j int) bool {
+		infoI, errI := jsonlFiles[i].Info()
+		infoJ, errJ := jsonlFiles[j].Info()
+		if errI != nil || errJ != nil {
+			return false
+		}
+		return infoI.ModTime().After(infoJ.ModTime())
+	})
+
+	latestFile := filepath.Join(projectDir, jsonlFiles[0].Name())
+	f, err := os.Open(latestFile)
+	if err != nil {
+		return result
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	type groupEntry struct {
+		sig             inputSignature
+		model           string
+		maxOutputTokens int64
+		date            string
+	}
+	var prevGroup *groupEntry
+
+	flushGroup := func() {
+		if prevGroup == nil {
+			return
+		}
+		cost := estimateCost(prevGroup.model, claudeUsage{
+			InputTokens:              prevGroup.sig.InputTokens,
+			OutputTokens:             prevGroup.maxOutputTokens,
+			CacheCreationInputTokens: prevGroup.sig.CacheCreationInputTokens,
+			CacheReadInputTokens:     prevGroup.sig.CacheReadInputTokens,
+		})
+		result[prevGroup.date] += cost
+	}
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var msg claudeMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.Type != "assistant" {
+			continue
+		}
+		if msg.Message.Model == "<synthetic>" {
+			continue
+		}
+
+		date := extractDate(msg.Timestamp)
+
+		u := msg.Message.Usage
+		sig := inputSignature{
+			InputTokens:              u.InputTokens,
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+		}
+
+		if prevGroup == nil || sig != prevGroup.sig {
+			flushGroup()
+			prevGroup = &groupEntry{
+				sig:             sig,
+				model:           msg.Message.Model,
+				maxOutputTokens: u.OutputTokens,
+				date:            date,
+			}
+		} else if u.OutputTokens > prevGroup.maxOutputTokens {
+			prevGroup.maxOutputTokens = u.OutputTokens
+		}
+	}
+	flushGroup()
+
+	return result
+}
+
+func extractDate(timestamp string) string {
+	if len(timestamp) >= 10 {
+		return timestamp[:10]
+	}
+	return "unknown"
 }
 
 func formatTokens(tokens int64) string {

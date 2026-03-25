@@ -99,6 +99,12 @@ func renderMainView(m model) string {
 	} else {
 		b.WriteString("  " + dimStyle.Render(version.Version))
 	}
+	b.WriteString("\n")
+
+	todayCost := m.todaysCost()
+	if todayCost > 0 {
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("Today's cost: $%.2f (est.)", todayCost)))
+	}
 	b.WriteString("\n\n")
 
 	b.WriteString(headerStyle.Render(fmt.Sprintf("# Agents (%d)", len(m.agents))))
@@ -1010,6 +1016,23 @@ func marquee(s string, maxWidth int, offset int) string {
 		result[i] = combined[(start+i)%totalLen]
 	}
 	return string(result)
+}
+
+func (m model) todaysCost() float64 {
+	today := time.Now().Format("2006-01-02")
+
+	var total float64
+	if m.liveDailyCosts != nil {
+		total += m.liveDailyCosts[today]
+	}
+
+	if m.dailyCostStore != nil {
+		persisted, err := m.dailyCostStore.GetCost(today)
+		if err == nil {
+			total += persisted
+		}
+	}
+	return total
 }
 
 func formatAge(t time.Time) string {

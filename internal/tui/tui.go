@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -106,22 +107,24 @@ type model struct {
 	ciCheckProgress  map[string]ciProgress
 
 	// Resource monitoring
-	agentResources map[string]*AgentResources
-	totalMemKB     int64
-	clkTck         int64
-	prevCPUTicks   map[int]int64
+	agentResources  map[string]*AgentResources
+	liveDailyCosts  map[string]float64
+	totalMemKB      int64
+	clkTck          int64
+	prevCPUTicks    map[int]int64
 
 	// Download progress
 	downloadProgress *int64
 	restartRequested bool
 
-	agentStore    *agent.Store
-	queueManager  *queue.Queue
-	projectStore  *project.Store
-	promptStore   *prompt.Store
-	settingsStore *settings.Store
-	tmuxManager   *tmux.Manager
-	sessionID     string
+	agentStore     *agent.Store
+	queueManager   *queue.Queue
+	projectStore   *project.Store
+	promptStore    *prompt.Store
+	settingsStore  *settings.Store
+	dailyCostStore *dailycost.Store
+	tmuxManager    *tmux.Manager
+	sessionID      string
 }
 
 type projImportBuffer struct {
@@ -509,12 +512,13 @@ func (m model) visibleProjects() []*project.Project {
 type tickMsg time.Time
 type spinnerTickMsg time.Time
 type refreshMsg struct {
-	agents       []*agent.Agent
-	queueItems   []*queue.QueueItem
-	projects     []*project.Project
-	prompts      []*prompt.Prompt
-	resources    map[string]*AgentResources
-	prevCPUTicks map[int]int64
+	agents         []*agent.Agent
+	queueItems     []*queue.QueueItem
+	projects       []*project.Project
+	prompts        []*prompt.Prompt
+	resources      map[string]*AgentResources
+	prevCPUTicks   map[int]int64
+	liveDailyCosts map[string]float64
 }
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
@@ -580,7 +584,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, tmuxManager *tmux.Manager, sessionID string) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -633,6 +637,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		projectStore:      projectStore,
 		promptStore:       promptStore,
 		settingsStore:     settingsStore,
+		dailyCostStore:    dailyCostStore,
 		tmuxManager:       tmuxManager,
 		sessionID:         sessionID,
 		betaChannel:       loadBetaChannel(settingsStore),
@@ -779,19 +784,20 @@ func (m model) refreshCmd() tea.Cmd {
 				fastWTProjects[p.Name] = true
 			}
 		}
-		resources, newCPUTicks := queryAllAgentResources(
+		resources, newCPUTicks, liveDailyCosts := queryAllAgentResources(
 			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects,
 		)
 
 		prompts, _ := m.promptStore.List()
 
 		return refreshMsg{
-			agents:       agents,
-			queueItems:   queueItems,
-			projects:     projects,
-			prompts:      prompts,
-			resources:    resources,
-			prevCPUTicks: newCPUTicks,
+			agents:         agents,
+			queueItems:     queueItems,
+			projects:       projects,
+			prompts:        prompts,
+			resources:      resources,
+			prevCPUTicks:   newCPUTicks,
+			liveDailyCosts: liveDailyCosts,
 		}
 	}
 }
@@ -876,6 +882,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompts = msg.prompts
 		m.agentResources = msg.resources
 		m.prevCPUTicks = msg.prevCPUTicks
+		m.liveDailyCosts = msg.liveDailyCosts
 
 		activeWaiting := make(map[string]bool)
 		var cmds []tea.Cmd
@@ -3214,8 +3221,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, promptStore, settingsStore, tmuxManager, sessionID)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

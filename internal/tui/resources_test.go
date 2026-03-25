@@ -617,3 +617,149 @@ func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenNoPrevTicks(t *testin
 	}
 }
 
+func TestExtractDate_ShouldReturnDate_GivenValidTimestamp(t *testing.T) {
+	// Execute.
+	result := extractDate("2026-03-25T19:02:43.170Z")
+
+	// Assert.
+	if result != "2026-03-25" {
+		t.Errorf("expected '2026-03-25', got '%s'", result)
+	}
+}
+
+func TestExtractDate_ShouldReturnUnknown_GivenShortString(t *testing.T) {
+	// Execute.
+	result := extractDate("short")
+
+	// Assert.
+	if result != "unknown" {
+		t.Errorf("expected 'unknown', got '%s'", result)
+	}
+}
+
+func TestExtractDate_ShouldReturnUnknown_GivenEmptyString(t *testing.T) {
+	// Execute.
+	result := extractDate("")
+
+	// Assert.
+	if result != "unknown" {
+		t.Errorf("expected 'unknown', got '%s'", result)
+	}
+}
+
+func TestGetAgentSessionDailyCosts_ShouldSplitByDay_GivenMultipleDays(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-daily-costs-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","timestamp":"2026-03-24T23:30:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"assistant","timestamp":"2026-03-25T01:00:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":2000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionDailyCosts(worktreePath)
+
+	// Assert.
+	if len(result) != 2 {
+		t.Errorf("expected 2 days, got %d: %v", len(result), result)
+	}
+	if result["2026-03-24"] <= 0 {
+		t.Errorf("expected positive cost for 2026-03-24, got %.6f", result["2026-03-24"])
+	}
+	if result["2026-03-25"] <= 0 {
+		t.Errorf("expected positive cost for 2026-03-25, got %.6f", result["2026-03-25"])
+	}
+}
+
+func TestGetAgentSessionDailyCosts_ShouldReturnSingleDay_GivenSameDayMessages(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-daily-single-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","timestamp":"2026-03-25T10:00:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"assistant","timestamp":"2026-03-25T12:00:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":2000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionDailyCosts(worktreePath)
+
+	// Assert.
+	if len(result) != 1 {
+		t.Errorf("expected 1 day, got %d: %v", len(result), result)
+	}
+	if result["2026-03-25"] <= 0 {
+		t.Errorf("expected positive cost for 2026-03-25, got %.6f", result["2026-03-25"])
+	}
+}
+
+func TestGetAgentSessionDailyCosts_ShouldReturnEmpty_GivenNoAssistantMessages(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-daily-empty-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"user","timestamp":"2026-03-25T10:00:00.000Z","message":{"role":"user","content":"hello"}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionDailyCosts(worktreePath)
+
+	// Assert.
+	if len(result) != 0 {
+		t.Errorf("expected 0 days, got %d: %v", len(result), result)
+	}
+}
+
+func TestGetAgentSessionDailyCosts_ShouldSkipSynthetic_GivenSyntheticModel(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-daily-synthetic-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","timestamp":"2026-03-25T10:00:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"assistant","timestamp":"2026-03-25T11:00:00.000Z","message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionDailyCosts(worktreePath)
+
+	// Assert.
+	if len(result) != 1 {
+		t.Errorf("expected 1 day, got %d", len(result))
+	}
+	expectedCost := estimateCost("claude-sonnet-4-20250514", claudeUsage{
+		InputTokens:  1000,
+		OutputTokens: 500,
+	})
+	if math.Abs(result["2026-03-25"]-expectedCost) > 1e-10 {
+		t.Errorf("expected %.6f, got %.6f", expectedCost, result["2026-03-25"])
+	}
+}
+
+func TestGetAgentSessionDailyCosts_ShouldDedup_GivenDuplicateContentBlocks(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-daily-dedup-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","timestamp":"2026-03-25T10:00:00.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":100,"output_tokens":8,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+{"type":"assistant","timestamp":"2026-03-25T10:00:01.000Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionDailyCosts(worktreePath)
+
+	// Assert.
+	expectedCost := estimateCost("claude-sonnet-4-20250514", claudeUsage{
+		InputTokens:              100,
+		OutputTokens:             50,
+		CacheCreationInputTokens: 200,
+		CacheReadInputTokens:     300,
+	})
+	if math.Abs(result["2026-03-25"]-expectedCost) > 1e-10 {
+		t.Errorf("expected %.6f, got %.6f", expectedCost, result["2026-03-25"])
+	}
+}
+
