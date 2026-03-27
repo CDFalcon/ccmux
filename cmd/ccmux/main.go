@@ -797,7 +797,7 @@ func doCleanup(agentID, action string) error {
 		}
 	}
 
-	runTeardownScript(a.ProjectName)
+	runTeardownScript(a.ProjectName, a.WorktreePath, agentID)
 
 	tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 	tmuxManager := tmux.NewManager(tmuxSessionName)
@@ -832,7 +832,7 @@ func doCleanup(agentID, action string) error {
 	return nil
 }
 
-func runTeardownScript(projectName string) {
+func runTeardownScript(projectName, worktreePath, agentID string) {
 	if projectName == "" {
 		return
 	}
@@ -849,6 +849,11 @@ func runTeardownScript(projectName string) {
 	}
 	fmt.Printf("Running teardown script: %s\n", proj.TeardownScript)
 	cmd := exec.Command("bash", proj.TeardownScript)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(),
+		"CCMUX_WORKTREE_PATH="+worktreePath,
+		"CCMUX_AGENT_ID="+agentID,
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
