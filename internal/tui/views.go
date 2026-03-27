@@ -106,15 +106,32 @@ func renderMainView(m model) string {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("Today's cost: $%.2f (est.)", todayCost)))
 	}
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed)).Bold(true)
-	var warnings []string
-	if m.hostDiskAvailGB > 0 && m.hostDiskAvailGB < 200 {
-		warnings = append(warnings, fmt.Sprintf("Disk: %dGB free", int(m.hostDiskAvailGB)))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow))
+	var stats []string
+	if m.hostDiskAvailGB > 0 {
+		diskStr := fmt.Sprintf("Disk: %dGB free", int(m.hostDiskAvailGB))
+		if m.hostDiskAvailGB < 100 {
+			diskStr = warnStyle.Render("⚠ " + diskStr)
+		} else if m.hostDiskAvailGB < 200 {
+			diskStr = yellowStyle.Render(diskStr)
+		} else {
+			diskStr = dimStyle.Render(diskStr)
+		}
+		stats = append(stats, diskStr)
 	}
-	if m.hostMemPercent > 85 {
-		warnings = append(warnings, fmt.Sprintf("RAM: %.0f%%", m.hostMemPercent))
+	if m.hostMemPercent > 0 {
+		memStr := fmt.Sprintf("RAM: %.0f%%", m.hostMemPercent)
+		if m.hostMemPercent > 90 {
+			memStr = warnStyle.Render("⚠ " + memStr)
+		} else if m.hostMemPercent > 75 {
+			memStr = yellowStyle.Render(memStr)
+		} else {
+			memStr = dimStyle.Render(memStr)
+		}
+		stats = append(stats, memStr)
 	}
-	if len(warnings) > 0 {
-		b.WriteString("  " + warnStyle.Render("⚠ "+strings.Join(warnings, "  ")))
+	if len(stats) > 0 {
+		b.WriteString("  " + strings.Join(stats, "  "))
 	}
 	b.WriteString("\n\n")
 
