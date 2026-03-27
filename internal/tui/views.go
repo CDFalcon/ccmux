@@ -105,6 +105,17 @@ func renderMainView(m model) string {
 	if todayCost > 0 {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("Today's cost: $%.2f (est.)", todayCost)))
 	}
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed)).Bold(true)
+	var warnings []string
+	if m.hostDiskAvailGB > 0 && m.hostDiskAvailGB < 200 {
+		warnings = append(warnings, fmt.Sprintf("Disk: %dGB free", int(m.hostDiskAvailGB)))
+	}
+	if m.hostMemPercent > 85 {
+		warnings = append(warnings, fmt.Sprintf("RAM: %.0f%%", m.hostMemPercent))
+	}
+	if len(warnings) > 0 {
+		b.WriteString("  " + warnStyle.Render("⚠ "+strings.Join(warnings, "  ")))
+	}
 	b.WriteString("\n\n")
 
 	b.WriteString(headerStyle.Render(fmt.Sprintf("# Agents (%d)", len(m.agents))))

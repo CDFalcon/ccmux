@@ -361,6 +361,34 @@ func getTotalMemoryKB() int64 {
 	return 0
 }
 
+func getSystemMemPercent() float64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	var totalKB, availKB int64
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				totalKB, _ = strconv.ParseInt(fields[1], 10, 64)
+			}
+		} else if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				availKB, _ = strconv.ParseInt(fields[1], 10, 64)
+			}
+		}
+		if totalKB > 0 && availKB > 0 {
+			break
+		}
+	}
+	if totalKB == 0 {
+		return 0
+	}
+	return float64(totalKB-availKB) / float64(totalKB) * 100
+}
+
 func getClockTicks() int64 {
 	cmd := exec.Command("getconf", "CLK_TCK")
 	output, err := cmd.Output()
