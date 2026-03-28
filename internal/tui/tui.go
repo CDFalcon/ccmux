@@ -2572,6 +2572,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
+	tmuxPane := a.TmuxPane
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
@@ -2584,18 +2585,15 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
 
-		// Kill old window and create a fresh one instead of respawning the
-		// dead pane. Respawn-pane inherits stale terminal state (alternate
-		// screen, raw mode) from the previous Claude Code process, which
-		// causes the new process to hang waiting for input.
-		m.tmuxManager.KillWindow(tmuxWindow)
-		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
+		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
+			ag.TmuxPane = newPaneID
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to address PR comments", agentID)}
@@ -2619,6 +2617,14 @@ func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 
 		return successMsg{fmt.Sprintf("Rejected PR, cleaning up agent %s", agentID)}
 	}
+}
+
+func killAgentPane(tm *tmux.Manager, paneID, windowID string) {
+	if paneID != "" {
+		tm.KillPane(paneID)
+		return
+	}
+	tm.KillWindow(windowID)
 }
 
 func writeReviewScript(agentID, worktreePath, prURL string) (string, error) {
@@ -2920,6 +2926,7 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
+	tmuxPane := a.TmuxPane
 	prURL := a.PRURL
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
@@ -2931,14 +2938,15 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 			return errMsg{fmt.Errorf("failed to write CI fix script: %w", err)}
 		}
 
-		m.tmuxManager.KillWindow(tmuxWindow)
-		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
+		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create CI fix window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
+			ag.TmuxPane = newPaneID
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to fix CI failures", agentID)}
@@ -2993,6 +3001,7 @@ func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
+	tmuxPane := a.TmuxPane
 	prURL := a.PRURL
 	baseBranch := a.BaseBranch
 	return func() tea.Msg {
@@ -3005,14 +3014,15 @@ func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write merge conflict script: %w", err)}
 		}
 
-		m.tmuxManager.KillWindow(tmuxWindow)
-		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
+		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create merge conflict window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
+			ag.TmuxPane = newPaneID
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to resolve merge conflicts", agentID)}
@@ -3023,6 +3033,7 @@ func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd 
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
+	tmuxPane := a.TmuxPane
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
@@ -3035,14 +3046,15 @@ func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd 
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
 
-		m.tmuxManager.KillWindow(tmuxWindow)
-		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
+		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
+			ag.TmuxPane = newPaneID
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s resumed to address new PR review", agentID)}
@@ -3073,6 +3085,7 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 	agentID := a.ID
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
+	tmuxPane := a.TmuxPane
 	baseBranch := a.BaseBranch
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
@@ -3085,14 +3098,15 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write restart script: %w", err)}
 		}
 
-		m.tmuxManager.KillWindow(tmuxWindow)
-		newWindowID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
+		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create restart window: %w", err)}
 		}
 
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.TmuxWindow = newWindowID
+			ag.TmuxPane = newPaneID
 		})
 
 		return successMsg{fmt.Sprintf("Agent %s restarted", agentID)}

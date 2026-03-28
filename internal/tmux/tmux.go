@@ -93,15 +93,20 @@ func (m *Manager) SourceUserConfig() error {
 	return nil
 }
 
-func (m *Manager) CreateWindow(workingDir, command, name string) (string, error) {
-	cmd := exec.Command("tmux", "new-window", "-d", "-t", m.sessionName, "-c", workingDir, "-P", "-F", "#{window_id}", "-n", name, command)
+func (m *Manager) CreateWindow(workingDir, command, name string) (string, string, error) {
+	cmd := exec.Command("tmux", "new-window", "-d", "-t", m.sessionName, "-c", workingDir, "-P", "-F", "#{window_id}\t#{pane_id}", "-n", name, command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to create window: %s: %w", string(output), err)
+		return "", "", fmt.Errorf("failed to create window: %s: %w", string(output), err)
 	}
-	windowID := strings.TrimSpace(string(output))
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 2)
+	windowID := parts[0]
+	var paneID string
+	if len(parts) > 1 {
+		paneID = parts[1]
+	}
 	m.SetPaneRemainOnExit(windowID)
-	return windowID, nil
+	return windowID, paneID, nil
 }
 
 func (m *Manager) KillWindow(windowID string) error {
@@ -109,6 +114,15 @@ func (m *Manager) KillWindow(windowID string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to kill window: %s: %w", string(output), err)
+	}
+	return nil
+}
+
+func (m *Manager) KillPane(paneID string) error {
+	cmd := exec.Command("tmux", "kill-pane", "-t", paneID)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to kill pane: %s: %w", string(output), err)
 	}
 	return nil
 }

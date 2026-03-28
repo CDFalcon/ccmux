@@ -166,7 +166,7 @@ func TestCreateWindow_ShouldSetRemainOnExitOnPane_GivenAgentWindow(t *testing.T)
 	mgr := createTestSession(t, "ccmux-test-agent-roe")
 
 	// Execute.
-	windowID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	windowID, _, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
 	if err != nil {
 		t.Fatalf("failed to create window: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestSplitPane_ShouldNotInheritRemainOnExit_GivenAgentWindowWithRemainOnExit
 
 	// Setup.
 	mgr := createTestSession(t, "ccmux-test-split-roe")
-	windowID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	windowID, _, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
 	if err != nil {
 		t.Fatalf("failed to create window: %v", err)
 	}
@@ -200,5 +200,59 @@ func TestSplitPane_ShouldNotInheritRemainOnExit_GivenAgentWindowWithRemainOnExit
 	opt := getPaneOption(t, splitPaneID, "remain-on-exit")
 	if strings.Contains(opt, "on") {
 		t.Errorf("split pane should not have remain-on-exit, got: %q", opt)
+	}
+}
+
+func TestCreateWindow_ShouldReturnPaneID_GivenNewWindow(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-pane-id")
+
+	// Execute.
+	_, paneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Assert.
+	if paneID == "" {
+		t.Error("expected non-empty pane ID")
+	}
+	if !strings.HasPrefix(paneID, "%") {
+		t.Errorf("expected pane ID to start with %%, got: %q", paneID)
+	}
+}
+
+func TestKillPane_ShouldPreserveOtherPanes_GivenWindowWithSplitPanes(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-kill-pane")
+	windowID, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	splitCmd := exec.Command("tmux", "split-window", "-d", "-t", windowID, "-P", "-F", "#{pane_id}", "sleep 60")
+	out, err := splitCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to split pane: %s: %v", string(out), err)
+	}
+	userPaneID := strings.TrimSpace(string(out))
+
+	// Execute.
+	err = mgr.KillPane(agentPaneID)
+	if err != nil {
+		t.Fatalf("failed to kill pane: %v", err)
+	}
+
+	// Assert.
+	checkCmd := exec.Command("tmux", "display-message", "-t", userPaneID, "-p", "#{pane_id}")
+	checkOut, checkErr := checkCmd.CombinedOutput()
+	if checkErr != nil {
+		t.Errorf("user pane %s should still exist after killing agent pane, but got error: %v", userPaneID, checkErr)
+	}
+	if strings.TrimSpace(string(checkOut)) != userPaneID {
+		t.Errorf("expected user pane %s to still exist, got: %q", userPaneID, string(checkOut))
 	}
 }

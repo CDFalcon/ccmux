@@ -262,12 +262,12 @@ func spawnCmd() *cobra.Command {
 			if worktreeName != "" {
 				windowName = sanitizeWorktreeName(worktreeName)
 			}
-			windowID, err := tmuxManager.CreateWindow(proj.EffectivePath(), "bash "+launcherScript, windowName)
+			windowID, paneID, err := tmuxManager.CreateWindow(proj.EffectivePath(), "bash "+launcherScript, windowName)
 			if err != nil {
 				os.Remove(launcherScript)
 				return fmt.Errorf("failed to create tmux window: %w", err)
 			}
-			logging.Log("spawn: created window=%s with launcher script", windowID)
+			logging.Log("spawn: created window=%s pane=%s with launcher script", windowID, paneID)
 
 			agentStore, err := agent.NewStore(sessionID)
 			if err != nil {
@@ -279,6 +279,7 @@ func spawnCmd() *cobra.Command {
 				ProjectName:  projectName,
 				WorktreeName: sanitizeWorktreeName(worktreeName),
 				TmuxWindow:   windowID,
+				TmuxPane:     paneID,
 				BaseBranch:   baseBranch,
 				Status:       agent.StatusSpawning,
 			}
@@ -1028,13 +1029,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 	}
 
 	for _, r := range toRecover {
-		windowID, err := tmuxManager.CreateWindow(r.agent.WorktreePath, "bash "+r.scriptPath, r.agent.ID[:8])
+		windowID, paneID, err := tmuxManager.CreateWindow(r.agent.WorktreePath, "bash "+r.scriptPath, r.agent.ID[:8])
 		if err != nil {
 			logging.Log("recovery: failed to create window for %s: %v", r.agent.ID, err)
 			continue
 		}
 		agentStore.Update(r.agent.ID, func(a *agent.Agent) {
 			a.TmuxWindow = windowID
+			a.TmuxPane = paneID
 			if r.kind == "resume" {
 				a.Status = agent.StatusRunning
 			}
