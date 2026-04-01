@@ -14,6 +14,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/logging"
+	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -324,16 +325,17 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, 
 		wtSuffix = worktreeName + "-" + agentID
 	}
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
-TASK=%q
-REPO_PATH="%s"
-BASE_BRANCH="%s"
-SESSION_ID="%s"
-USE_FAST_WT="%s"
-WT_SUFFIX="%s"
+AGENT_ID=%s
+TASK=%s
+REPO_PATH=%s
+BASE_BRANCH=%s
+SESSION_ID=%s
+USE_FAST_WT=%s
+WT_SUFFIX=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -453,7 +455,7 @@ ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH"
 echo "✓ Agent registered"
 echo ""
 
-STARTUP_SCRIPT="%s"
+STARTUP_SCRIPT=%s
 if [ -n "$STARTUP_SCRIPT" ] && [ -f "$STARTUP_SCRIPT" ]; then
   echo "→ Running startup script: $STARTUP_SCRIPT"
   bash "$STARTUP_SCRIPT"
@@ -487,7 +489,7 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
-PROMPTS_FILE="%s"
+PROMPTS_FILE=%s
 if [ -f "$PROMPTS_FILE" ]; then
   PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
   SYSTEM_PROMPT="${SYSTEM_PROMPT}
@@ -499,7 +501,7 @@ claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
   "$TASK"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, task, repoPath, baseBranch, sessionID, useFastWT, wtSuffix, startupScript, promptsFilePath(agentID))
+`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(startupScript), sq(promptsFilePath(agentID)))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1082,13 +1084,14 @@ func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID string) (s
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-recovery.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
-WORKTREE_PATH="%s"
-BASE_BRANCH="%s"
-SESSION_ID="%s"
+AGENT_ID=%s
+WORKTREE_PATH=%s
+BASE_BRANCH=%s
+SESSION_ID=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -1164,7 +1167,7 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
-PROMPTS_FILE="%s"
+PROMPTS_FILE=%s
 if [ -f "$PROMPTS_FILE" ]; then
   PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
   SYSTEM_PROMPT="${SYSTEM_PROMPT}
@@ -1175,7 +1178,7 @@ fi
 claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, baseBranch, sessionID, promptsFilePath(agentID))
+`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(promptsFilePath(agentID)))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1197,11 +1200,12 @@ func writePlaceholderScript(agentID, worktreePath, task string) (string, error) 
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 
-AGENT_ID="%s"
-WORKTREE_PATH="%s"
-TASK=%q
+AGENT_ID=%s
+WORKTREE_PATH=%s
+TASK=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -1219,7 +1223,7 @@ echo ""
 while true; do
   sleep 3600
 done
-`, agentID, worktreePath, task)
+`, sq(agentID), sq(worktreePath), sq(task))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1241,11 +1245,12 @@ func writeCIWaitPlaceholderScript(agentID, worktreePath, task string) (string, e
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 
-AGENT_ID="%s"
-WORKTREE_PATH="%s"
-TASK=%q
+AGENT_ID=%s
+WORKTREE_PATH=%s
+TASK=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -1263,7 +1268,7 @@ echo ""
 while true; do
   sleep 3600
 done
-`, agentID, worktreePath, task)
+`, sq(agentID), sq(worktreePath), sq(task))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

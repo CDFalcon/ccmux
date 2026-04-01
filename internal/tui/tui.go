@@ -22,6 +22,7 @@ import (
 	"github.com/sahilm/fuzzy"
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
+	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -2640,12 +2641,15 @@ func writeReviewScript(agentID, worktreePath, prURL string) (string, error) {
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-review.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
+AGENT_ID=%s
+WORKTREE_PATH=%s
+PR_URL=%s
 
-cd "%s"
+cd "$WORKTREE_PATH"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -2659,10 +2663,10 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The GitHub PR at %s has received comments. Please review ALL comments — both conversation-level comments (gh pr view %s --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes, then run: ccmux ci-wait %s"
+  "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes, then run: ccmux ci-wait $PR_URL"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, prURL, prURL)
+`, sq(agentID), sq(worktreePath), sq(prURL))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -2891,12 +2895,16 @@ func writeCIFixScript(agentID, worktreePath, prURL, failureSummary string) (stri
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-ci-fix.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
+AGENT_ID=%s
+WORKTREE_PATH=%s
+PR_URL=%s
+FAILURE_SUMMARY=%s
 
-cd "%s"
+cd "$WORKTREE_PATH"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -2910,10 +2918,10 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "CI checks have FAILED for the PR at %s. Failures: %s -- Investigate the failures using: gh pr checks %s -- Fix the issues, commit and push your changes, then run: ccmux ci-wait %s"
+  "CI checks have FAILED for the PR at $PR_URL. Failures: $FAILURE_SUMMARY -- Investigate the failures using: gh pr checks $PR_URL -- Fix the issues, commit and push your changes, then run: ccmux ci-wait $PR_URL"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, failureSummary, prURL, prURL)
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -2966,12 +2974,16 @@ func writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch string) (
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-merge-conflict.sh")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
+AGENT_ID=%s
+WORKTREE_PATH=%s
+PR_URL=%s
+BASE_BRANCH=%s
 
-cd "%s"
+cd "$WORKTREE_PATH"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -2985,10 +2997,10 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The PR at %s has merge conflicts with the base branch (%s). Resolve the merge conflicts, push your changes, then run: ccmux ci-wait %s"
+  "The PR at $PR_URL has merge conflicts with the base branch ($BASE_BRANCH). Resolve the merge conflicts, push your changes, then run: ccmux ci-wait $PR_URL"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, prURL, baseBranch, prURL)
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3127,12 +3139,14 @@ func writeRestartScript(agentID, worktreePath, baseBranch string) (string, error
 	scriptPath := filepath.Join(launcherDir, agentID+"-restart.sh")
 	promptsFile := filepath.Join(launcherDir, agentID+"-prompts.txt")
 
+	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 
-AGENT_ID="%s"
+AGENT_ID=%s
+WORKTREE_PATH=%s
 
-cd "%s"
+cd "$WORKTREE_PATH"
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -3145,7 +3159,7 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-PR_BASE_BRANCH="%s"
+PR_BASE_BRANCH=%s
 PR_BASE_BRANCH="${PR_BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
@@ -3164,7 +3178,7 @@ if [ -f "$CLAUDE_MD_PATH" ]; then
 ${CLAUDE_MD_CONTENT}"
 fi
 
-PROMPTS_FILE="%s"
+PROMPTS_FILE=%s
 if [ -f "$PROMPTS_FILE" ]; then
   PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
   SYSTEM_PROMPT="${SYSTEM_PROMPT}
@@ -3175,7 +3189,7 @@ fi
 claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
 
 ccmux agent-stopped "$AGENT_ID"
-`, agentID, worktreePath, baseBranch, promptsFile)
+`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(promptsFile))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
