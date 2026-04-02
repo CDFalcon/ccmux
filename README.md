@@ -52,6 +52,32 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 # git clone git@github.com:Applied-Shared/proj.git && export PATH="$PATH:$(pwd)/proj/src"
 ```
 
+## Setup (macOS Apple Silicon)
+```bash
+# Install system dependencies via Homebrew
+brew install git tmux jq gh
+
+# Authenticate with GitHub (needed for private repos and PR operations)
+gh auth login
+
+# Install Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# Install ccmux (into ~/.local/bin — no sudo required for updates)
+mkdir -p ~/.local/bin
+gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-arm64'
+chmod +x ccmux-darwin-arm64
+mv ccmux-darwin-arm64 ~/.local/bin/ccmux
+
+# Ensure ~/.local/bin is in your PATH (add to ~/.zshrc if not already present)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+
+# Optional: install proj for near-instant worktree creation on large repos
+# Note: proj requires an XFS filesystem with reflink support, which is not
+# natively available on macOS. See the proj README for alternatives.
+# git clone git@github.com:Applied-Shared/proj.git && export PATH="$PATH:$(pwd)/proj/src"
+```
+
 ## Quick Start
 
 1. **Start a session:** `ccmux` (or `ccmux <name>` for a named session).
