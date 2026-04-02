@@ -59,6 +59,7 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	m.SourceUserConfig()
 	m.DisableSessionRemainOnExit()
 	m.SetupAgentNavigation()
+	m.SetupPaneHooks()
 	m.SetPaneRemainOnExit(m.FirstWindowTarget())
 	if err := m.RespawnPane(m.FirstWindowTarget(), command); err != nil {
 		return fmt.Errorf("failed to start command in session: %w", err)
@@ -224,6 +225,18 @@ func (m *Manager) DisableSessionRemainOnExit() {
 
 func (m *Manager) SetPaneRemainOnExit(windowID string) {
 	exec.Command("tmux", "set-option", "-p", "-t", windowID, "remain-on-exit", "on").Run()
+}
+
+// SetupPaneHooks installs a session-level after-split-window hook so that any
+// new pane created inside an agent window automatically cds to the worktree
+// root. Agent windows store their worktree path in the @ccmux_worktree window
+// option (set by the launcher script); non-agent windows leave the option
+// unset, so the hook is a no-op there.
+func (m *Manager) SetupPaneHooks() {
+	// tmux expands #{window_id} and #{pane_id} before passing the shell command
+	// to run-shell, so the script receives the concrete IDs as arguments.
+	hookCmd := `run-shell 'wdir=$(tmux show-options -w -t "#{window_id}" -qv @ccmux_worktree 2>/dev/null); [ -n "$wdir" ] && tmux send-keys -t "#{pane_id}" "cd $wdir" Enter'`
+	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-split-window", hookCmd).Run()
 }
 
 func (m *Manager) SetupAgentNavigation() {
