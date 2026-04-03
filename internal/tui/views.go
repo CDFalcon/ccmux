@@ -748,6 +748,7 @@ func renderEditProjectView(m model) string {
 		{"Fast worktrees (yes/no):", m.editProjectForm.fastWTInput.View()},
 		{"Startup script:", m.editProjectForm.startupScriptInput.View()},
 		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
+		{"Merge when accepted (yes/no):", m.editProjectForm.mergeWhenAcceptedInput.View()},
 	}
 
 	for i, f := range fields {
