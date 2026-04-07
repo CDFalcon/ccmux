@@ -48,4 +48,7 @@ func init() {
 	migrations.Register(4, func(data []byte) ([]byte, error) {
 		return data, nil
 	})
+	migrations.Register(5, func(data []byte) ([]byte, error) {
+		return data, nil
+	})
 }

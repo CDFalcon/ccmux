@@ -1,6 +1,6 @@
 package project
 
-const CurrentSchemaVersion = 5
+const CurrentSchemaVersion = 6
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -13,6 +13,7 @@ type Project struct {
 	SetupStatus       string `json:"setup_status,omitempty"`
 	StartupScript     string `json:"startup_script,omitempty"`
 	TeardownScript    string `json:"teardown_script,omitempty"`
+	MergeWhenAccepted bool   `json:"merge_when_accepted,omitempty"`
 }
 
 func (p *Project) IsSettingUp() bool {
