@@ -1164,3 +1164,78 @@ func TestShouldThrottleResume_ShouldNotAffectOtherAgents_GivenDifferentAgentIDs(
 		t.Error("expected no throttle for agent-2 when only agent-1 has history")
 	}
 }
+
+func TestIsDuplicateCIFailure_ShouldReturnFalse_GivenNoHistory(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.ciLastNotifiedSummary = make(map[string]string)
+
+	// Execute.
+	result := m.isDuplicateCIFailure("agent-1", "CI checks failed: lint, test")
+
+	// Assert.
+	if result {
+		t.Error("expected not duplicate with no history")
+	}
+}
+
+func TestIsDuplicateCIFailure_ShouldReturnTrue_GivenSameSummary(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.ciLastNotifiedSummary = make(map[string]string)
+	m.ciLastNotifiedSummary["agent-1"] = "CI checks failed: lint, test"
+
+	// Execute.
+	result := m.isDuplicateCIFailure("agent-1", "CI checks failed: lint, test")
+
+	// Assert.
+	if !result {
+		t.Error("expected duplicate when summary matches")
+	}
+}
+
+func TestIsDuplicateCIFailure_ShouldReturnFalse_GivenDifferentSummary(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.ciLastNotifiedSummary = make(map[string]string)
+	m.ciLastNotifiedSummary["agent-1"] = "CI checks failed: lint"
+
+	// Execute.
+	result := m.isDuplicateCIFailure("agent-1", "CI checks failed: lint, test")
+
+	// Assert.
+	if result {
+		t.Error("expected not duplicate when summary differs")
+	}
+}
+
+func TestIsDuplicateCIFailure_ShouldReturnFalse_GivenDifferentAgent(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.ciLastNotifiedSummary = make(map[string]string)
+	m.ciLastNotifiedSummary["agent-1"] = "CI checks failed: lint, test"
+
+	// Execute.
+	result := m.isDuplicateCIFailure("agent-2", "CI checks failed: lint, test")
+
+	// Assert.
+	if result {
+		t.Error("expected not duplicate for different agent")
+	}
+}
+
+func TestIsDuplicateCIFailure_ShouldReturnFalse_GivenClearedByPending(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.ciLastNotifiedSummary = make(map[string]string)
+	m.ciLastNotifiedSummary["agent-1"] = "CI checks failed: lint, test"
+	delete(m.ciLastNotifiedSummary, "agent-1")
+
+	// Execute.
+	result := m.isDuplicateCIFailure("agent-1", "CI checks failed: lint, test")
+
+	// Assert.
+	if result {
+		t.Error("expected not duplicate after summary was cleared")
+	}
+}

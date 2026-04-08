@@ -104,10 +104,11 @@ type model struct {
 	prevWindowNames map[string]string
 
 	// CI check tracking
-	ciLastChecked    map[string]time.Time
-	ciChecking       map[string]bool
-	ciCheckProgress  map[string]ciProgress
-	ciResumeHistory  map[string][]time.Time
+	ciLastChecked          map[string]time.Time
+	ciChecking             map[string]bool
+	ciCheckProgress        map[string]ciProgress
+	ciResumeHistory        map[string][]time.Time
+	ciLastNotifiedSummary  map[string]string
 
 	// Resource monitoring
 	agentResources   map[string]*AgentResources
@@ -645,10 +646,11 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		promptForm:        newPromptForm(),
 		editPromptForm:    newEditPromptForm(),
 		spawnPromptEnabled: make(map[string]bool),
-		ciLastChecked:   make(map[string]time.Time),
-		ciChecking:      make(map[string]bool),
-		ciCheckProgress: make(map[string]ciProgress),
-		ciResumeHistory: make(map[string][]time.Time),
+		ciLastChecked:         make(map[string]time.Time),
+		ciChecking:            make(map[string]bool),
+		ciCheckProgress:       make(map[string]ciProgress),
+		ciResumeHistory:       make(map[string][]time.Time),
+		ciLastNotifiedSummary: make(map[string]string),
 		prevWindowNames:   make(map[string]string),
 		totalMemKB:        getTotalMemoryKB(),
 		clkTck:            getClockTicks(),
@@ -943,6 +945,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.ciChecking, id)
 				delete(m.ciCheckProgress, id)
 				delete(m.ciResumeHistory, id)
+				delete(m.ciLastNotifiedSummary, id)
 			}
 		}
 		if len(cmds) > 0 {
@@ -1009,7 +1012,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch msg.status {
+		case ciStatusPending:
+			delete(m.ciLastNotifiedSummary, msg.agentID)
 		case ciStatusPassed:
+			delete(m.ciLastNotifiedSummary, msg.agentID)
 			if !wasWaitingReview {
 				delete(m.ciCheckProgress, msg.agentID)
 				delete(m.ciResumeHistory, msg.agentID)
@@ -1025,10 +1031,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case ciStatusFailed:
 			if currentAgent != nil {
+				if m.isDuplicateCIFailure(msg.agentID, msg.summary) {
+					return m, nil
+				}
 				if m.shouldThrottleResume(msg.agentID) {
 					m.throttleAgent(msg.agentID)
 					return m, m.refreshCmd()
 				}
+				m.ciLastNotifiedSummary[msg.agentID] = msg.summary
 				m.recordResume(msg.agentID)
 				if wasWaitingReview {
 					m.queueManager.RemoveByAgentAndType(msg.agentID, queue.ItemTypePRReady)
@@ -2992,6 +3002,11 @@ const (
 	ciResumeMaxAttempts = 3
 	ciResumeWindow      = 15 * time.Minute
 )
+
+func (m *model) isDuplicateCIFailure(agentID, summary string) bool {
+	prev, ok := m.ciLastNotifiedSummary[agentID]
+	return ok && prev == summary
+}
 
 func (m *model) shouldThrottleResume(agentID string) bool {
 	now := time.Now()
