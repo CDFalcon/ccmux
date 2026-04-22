@@ -44,20 +44,22 @@ func (s Status) DisplayName() string {
 }
 
 type Agent struct {
-	ID           string    `json:"id"`
-	Task         string    `json:"task"`
-	ProjectName  string    `json:"project_name,omitempty"`
-	WorktreeName string    `json:"worktree_name,omitempty"`
-	WorktreePath string    `json:"worktree_path"`
-	BranchName   string    `json:"branch_name"`
-	BaseBranch   string    `json:"base_branch"`
-	TmuxWindow   string    `json:"tmux_window"`
-	TmuxPane     string    `json:"tmux_pane,omitempty"`
-	PRURL        string    `json:"pr_url,omitempty"`
-	CIWaitAt     time.Time `json:"ci_wait_at,omitempty"`
-	Status       Status    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                    string      `json:"id"`
+	Task                  string      `json:"task"`
+	ProjectName           string      `json:"project_name,omitempty"`
+	WorktreeName          string      `json:"worktree_name,omitempty"`
+	WorktreePath          string      `json:"worktree_path"`
+	BranchName            string      `json:"branch_name"`
+	BaseBranch            string      `json:"base_branch"`
+	TmuxWindow            string      `json:"tmux_window"`
+	TmuxPane              string      `json:"tmux_pane,omitempty"`
+	PRURL                 string      `json:"pr_url,omitempty"`
+	CIWaitAt              time.Time   `json:"ci_wait_at,omitempty"`
+	CILastNotifiedSummary string      `json:"ci_last_notified_summary,omitempty"`
+	CIResumeHistory       []time.Time `json:"ci_resume_history,omitempty"`
+	Status                Status      `json:"status"`
+	CreatedAt             time.Time   `json:"created_at"`
+	UpdatedAt             time.Time   `json:"updated_at"`
 }
 
 type storeData struct {

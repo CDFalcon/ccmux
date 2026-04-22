@@ -8,34 +8,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/dailycost"
+	"github.com/CDFalcon/ccmux/internal/project"
+	"github.com/CDFalcon/ccmux/internal/prompt"
+	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/settings"
+	"github.com/CDFalcon/ccmux/internal/shellutil"
+	"github.com/CDFalcon/ccmux/internal/tmux"
+	"github.com/CDFalcon/ccmux/internal/updater"
+	"github.com/CDFalcon/ccmux/internal/version"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
-	"github.com/CDFalcon/ccmux/internal/agent"
-	"github.com/CDFalcon/ccmux/internal/dailycost"
-	"github.com/CDFalcon/ccmux/internal/shellutil"
-	"github.com/CDFalcon/ccmux/internal/project"
-	"github.com/CDFalcon/ccmux/internal/prompt"
-	"github.com/CDFalcon/ccmux/internal/queue"
-	"github.com/CDFalcon/ccmux/internal/settings"
-	"github.com/CDFalcon/ccmux/internal/tmux"
-	"github.com/CDFalcon/ccmux/internal/updater"
-	"github.com/CDFalcon/ccmux/internal/version"
 )
 
 type model struct {
-	view         ViewState
-	previousView ViewState
-	agents       []*agent.Agent
+	view          ViewState
+	previousView  ViewState
+	agents        []*agent.Agent
 	queueItems    []*queue.QueueItem
 	projects      []*project.Project
 	selectedIndex int
@@ -44,18 +44,18 @@ type model struct {
 	err           error
 
 	// Task spawn inputs
-	taskInput             textarea.Model
-	branchInput           textinput.Model
-	branchOptions         []string
-	branchFilter          textinput.Model
-	filteredBranches      []string
-	projectFilter         textinput.Model
-	filteredProjects      []*project.Project
-	spawnBranch           string
-	spawnTask             string
-	worktreeNameInput     textinput.Model
-	spawnPromptEnabled    map[string]bool
-	spawnFilteredPrompts  []*prompt.Prompt
+	taskInput            textarea.Model
+	branchInput          textinput.Model
+	branchOptions        []string
+	branchFilter         textinput.Model
+	filteredBranches     []string
+	projectFilter        textinput.Model
+	filteredProjects     []*project.Project
+	spawnBranch          string
+	spawnTask            string
+	worktreeNameInput    textinput.Model
+	spawnPromptEnabled   map[string]bool
+	spawnFilteredPrompts []*prompt.Prompt
 
 	// Project form inputs
 	projectForm     projectFormModel
@@ -103,20 +103,19 @@ type model struct {
 	marqueeOffset   int
 	prevWindowNames map[string]string
 
-	// CI check tracking
-	ciLastChecked          map[string]time.Time
-	ciChecking             map[string]bool
-	ciCheckProgress        map[string]ciProgress
-	ciResumeHistory        map[string][]time.Time
-	ciLastNotifiedSummary  map[string]string
+	// CI check tracking (transient UI state; dedup/throttle state lives on
+	// the Agent struct in the store so it survives ccmux restarts).
+	ciLastChecked   map[string]time.Time
+	ciChecking      map[string]bool
+	ciCheckProgress map[string]ciProgress
 
 	// Resource monitoring
-	agentResources   map[string]*AgentResources
-	liveDailyCosts   map[string]float64
-	totalMemKB       int64
-	clkTck           int64
-	hostDiskAvailGB  float64
-	hostMemPercent   float64
+	agentResources  map[string]*AgentResources
+	liveDailyCosts  map[string]float64
+	totalMemKB      int64
+	clkTck          int64
+	hostDiskAvailGB float64
+	hostMemPercent  float64
 	prevCPUTicks    map[int]int64
 
 	// Download progress
@@ -634,38 +633,36 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	progress := new(int64)
 
 	return model{
-		view:              ViewMain,
-		taskInput:         taskInput,
-		branchInput:       branchInput,
-		branchFilter:      branchFilter,
-		projectFilter:     projectFilter,
-		worktreeNameInput: worktreeNameInput,
-		interveneInput:    interveneInput,
-		projectForm:       newProjectForm(),
-		editProjectForm:   newEditProjectForm(),
-		promptForm:        newPromptForm(),
-		editPromptForm:    newEditPromptForm(),
+		view:               ViewMain,
+		taskInput:          taskInput,
+		branchInput:        branchInput,
+		branchFilter:       branchFilter,
+		projectFilter:      projectFilter,
+		worktreeNameInput:  worktreeNameInput,
+		interveneInput:     interveneInput,
+		projectForm:        newProjectForm(),
+		editProjectForm:    newEditProjectForm(),
+		promptForm:         newPromptForm(),
+		editPromptForm:     newEditPromptForm(),
 		spawnPromptEnabled: make(map[string]bool),
-		ciLastChecked:         make(map[string]time.Time),
-		ciChecking:            make(map[string]bool),
-		ciCheckProgress:       make(map[string]ciProgress),
-		ciResumeHistory:       make(map[string][]time.Time),
-		ciLastNotifiedSummary: make(map[string]string),
-		prevWindowNames:   make(map[string]string),
-		totalMemKB:        getTotalMemoryKB(),
-		clkTck:            getClockTicks(),
-		prevCPUTicks:      make(map[int]int64),
-		downloadProgress:  progress,
-		projSetupBuffers:  make(map[string]*projImportBuffer),
-		agentStore:        agentStore,
-		queueManager:      queueManager,
-		projectStore:      projectStore,
-		promptStore:       promptStore,
-		settingsStore:     settingsStore,
-		dailyCostStore:    dailyCostStore,
-		tmuxManager:       tmuxManager,
-		sessionID:         sessionID,
-		betaChannel:       loadBetaChannel(settingsStore),
+		ciLastChecked:      make(map[string]time.Time),
+		ciChecking:         make(map[string]bool),
+		ciCheckProgress:    make(map[string]ciProgress),
+		prevWindowNames:    make(map[string]string),
+		totalMemKB:         getTotalMemoryKB(),
+		clkTck:             getClockTicks(),
+		prevCPUTicks:       make(map[int]int64),
+		downloadProgress:   progress,
+		projSetupBuffers:   make(map[string]*projImportBuffer),
+		agentStore:         agentStore,
+		queueManager:       queueManager,
+		projectStore:       projectStore,
+		promptStore:        promptStore,
+		settingsStore:      settingsStore,
+		dailyCostStore:     dailyCostStore,
+		tmuxManager:        tmuxManager,
+		sessionID:          sessionID,
+		betaChannel:        loadBetaChannel(settingsStore),
 	}
 }
 
@@ -939,19 +936,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		agentExists := make(map[string]bool)
-		for _, a := range m.agents {
-			agentExists[a.ID] = true
-		}
 		for id := range m.ciLastChecked {
 			if !activeWaiting[id] {
 				delete(m.ciLastChecked, id)
 				delete(m.ciChecking, id)
 				delete(m.ciCheckProgress, id)
-				if !agentExists[id] {
-					delete(m.ciResumeHistory, id)
-					delete(m.ciLastNotifiedSummary, id)
-				}
 			}
 		}
 		if len(cmds) > 0 {
@@ -996,7 +985,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ciCheckProgress[msg.agentID] = ciProgress{Completed: msg.completed, Total: msg.total}
 		if msg.hasMergeConflict {
 			if currentAgent != nil {
-				if m.shouldThrottleResume(msg.agentID) {
+				if m.shouldThrottleResume(currentAgent) {
 					m.throttleAgent(msg.agentID)
 					return m, m.refreshCmd()
 				}
@@ -1010,7 +999,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.hasNewReview {
 			if currentAgent != nil {
-				if m.shouldThrottleResume(msg.agentID) {
+				if m.shouldThrottleResume(currentAgent) {
 					m.throttleAgent(msg.agentID)
 					return m, m.refreshCmd()
 				}
@@ -1024,12 +1013,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.status {
 		case ciStatusPending:
-			delete(m.ciLastNotifiedSummary, msg.agentID)
+			// Do NOT clear CILastNotifiedSummary here. CI runs always pass
+			// through a pending state on their way to pass/fail; clearing
+			// here would reset dedup every cycle and resend the same
+			// "CI failed: X" message to the agent forever.
 		case ciStatusPassed:
-			delete(m.ciLastNotifiedSummary, msg.agentID)
 			if !wasWaitingReview {
 				delete(m.ciCheckProgress, msg.agentID)
-				delete(m.ciResumeHistory, msg.agentID)
 				summary := getPRTitleFromURL(msg.prURL)
 				if summary == "" {
 					summary = fmt.Sprintf("PR ready: %s", msg.prURL)
@@ -1037,19 +1027,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.queueManager.Add(queue.ItemTypePRReady, msg.agentID, summary, msg.prURL)
 				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
 					ag.Status = agent.StatusWaitingReview
+					ag.CILastNotifiedSummary = ""
+					ag.CIResumeHistory = nil
 				})
 				return m, m.refreshCmd()
 			}
+			if currentAgent != nil {
+				// Agent is still in waiting-review (user hasn't reviewed yet);
+				// clear dedup so the next real failure notifies again.
+				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+					ag.CILastNotifiedSummary = ""
+				})
+			}
 		case ciStatusFailed:
 			if currentAgent != nil {
-				if m.isDuplicateCIFailure(msg.agentID, msg.summary) {
+				if m.isDuplicateCIFailure(currentAgent, msg.summary) {
 					return m, nil
 				}
-				if m.shouldThrottleResume(msg.agentID) {
+				if m.shouldThrottleResume(currentAgent) {
 					m.throttleAgent(msg.agentID)
 					return m, m.refreshCmd()
 				}
-				m.ciLastNotifiedSummary[msg.agentID] = msg.summary
+				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+					ag.CILastNotifiedSummary = msg.summary
+				})
 				m.recordResume(msg.agentID)
 				if wasWaitingReview {
 					m.queueManager.RemoveByAgentAndType(msg.agentID, queue.ItemTypePRReady)
@@ -3015,26 +3016,41 @@ const (
 	ciResumeWindow      = 15 * time.Minute
 )
 
-func (m *model) isDuplicateCIFailure(agentID, summary string) bool {
-	prev, ok := m.ciLastNotifiedSummary[agentID]
-	return ok && prev == summary
+func (m *model) isDuplicateCIFailure(a *agent.Agent, summary string) bool {
+	if a == nil {
+		return false
+	}
+	return a.CILastNotifiedSummary != "" && a.CILastNotifiedSummary == summary
 }
 
-func (m *model) shouldThrottleResume(agentID string) bool {
-	now := time.Now()
-	cutoff := now.Add(-ciResumeWindow)
+func recentResumeHistory(history []time.Time, window time.Duration) []time.Time {
+	cutoff := time.Now().Add(-window)
 	var recent []time.Time
-	for _, t := range m.ciResumeHistory[agentID] {
+	for _, t := range history {
 		if t.After(cutoff) {
 			recent = append(recent, t)
 		}
 	}
-	m.ciResumeHistory[agentID] = recent
+	return recent
+}
+
+func (m *model) shouldThrottleResume(a *agent.Agent) bool {
+	if a == nil {
+		return false
+	}
+	recent := recentResumeHistory(a.CIResumeHistory, ciResumeWindow)
+	if len(recent) != len(a.CIResumeHistory) {
+		m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+			ag.CIResumeHistory = recent
+		})
+	}
 	return len(recent) >= ciResumeMaxAttempts
 }
 
 func (m *model) recordResume(agentID string) {
-	m.ciResumeHistory[agentID] = append(m.ciResumeHistory[agentID], time.Now())
+	m.agentStore.Update(agentID, func(ag *agent.Agent) {
+		ag.CIResumeHistory = append(recentResumeHistory(ag.CIResumeHistory, ciResumeWindow), time.Now())
+	})
 }
 
 func (m *model) throttleAgent(agentID string) {
