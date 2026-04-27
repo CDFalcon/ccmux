@@ -404,15 +404,65 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
+#!/bin/bash
+# ccmux PostToolUse hook: after a successful 'gh pr create', automatically
+# kick off 'ccmux ci-wait' so the orchestrator can monitor CI without the
+# agent having to invoke it manually. Silently no-ops for any other tool
+# call or if the command failed / PR URL can't be extracted.
+set -u
+
+INPUT=$(cat)
+
+TOOL_NAME=$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null || echo "")
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
+
+COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
+if ! grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
+  exit 0
+fi
+
+STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
+PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
+
+if [ -z "$PR_URL" ]; then
+  exit 0
+fi
+
+if [ -z "${CCMUX_AGENT_ID:-}" ]; then
+  exit 0
+fi
+
+nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
+disown 2>/dev/null || true
+
+exit 0
+HOOKEOF
+chmod +x .claude/hooks/post_tool_use.sh
+
+CCMUX_STOP_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_PTU_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/post_tool_use.sh"
 
 if [ -f .claude/settings.json ]; then
   EXISTING=$(cat .claude/settings.json)
-  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
-  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+  CLEANED=$(echo "$EXISTING" | jq '
+    .hooks.Stop = [((.hooks.Stop // [])[]) | select((.hooks // []) | any(.command | contains("ccmux agent-stopped") or contains("/.claude/hooks/stop.sh")) | not)]
+    | .hooks.PostToolUse = [((.hooks.PostToolUse // [])[]) | select((.hooks // []) | any(.command | contains("/.claude/hooks/post_tool_use.sh")) | not)]
+  ')
+  echo "$CLEANED" | jq \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '.hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop_cmd}]}])
+     | .hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}])' \
+    > .claude/settings.json
 else
-  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+  jq -n \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '{hooks: {Stop: [{hooks: [{type: "command", command: $stop_cmd}]}], PostToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}]}}' \
+    > .claude/settings.json
 fi
 
 # Prevent ccmux hook files from being committed
@@ -420,12 +470,19 @@ GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
 mkdir -p "$GIT_COMMON_DIR/info"
 STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+PTU_SH_TRACKED=$(git ls-files .claude/hooks/post_tool_use.sh)
 SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
 
 if [ -z "$STOP_SH_TRACKED" ]; then
   grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
 else
   git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$PTU_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/post_tool_use.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/post_tool_use.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/post_tool_use.sh
 fi
 
 if [ -z "$SETTINGS_TRACKED" ]; then
@@ -479,11 +536,10 @@ PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
-When done with your task:
-1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-2. Run: ccmux ci-wait <pr-url>
+When done with your task, commit your work and create a PR with:
+    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 
-Note: ccmux automatically monitors CI after you run ci-wait. If CI fails, you will be resumed with failure details. If CI passes, the PR will be marked ready automatically."
+ccmux automatically monitors CI the moment the PR is created — a PostToolUse hook fires 'ccmux ci-wait' in the background for you. If CI fails, you will be resumed with failure details. If CI passes, the PR will be marked ready automatically. You do not need to run 'ccmux ci-wait' yourself."
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1117,15 +1173,65 @@ ccmux agent-stopped "$CCMUX_AGENT_ID"
 HOOKEOF
 chmod +x .claude/hooks/stop.sh
 
-CCMUX_HOOK_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-CCMUX_HOOK_JSON=$(jq -n --arg cmd "$CCMUX_HOOK_CMD" '{hooks: {Stop: [{hooks: [{type: "command", command: $cmd}]}]}}')
+cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
+#!/bin/bash
+# ccmux PostToolUse hook: after a successful 'gh pr create', automatically
+# kick off 'ccmux ci-wait' so the orchestrator can monitor CI without the
+# agent having to invoke it manually. Silently no-ops for any other tool
+# call or if the command failed / PR URL can't be extracted.
+set -u
+
+INPUT=$(cat)
+
+TOOL_NAME=$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null || echo "")
+if [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
+
+COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
+if ! grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
+  exit 0
+fi
+
+STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
+PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
+
+if [ -z "$PR_URL" ]; then
+  exit 0
+fi
+
+if [ -z "${CCMUX_AGENT_ID:-}" ]; then
+  exit 0
+fi
+
+nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
+disown 2>/dev/null || true
+
+exit 0
+HOOKEOF
+chmod +x .claude/hooks/post_tool_use.sh
+
+CCMUX_STOP_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_PTU_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/post_tool_use.sh"
 
 if [ -f .claude/settings.json ]; then
   EXISTING=$(cat .claude/settings.json)
-  CLEANED=$(echo "$EXISTING" | jq '.hooks.Stop = [(.hooks.Stop // [])[] | select(.hooks | any(.command | contains("ccmux agent-stopped")) | not)]')
-  echo "$CLEANED" | jq --argjson hook "$CCMUX_HOOK_JSON" '.hooks.Stop = ((.hooks.Stop // []) + $hook.hooks.Stop)' > .claude/settings.json
+  CLEANED=$(echo "$EXISTING" | jq '
+    .hooks.Stop = [((.hooks.Stop // [])[]) | select((.hooks // []) | any(.command | contains("ccmux agent-stopped") or contains("/.claude/hooks/stop.sh")) | not)]
+    | .hooks.PostToolUse = [((.hooks.PostToolUse // [])[]) | select((.hooks // []) | any(.command | contains("/.claude/hooks/post_tool_use.sh")) | not)]
+  ')
+  echo "$CLEANED" | jq \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '.hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop_cmd}]}])
+     | .hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}])' \
+    > .claude/settings.json
 else
-  echo "$CCMUX_HOOK_JSON" | jq '.' > .claude/settings.json
+  jq -n \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '{hooks: {Stop: [{hooks: [{type: "command", command: $stop_cmd}]}], PostToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}]}}' \
+    > .claude/settings.json
 fi
 
 # Prevent ccmux hook files from being committed
@@ -1133,12 +1239,19 @@ GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
 mkdir -p "$GIT_COMMON_DIR/info"
 STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+PTU_SH_TRACKED=$(git ls-files .claude/hooks/post_tool_use.sh)
 SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
 
 if [ -z "$STOP_SH_TRACKED" ]; then
   grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
 else
   git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$PTU_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/post_tool_use.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/post_tool_use.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/post_tool_use.sh
 fi
 
 if [ -z "$SETTINGS_TRACKED" ]; then
@@ -1159,9 +1272,10 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
 
-When done with your task:
-1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-2. Run: ccmux ci-wait <pr-url>"
+When done with your task, commit your work and create a PR with:
+    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+
+ccmux automatically monitors CI the moment the PR is created — a PostToolUse hook fires 'ccmux ci-wait' in the background for you. You do not need to run 'ccmux ci-wait' yourself."
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
