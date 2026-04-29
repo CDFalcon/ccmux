@@ -36,7 +36,7 @@ sudo apt-get update && sudo apt-get install -y git tmux jq
 gh auth login
 
 # Install Claude Code
-npm install -g @anthropic-ai/claude-code
+curl -fsSL https://claude.ai/install.sh | bash
 
 # Install ccmux
 mkdir -p ~/.local/bin
@@ -61,7 +61,7 @@ brew install git tmux jq gh
 gh auth login
 
 # Install Claude Code
-npm install -g @anthropic-ai/claude-code
+curl -fsSL https://claude.ai/install.sh | bash
 
 # Install ccmux
 mkdir -p ~/.local/bin
