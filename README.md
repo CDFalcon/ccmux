@@ -40,7 +40,7 @@ npm install -g @anthropic-ai/claude-code
 
 # Install ccmux (into ~/.local/bin — no sudo required for updates)
 mkdir -p ~/.local/bin
-gh release download --repo colby-duke-ai/ccmux -p 'ccmux-linux-amd64'
+gh release download --repo CDFalcon/ccmux -p 'ccmux-linux-amd64'
 chmod +x ccmux-linux-amd64
 mv ccmux-linux-amd64 ~/.local/bin/ccmux
 
@@ -65,7 +65,7 @@ npm install -g @anthropic-ai/claude-code
 
 # Install ccmux (into ~/.local/bin — no sudo required for updates)
 mkdir -p ~/.local/bin
-gh release download --repo colby-duke-ai/ccmux -p 'ccmux-darwin-arm64'
+gh release download --repo CDFalcon/ccmux -p 'ccmux-darwin-arm64'
 chmod +x ccmux-darwin-arm64
 mv ccmux-darwin-arm64 ~/.local/bin/ccmux
 

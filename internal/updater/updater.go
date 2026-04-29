@@ -29,7 +29,7 @@ type ChangelogEntry struct {
 	Title  string `json:"title"`
 }
 
-const repo = "colby-duke-ai/ccmux"
+const repo = "CDFalcon/ccmux"
 
 func CheckForUpdate(beta bool) (latestVersion string, hasUpdate bool, err error) {
 	var cmd *exec.Cmd
