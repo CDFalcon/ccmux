@@ -38,7 +38,7 @@ gh auth login
 # Install Claude Code
 npm install -g @anthropic-ai/claude-code
 
-# Install ccmux (into ~/.local/bin — no sudo required for updates)
+# Install ccmux
 mkdir -p ~/.local/bin
 gh release download --repo CDFalcon/ccmux -p 'ccmux-linux-amd64'
 chmod +x ccmux-linux-amd64
@@ -63,7 +63,7 @@ gh auth login
 # Install Claude Code
 npm install -g @anthropic-ai/claude-code
 
-# Install ccmux (into ~/.local/bin — no sudo required for updates)
+# Install ccmux
 mkdir -p ~/.local/bin
 gh release download --repo CDFalcon/ccmux -p 'ccmux-darwin-arm64'
 chmod +x ccmux-darwin-arm64
