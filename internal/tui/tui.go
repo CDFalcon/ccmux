@@ -544,6 +544,10 @@ type refreshMsg struct {
 }
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
+type mergeConflictOnAcceptMsg struct {
+	agentID string
+	output  string
+}
 type clearMessageMsg struct{}
 type clearCtrlCMsg struct{}
 type spawnStartedMsg struct{}
@@ -1106,6 +1110,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case successMsg:
 		m.err = nil
 		return m, m.refreshCmd()
+
+	case mergeConflictOnAcceptMsg:
+		var currentAgent *agent.Agent
+		for _, ag := range m.agents {
+			if ag.ID == msg.agentID {
+				currentAgent = ag
+				break
+			}
+		}
+		if currentAgent == nil {
+			m.err = fmt.Errorf("auto-merge hit a conflict but agent %s is gone; resolve manually: %s", msg.agentID, msg.output)
+			return m, tea.Batch(clearMessageCmd(), m.refreshCmd())
+		}
+		m.err = fmt.Errorf("auto-merge hit a conflict; resuming agent %s to resolve", msg.agentID)
+		return m, tea.Batch(clearMessageCmd(), m.resumeAgentForMergeConflictCmd(currentAgent))
 
 	case projSetupCompleteMsg:
 		delete(m.projSetupBuffers, msg.name)
@@ -2633,7 +2652,11 @@ func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 
 			mergeCmd := exec.Command("gh", "pr", "merge", prURL, "--squash", "--delete-branch")
 			if output, err := mergeCmd.CombinedOutput(); err != nil {
-				return errMsg{fmt.Errorf("merge PR failed: %s: %w", string(output), err)}
+				outStr := string(output)
+				if isMergeConflictFailure(outStr, prURL) {
+					return mergeConflictOnAcceptMsg{agentID: agentID, output: outStr}
+				}
+				return errMsg{fmt.Errorf("merge PR failed: %s: %w", outStr, err)}
 			}
 		}
 
@@ -2770,6 +2793,41 @@ type statusCheckRollupResponse struct {
 	StatusCheckRollup []prCheckResult `json:"statusCheckRollup"`
 	Mergeable         string          `json:"mergeable"`
 	State             string          `json:"state"`
+}
+
+// isMergeConflictFailure reports whether a failed `gh pr merge` was caused by
+// merge conflicts with the base branch. It first inspects the command output
+// for known phrasings, then falls back to querying the PR's mergeable state
+// via `gh pr view` so we catch cases where the gh CLI exit message changes.
+func isMergeConflictFailure(output, prURL string) bool {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "merge conflict") || strings.Contains(lower, "conflicting") || strings.Contains(lower, "not mergeable") {
+		return true
+	}
+	return prHasMergeConflict(prURL)
+}
+
+// prHasMergeConflict queries GitHub for the PR's mergeable state and returns
+// true when it is in CONFLICTING.
+func prHasMergeConflict(prURL string) bool {
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--repo", owner+"/"+repo, "--json", "mergeable")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var resp struct {
+		Mergeable string `json:"mergeable"`
+	}
+	if err := json.Unmarshal(output, &resp); err != nil {
+		return false
+	}
+	return resp.Mergeable == "CONFLICTING"
 }
 
 func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
