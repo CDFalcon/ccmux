@@ -1479,3 +1479,34 @@ func TestCheckForNewReviews_ShouldDetect_GivenReviewAfterUpdatedCIWaitAt(t *test
 		t.Error("expected new review submitted after CIWaitAt to be detected")
 	}
 }
+
+func TestIsMergeConflictFailure_ShouldDetect_GivenMergeConflictPhrase(t *testing.T) {
+	output := "failed to merge pull request: GraphQL: Pull Request is not mergeable: Merge conflict (mergePullRequest)"
+	if !isMergeConflictFailure(output, "") {
+		t.Error("expected merge-conflict phrase in gh output to be detected")
+	}
+}
+
+func TestIsMergeConflictFailure_ShouldDetect_GivenConflictingPhrase(t *testing.T) {
+	output := "Pull request is in CONFLICTING state"
+	if !isMergeConflictFailure(output, "") {
+		t.Error("expected 'conflicting' phrase in gh output to be detected")
+	}
+}
+
+func TestIsMergeConflictFailure_ShouldDetect_GivenNotMergeablePhrase(t *testing.T) {
+	output := "Pull Request is not mergeable"
+	if !isMergeConflictFailure(output, "") {
+		t.Error("expected 'not mergeable' phrase in gh output to be detected")
+	}
+}
+
+func TestIsMergeConflictFailure_ShouldNotDetect_GivenUnrelatedFailure(t *testing.T) {
+	// gh sometimes returns auth or branch-protection errors with no PR URL we
+	// can query against. We expect a clean false in that case so the caller
+	// surfaces the original error to the user.
+	output := "GraphQL: Resource not accessible by integration"
+	if isMergeConflictFailure(output, "") {
+		t.Error("expected unrelated failure NOT to be reported as a merge conflict")
+	}
+}
