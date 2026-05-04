@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -188,6 +189,40 @@ func installBinaryElevated(src, dst string) error {
 	return nil
 }
 
+// squashMergeRE matches a trailing "(#NNN)" PR reference on the first line of
+// a commit message produced by GitHub's "Squash and merge" button.
+var squashMergeRE = regexp.MustCompile(`\(#(\d+)\)\s*$`)
+
+// extractPRNumbers parses commit messages and returns the set of PR numbers
+// referenced as either a "Merge pull request #N" merge commit or a
+// "Title (#N)" squash-merge commit. It only inspects the first line so that
+// stray "#N" references in commit bodies don't pollute the results.
+func extractPRNumbers(messages []string) map[int]bool {
+	prs := make(map[int]bool)
+	for _, msg := range messages {
+		firstLine := strings.SplitN(msg, "\n", 2)[0]
+
+		// Merge-commit style: "Merge pull request #123 from owner/branch"
+		if strings.HasPrefix(firstLine, "Merge pull request #") {
+			rest := strings.TrimPrefix(firstLine, "Merge pull request #")
+			if idx := strings.Index(rest, " "); idx > 0 {
+				if num, err := strconv.Atoi(rest[:idx]); err == nil {
+					prs[num] = true
+					continue
+				}
+			}
+		}
+
+		// Squash-merge style: "Title of the change (#123)"
+		if m := squashMergeRE.FindStringSubmatch(firstLine); m != nil {
+			if num, err := strconv.Atoi(m[1]); err == nil {
+				prs[num] = true
+			}
+		}
+	}
+	return prs
+}
+
 func FetchChangelog(currentVersion, latestVersion string) ([]ChangelogEntry, error) {
 	if currentVersion == "dev" || latestVersion == "" {
 		return nil, nil
@@ -206,18 +241,7 @@ func FetchChangelog(currentVersion, latestVersion string) ([]ChangelogEntry, err
 		return nil, fmt.Errorf("failed to parse compare output: %w", err)
 	}
 
-	includedPRs := make(map[int]bool)
-	for _, msg := range messages {
-		firstLine := strings.Split(msg, "\n")[0]
-		if strings.HasPrefix(firstLine, "Merge pull request #") {
-			rest := strings.TrimPrefix(firstLine, "Merge pull request #")
-			if idx := strings.Index(rest, " "); idx > 0 {
-				if num, err := strconv.Atoi(rest[:idx]); err == nil {
-					includedPRs[num] = true
-				}
-			}
-		}
-	}
+	includedPRs := extractPRNumbers(messages)
 
 	if len(includedPRs) == 0 {
 		return nil, nil

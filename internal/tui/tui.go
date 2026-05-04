@@ -1089,9 +1089,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case changelogFetchedMsg:
 		m.changelogLoading = false
-		if msg.err == nil {
-			m.changelogEntries = msg.entries
+		if msg.err != nil {
+			m.updateError = fmt.Sprintf("Failed to load changelog: %s", msg.err.Error())
+			return m, nil
 		}
+		m.changelogEntries = msg.entries
 		return m, nil
 
 	case updateCompleteMsg:
