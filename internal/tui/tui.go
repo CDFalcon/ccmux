@@ -2769,8 +2769,9 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback. Commit and push your changes, then run: ccmux ci-wait $PR_URL"
+  "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback, then commit and push your changes. ccmux will automatically resume monitoring CI for you — you do not need to run 'ccmux ci-wait' yourself."
 
+ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
 `, sq(agentID), sq(worktreePath), sq(prURL))
 
@@ -3059,8 +3060,9 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "CI checks have FAILED for the PR at $PR_URL. Failures: $FAILURE_SUMMARY -- Investigate the failures using: gh pr checks $PR_URL -- Fix the issues, commit and push your changes, then run: ccmux ci-wait $PR_URL"
+  "CI checks have FAILED for the PR at $PR_URL. Failures: $FAILURE_SUMMARY -- Investigate the failures using: gh pr checks $PR_URL -- Fix the issues, then commit and push your changes. ccmux will automatically resume monitoring CI for you — you do not need to run 'ccmux ci-wait' yourself."
 
+ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
 `, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary))
 
@@ -3189,8 +3191,9 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 claude --continue --dangerously-skip-permissions \
-  "The PR at $PR_URL has merge conflicts with the base branch ($BASE_BRANCH). Resolve the merge conflicts, push your changes, then run: ccmux ci-wait $PR_URL"
+  "The PR at $PR_URL has merge conflicts with the base branch ($BASE_BRANCH). Resolve the merge conflicts and push your changes. ccmux will automatically resume monitoring CI for you — you do not need to run 'ccmux ci-wait' yourself."
 
+ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
 `, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch))
 
@@ -3359,9 +3362,10 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 
 IMPORTANT: Your previous session was restarted. You are being resumed with --continue. Review your progress so far and continue where you left off.
 
-When done with your task:
-1. Commit your work and create a PR with: gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-2. Run: ccmux ci-wait <pr-url>"
+When done with your task, commit your work and create a PR with:
+    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+
+ccmux automatically monitors CI the moment the PR is created — a PostToolUse hook fires 'ccmux ci-wait' in the background for you. If CI fails, you will be resumed with failure details. If CI passes, the PR will be marked ready automatically. You do not need to run 'ccmux ci-wait' yourself."
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
