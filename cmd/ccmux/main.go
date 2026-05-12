@@ -406,10 +406,15 @@ chmod +x .claude/hooks/stop.sh
 
 cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
 #!/bin/bash
-# ccmux PostToolUse hook: after a successful 'gh pr create', automatically
-# kick off 'ccmux ci-wait' so the orchestrator can monitor CI without the
-# agent having to invoke it manually. Silently no-ops for any other tool
-# call or if the command failed / PR URL can't be extracted.
+# ccmux PostToolUse hook: after a successful 'gh pr create' or 'git push',
+# automatically kick off 'ccmux ci-wait' so the orchestrator can monitor CI
+# without the agent having to invoke it manually. Silently no-ops for any
+# other tool call.
+#
+# 'gh pr create' is the initial PR (URL extracted from output).
+# 'git push' covers follow-up pushes addressing review comments or fixing
+# CI failures — without this branch, the agent's status never flips back
+# to waiting_review after the new CI passes.
 set -u
 
 INPUT=$(cat)
@@ -419,24 +424,30 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
-if ! grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
-  exit 0
-fi
-
-STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
-PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
-
-if [ -z "$PR_URL" ]; then
-  exit 0
-fi
-
 if [ -z "${CCMUX_AGENT_ID:-}" ]; then
   exit 0
 fi
 
-nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
-disown 2>/dev/null || true
+COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
+
+if grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
+  STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
+  PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
+  if [ -n "$PR_URL" ]; then
+    nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+  fi
+  exit 0
+fi
+
+if grep -qE '(^|[[:space:]&;|(])git[[:space:]]+push([[:space:]]|$)' <<<"$COMMAND"; then
+  # No URL arg — ci-wait will use the agent's stored PR URL, or no-op if
+  # the agent doesn't have one yet (e.g. pushing the branch before
+  # 'gh pr create').
+  nohup ccmux ci-wait >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  exit 0
+fi
 
 exit 0
 HOOKEOF
@@ -692,18 +703,39 @@ func prReadyCmd() *cobra.Command {
 
 func ciWaitCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "ci-wait <pr-url>",
+		Use:    "ci-wait [pr-url]",
 		Hidden: true,
-		Args:   cobra.ExactArgs(1),
+		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			prURL := args[0]
-
 			agentID := os.Getenv("CCMUX_AGENT_ID")
 			if agentID == "" {
 				return fmt.Errorf("CCMUX_AGENT_ID environment variable not set")
 			}
 
 			sessionID := getCurrentSessionID()
+
+			agentStore, err := agent.NewStore(sessionID)
+			if err != nil {
+				return err
+			}
+
+			var prURL string
+			if len(args) > 0 {
+				prURL = args[0]
+			} else {
+				// No URL supplied — fall back to the agent's stored URL so
+				// the PostToolUse hook can fire ci-wait on plain `git push`
+				// (resume scenarios) without having to extract a URL from
+				// the tool output.
+				a, err := agentStore.Get(agentID)
+				if err != nil {
+					return err
+				}
+				if a.PRURL == "" {
+					return nil
+				}
+				prURL = a.PRURL
+			}
 
 			queueManager, err := queue.NewQueue(sessionID)
 			if err != nil {
@@ -713,9 +745,11 @@ func ciWaitCmd() *cobra.Command {
 			if err := queueManager.RemoveByAgentAndType(agentID, queue.ItemTypePRReady); err != nil {
 				return err
 			}
-
-			agentStore, err := agent.NewStore(sessionID)
-			if err != nil {
+			// The Stop hook can flip a resumed agent (no `gh pr create`) to
+			// StatusReady + an "Agent finished (no PR)" idle item before this
+			// fires. Clear it so the queue accurately reflects "waiting on CI"
+			// for the new push.
+			if err := queueManager.RemoveByAgentAndType(agentID, queue.ItemTypeIdle); err != nil {
 				return err
 			}
 
@@ -1175,10 +1209,15 @@ chmod +x .claude/hooks/stop.sh
 
 cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
 #!/bin/bash
-# ccmux PostToolUse hook: after a successful 'gh pr create', automatically
-# kick off 'ccmux ci-wait' so the orchestrator can monitor CI without the
-# agent having to invoke it manually. Silently no-ops for any other tool
-# call or if the command failed / PR URL can't be extracted.
+# ccmux PostToolUse hook: after a successful 'gh pr create' or 'git push',
+# automatically kick off 'ccmux ci-wait' so the orchestrator can monitor CI
+# without the agent having to invoke it manually. Silently no-ops for any
+# other tool call.
+#
+# 'gh pr create' is the initial PR (URL extracted from output).
+# 'git push' covers follow-up pushes addressing review comments or fixing
+# CI failures — without this branch, the agent's status never flips back
+# to waiting_review after the new CI passes.
 set -u
 
 INPUT=$(cat)
@@ -1188,24 +1227,30 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
-if ! grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
-  exit 0
-fi
-
-STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
-PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
-
-if [ -z "$PR_URL" ]; then
-  exit 0
-fi
-
 if [ -z "${CCMUX_AGENT_ID:-}" ]; then
   exit 0
 fi
 
-nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
-disown 2>/dev/null || true
+COMMAND=$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null || echo "")
+
+if grep -qE '(^|[[:space:]&;|(])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$COMMAND"; then
+  STDOUT=$(jq -r '.tool_response.stdout // .tool_response.output // empty' <<<"$INPUT" 2>/dev/null || echo "")
+  PR_URL=$(grep -oE 'https://github\.com/[^[:space:]]+/pull/[0-9]+' <<<"$STDOUT" | tail -n1)
+  if [ -n "$PR_URL" ]; then
+    nohup ccmux ci-wait "$PR_URL" >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+  fi
+  exit 0
+fi
+
+if grep -qE '(^|[[:space:]&;|(])git[[:space:]]+push([[:space:]]|$)' <<<"$COMMAND"; then
+  # No URL arg — ci-wait will use the agent's stored PR URL, or no-op if
+  # the agent doesn't have one yet (e.g. pushing the branch before
+  # 'gh pr create').
+  nohup ccmux ci-wait >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  exit 0
+fi
 
 exit 0
 HOOKEOF
