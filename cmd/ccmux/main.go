@@ -548,9 +548,7 @@ PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task, commit your work and create a PR with:
-    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-
-ccmux automatically monitors CI the moment the PR is created — a PostToolUse hook fires 'ccmux ci-wait' in the background for you. If CI fails, you will be resumed with failure details. If CI passes, the PR will be marked ready automatically. You do not need to run 'ccmux ci-wait' yourself."
+    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1318,9 +1316,7 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
 
 When done with your task, commit your work and create a PR with:
-    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-
-ccmux automatically monitors CI the moment the PR is created — a PostToolUse hook fires 'ccmux ci-wait' in the background for you. You do not need to run 'ccmux ci-wait' yourself."
+    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
