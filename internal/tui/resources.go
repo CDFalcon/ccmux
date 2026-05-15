@@ -198,7 +198,14 @@ func findDescendants(rootPID int, procs map[int]*procInfo) []int {
 	return result
 }
 
-const cpuActiveThreshold = 0.05
+// cpuActiveThreshold is the amount of CPU time (in CPU-seconds) the persistent
+// process tree must consume between two refresh samples (~2s apart) for an
+// agent to be considered actively working rather than idle. An agent that is
+// genuinely idle at its input prompt only burns a tiny amount of CPU on its
+// long-lived processes (event loop, render, MCP keepalives), so the threshold
+// is set well above that noise floor but far below the cost of real tool /
+// subagent work.
+const cpuActiveThreshold = 0.20
 
 func isProcessTreeActive(
 	windowID string,
@@ -227,17 +234,29 @@ func isProcessTreeActiveFromPID(
 	}
 	descendants := findDescendants(rootPID, procs)
 
-	var curr, prev int64
+	// Only count CPU deltas for processes present in BOTH samples.
+	//
+	// Claude Code spawns many short-lived child processes (hooks, the ccmux
+	// forwarder, statusline scripts, quick bash tool calls) even while the
+	// user is idle at the prompt. A process that appears in currentTicks but
+	// not prevTicks (newly spawned) — or vice versa (just exited) — would
+	// otherwise contribute its entire CPU lifetime as a phantom "delta",
+	// consistently inflating the measurement above the threshold and masking
+	// genuinely idle agents. Restricting to the common PID set measures only
+	// sustained work by the agent's persistent process tree.
+	var deltaTicks int64
 	for _, pid := range descendants {
-		if t, ok := currentTicks[pid]; ok {
-			curr += t
+		curr, hasCurr := currentTicks[pid]
+		prev, hasPrev := prevTicks[pid]
+		if !hasCurr || !hasPrev {
+			continue
 		}
-		if t, ok := prevTicks[pid]; ok {
-			prev += t
+		// Guard against PID reuse producing a negative per-process delta.
+		if d := curr - prev; d > 0 {
+			deltaTicks += d
 		}
 	}
 
-	deltaTicks := curr - prev
 	if deltaTicks <= 0 {
 		return false
 	}

@@ -617,6 +617,68 @@ func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenNoPrevTicks(t *testin
 	}
 }
 
+func TestIsProcessTreeActiveFromPID_ShouldIgnoreNewlySpawnedChild_GivenPhantomDelta(t *testing.T) {
+	// Setup. The root process is idle (no delta), but a short-lived child
+	// (e.g. a hook or the ccmux forwarder) appeared since the previous sample
+	// and racked up CPU time. It only exists in currentTicks, so its CPU must
+	// NOT be counted as agent activity.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+		999: {pid: 999, ppid: 100, rss: 500},
+	}
+	currentTicks := map[int]int64{100: 500, 999: 9999}
+	prevTicks := map[int]int64{100: 500}
+	clkTck := int64(100)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive: newly spawned child must not count as agent activity")
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldIgnoreExitedChild_GivenStalePrevTicks(t *testing.T) {
+	// Setup. A child that existed in the previous sample has since exited and
+	// is gone from the current process tree. Its absence must not be treated
+	// as activity, and the still-idle root must remain inactive.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	currentTicks := map[int]int64{100: 500}
+	prevTicks := map[int]int64{100: 500, 999: 4000}
+	clkTck := int64(100)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive: an exited child must not count as agent activity")
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenSubThresholdIdleNoise(t *testing.T) {
+	// Setup. A persistent process burns a small amount of CPU between samples
+	// (idle render / event-loop noise) that is below cpuActiveThreshold.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	// 10 ticks / 100 = 0.10 CPU-seconds, below the 0.20 threshold.
+	currentTicks := map[int]int64{100: 510}
+	prevTicks := map[int]int64{100: 500}
+	clkTck := int64(100)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive when CPU delta is below the active threshold")
+	}
+}
+
 func TestExtractDate_ShouldReturnDate_GivenValidTimestamp(t *testing.T) {
 	// Execute.
 	result := extractDate("2026-03-25T19:02:43.170Z")
