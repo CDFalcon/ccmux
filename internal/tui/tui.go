@@ -1814,9 +1814,9 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex < len(m.projects)-1 {
 			m.selectedIndex++
 		}
-	case "shift+up", "K":
+	case "K":
 		return m.moveSelectedProject(-1)
-	case "shift+down", "J":
+	case "J":
 		return m.moveSelectedProject(1)
 	case "a":
 		m.view = ViewAddProjectName

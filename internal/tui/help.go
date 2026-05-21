@@ -108,7 +108,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewManageProjects: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the project list"},
-		{FooterText: "[shift+↑/↓ or K/J] move", Description: "Move the selected project up or down in the list"},
+		{FooterText: "[K/J] move", Description: "Move the selected project up or down in the list"},
 		{FooterText: "[a]dd project", Description: "Register a new project"},
 		{FooterText: "[enter] edit selected", Description: "Edit the selected project"},
 		{FooterText: "[d]elete selected", Description: "Remove the selected project"},
