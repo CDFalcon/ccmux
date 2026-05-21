@@ -171,9 +171,48 @@ func getSystemMemPercent() float64 {
 		return 0
 	}
 
+	usedBytes, ok := parseVmStatUsedBytes(string(output))
+	if !ok || usedBytes <= 0 {
+		return 0
+	}
+
+	totalCmd := exec.Command("sysctl", "-n", "hw.memsize")
+	totalOut, err := totalCmd.Output()
+	if err != nil {
+		return 0
+	}
+	totalBytes, err := strconv.ParseInt(strings.TrimSpace(string(totalOut)), 10, 64)
+	if err != nil || totalBytes <= 0 {
+		return 0
+	}
+	pct := float64(usedBytes) / float64(totalBytes) * 100
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+// parseVmStatUsedBytes computes "memory in use" from vm_stat output using the
+// same formula Activity Monitor displays as "Memory Used":
+//
+//	(anonymous - purgeable) + wired + compressed
+//
+// This intentionally excludes file-backed cached pages, which "active" lumps
+// together with anonymous app memory. On Apple Silicon the page size is 16 KiB
+// (vs. 4 KiB on Intel) and macOS aggressively keeps file caches in the active
+// set, so the older (active + wired + compressed) formula systematically
+// overstated "RAM used" by tens of percentage points on Apple Silicon
+// compared to Activity Monitor. The page size is read from the vm_stat header
+// line so this works on both architectures.
+func parseVmStatUsedBytes(output string) (int64, bool) {
 	pageSize := int64(4096)
-	var active, wired, compressed int64
-	for _, line := range strings.Split(string(output), "\n") {
+	var anonymous, purgeable, wired, compressed int64
+	var sawAnonymous, sawWired, sawCompressed bool
+
+	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, "Mach Virtual Memory Statistics") {
 			if idx := strings.Index(line, "page size of "); idx >= 0 {
 				rest := line[idx+len("page size of "):]
@@ -186,36 +225,28 @@ func getSystemMemPercent() float64 {
 			}
 			continue
 		}
-		if v, ok := parseVmStatField(line, "Pages active:"); ok {
-			active = v
+		if v, ok := parseVmStatField(line, "Anonymous pages:"); ok {
+			anonymous = v
+			sawAnonymous = true
+		} else if v, ok := parseVmStatField(line, "Pages purgeable:"); ok {
+			purgeable = v
 		} else if v, ok := parseVmStatField(line, "Pages wired down:"); ok {
 			wired = v
+			sawWired = true
 		} else if v, ok := parseVmStatField(line, "Pages occupied by compressor:"); ok {
 			compressed = v
+			sawCompressed = true
 		}
 	}
 
-	totalCmd := exec.Command("sysctl", "-n", "hw.memsize")
-	totalOut, err := totalCmd.Output()
-	if err != nil {
-		return 0
+	if !sawAnonymous || !sawWired || !sawCompressed {
+		return 0, false
 	}
-	totalBytes, err := strconv.ParseInt(strings.TrimSpace(string(totalOut)), 10, 64)
-	if err != nil || totalBytes <= 0 {
-		return 0
+	appPages := anonymous - purgeable
+	if appPages < 0 {
+		appPages = 0
 	}
-	usedBytes := (active + wired + compressed) * pageSize
-	if usedBytes <= 0 {
-		return 0
-	}
-	pct := float64(usedBytes) / float64(totalBytes) * 100
-	if pct < 0 {
-		return 0
-	}
-	if pct > 100 {
-		return 100
-	}
-	return pct
+	return (appPages + wired + compressed) * pageSize, true
 }
 
 func parseVmStatField(line, prefix string) (int64, bool) {
