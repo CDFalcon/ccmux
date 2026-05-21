@@ -18,6 +18,7 @@ import (
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
+	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -54,6 +55,7 @@ type model struct {
 	filteredProjects     []*project.Project
 	spawnBranch          string
 	spawnTask            string
+	spawnHarness         harness.Type
 	worktreeNameInput    textinput.Model
 	spawnPromptEnabled   map[string]bool
 	spawnFilteredPrompts []*prompt.Prompt
@@ -183,8 +185,13 @@ type editProjectFormModel struct {
 	startupScriptInput     textinput.Model
 	teardownScriptInput    textinput.Model
 	mergeWhenAcceptedInput textinput.Model
-	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted
+	harnessInput           textinput.Model
+	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=harness
 }
+
+// editProjectFieldCount is the number of focusable fields in the edit-project
+// form; focusIndex cycles modulo this value.
+const editProjectFieldCount = 7
 
 type promptFormModel struct {
 	nameInput    textinput.Model
@@ -343,6 +350,11 @@ func newEditProjectForm() editProjectFormModel {
 	mergeWhenAcceptedInput.Width = 10
 	mergeWhenAcceptedInput.CharLimit = 5
 
+	harnessInput := textinput.New()
+	harnessInput.Placeholder = "claude"
+	harnessInput.Width = 20
+	harnessInput.CharLimit = 20
+
 	return editProjectFormModel{
 		pathInput:              pathInput,
 		baseBranchInput:        baseBranchInput,
@@ -350,6 +362,7 @@ func newEditProjectForm() editProjectFormModel {
 		startupScriptInput:     startupScriptInput,
 		teardownScriptInput:    teardownScriptInput,
 		mergeWhenAcceptedInput: mergeWhenAcceptedInput,
+		harnessInput:           harnessInput,
 		focusIndex:             0,
 	}
 }
@@ -361,6 +374,7 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.startupScriptInput.Blur()
 	ef.teardownScriptInput.Blur()
 	ef.mergeWhenAcceptedInput.Blur()
+	ef.harnessInput.Blur()
 }
 
 func (ef *editProjectFormModel) focusCurrent() {
@@ -378,6 +392,8 @@ func (ef *editProjectFormModel) focusCurrent() {
 		ef.teardownScriptInput.Focus()
 	case 5:
 		ef.mergeWhenAcceptedInput.Focus()
+	case 6:
+		ef.harnessInput.Focus()
 	}
 }
 
@@ -396,6 +412,7 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	} else {
 		ef.mergeWhenAcceptedInput.SetValue("")
 	}
+	ef.harnessInput.SetValue(string(p.EffectiveHarness()))
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -1214,6 +1231,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editProjectForm.teardownScriptInput, cmd = m.editProjectForm.teardownScriptInput.Update(msg)
 		case 5:
 			m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
+		case 6:
+			m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1261,6 +1280,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMainKeys(msg)
 	case ViewSelectProject:
 		return m.handleSelectProjectKeys(msg)
+	case ViewNewTaskHarness:
+		return m.handleNewTaskHarnessKeys(msg)
 	case ViewNewTaskBranch:
 		return m.handleNewTaskBranchKeys(msg)
 	case ViewNewTaskBranchInput:
@@ -1429,17 +1450,10 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.err = fmt.Errorf("project '%s' is still being set up", p.Name)
 					return m, clearMessageCmd()
 				}
-				m.selectedProj = p
 				m.projectFilter.SetValue("")
 				m.projectFilter.Blur()
 				m.filteredProjects = nil
-				m.branchOptions = getLocalBranches(m.selectedProj.Path)
-				m.branchFilter.SetValue("")
-				m.filteredBranches = nil
-				m.view = ViewNewTaskBranch
-				m.selectedIndex = 0
-				m.branchFilter.Focus()
-				return m, textinput.Blink
+				return m.startNewTaskFor(p)
 			}
 			return m, nil
 		}
@@ -1472,15 +1486,63 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = fmt.Errorf("project '%s' is still being set up", p.Name)
 				return m, clearMessageCmd()
 			}
-			m.selectedProj = p
-			m.branchOptions = getLocalBranches(m.selectedProj.Path)
-			m.branchFilter.SetValue("")
-			m.filteredBranches = nil
-			m.view = ViewNewTaskBranch
-			m.selectedIndex = 0
-			m.branchFilter.Focus()
-			return m, textinput.Blink
+			return m.startNewTaskFor(p)
 		}
+	}
+	return m, nil
+}
+
+// harnessIndex returns the position of t within harness.All(), or 0 when t is
+// not a recognised harness.
+func harnessIndex(t harness.Type) int {
+	for i, h := range harness.All() {
+		if h == t {
+			return i
+		}
+	}
+	return 0
+}
+
+// startNewTaskFor advances the new-task wizard from project selection into the
+// harness-selection step, seeding the harness cursor from the project default.
+func (m model) startNewTaskFor(p *project.Project) (tea.Model, tea.Cmd) {
+	m.selectedProj = p
+	m.branchOptions = getLocalBranches(p.Path)
+	m.branchFilter.SetValue("")
+	m.filteredBranches = nil
+	m.spawnHarness = p.EffectiveHarness()
+	m.view = ViewNewTaskHarness
+	m.selectedIndex = harnessIndex(m.spawnHarness)
+	return m, nil
+}
+
+func (m model) handleNewTaskHarnessKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	harnesses := harness.All()
+	switch msg.String() {
+	case "esc":
+		m.view = ViewSelectProject
+		m.selectedIndex = 0
+		return m, nil
+	case "up", "k":
+		if m.selectedIndex > 0 {
+			m.selectedIndex--
+		}
+		return m, nil
+	case "down", "j":
+		if m.selectedIndex < len(harnesses)-1 {
+			m.selectedIndex++
+		}
+		return m, nil
+	case "enter":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(harnesses) {
+			m.spawnHarness = harnesses[m.selectedIndex]
+		}
+		m.view = ViewNewTaskBranch
+		m.selectedIndex = 0
+		m.branchFilter.SetValue("")
+		m.filteredBranches = nil
+		m.branchFilter.Focus()
+		return m, textinput.Blink
 	}
 	return m, nil
 }
@@ -1497,8 +1559,9 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedIndex = 0
 			return m, nil
 		}
-		m.view = ViewSelectProject
-		m.selectedIndex = 0
+		m.branchFilter.Blur()
+		m.view = ViewNewTaskHarness
+		m.selectedIndex = harnessIndex(m.spawnHarness)
 		return m, nil
 	case "up":
 		if m.selectedIndex > 0 {
@@ -1624,6 +1687,7 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		task := m.spawnTask
 		proj := m.selectedProj
 		branch := m.spawnBranch
+		harnessType := m.spawnHarness
 		promptContent := enabledPromptContent(m.spawnFilteredPrompts, m.spawnPromptEnabled)
 		m.view = ViewMain
 		m.taskInput.SetValue("")
@@ -1633,8 +1697,9 @@ func (m model) handleNewTaskWorktreeNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		m.selectedProj = nil
 		m.spawnBranch = ""
 		m.spawnTask = ""
+		m.spawnHarness = ""
 		m.spawnPromptEnabled = make(map[string]bool)
-		return m, m.spawnAgentCmd(task, proj, branch, worktreeName, promptContent)
+		return m, m.spawnAgentCmd(task, proj, branch, worktreeName, promptContent, harnessType)
 	}
 
 	var cmd tea.Cmd
@@ -1855,11 +1920,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedProj = nil
 		return m, nil
 	case "tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % 6
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % editProjectFieldCount
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "shift+tab":
-		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 5) % 6
+		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + editProjectFieldCount - 1) % editProjectFieldCount
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
 	case "enter":
@@ -1874,6 +1939,12 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		teardownScript := strings.TrimSpace(m.editProjectForm.teardownScriptInput.Value())
 		mergeStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.mergeWhenAcceptedInput.Value()))
 		mergeWhenAccepted := mergeStr == "yes" || mergeStr == "true" || mergeStr == "y"
+		// An unrecognised harness value resolves to "" so EffectiveHarness
+		// falls back to the default rather than persisting garbage.
+		harnessStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.harnessInput.Value()))
+		if !harness.Valid(harnessStr) {
+			harnessStr = ""
+		}
 		projName := m.selectedProj.Name
 		alreadyHasFastWT := m.selectedProj.UseFastWorktrees && m.selectedProj.FastWorktreePath != ""
 		m.editProjectForm.blurAll()
@@ -1882,7 +1953,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, harnessStr)
 	}
 
 	var cmd tea.Cmd
@@ -1899,6 +1970,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editProjectForm.teardownScriptInput, cmd = m.editProjectForm.teardownScriptInput.Update(msg)
 	case 5:
 		m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
+	case 6:
+		m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -2514,7 +2587,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool, defaultHarness string) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
@@ -2537,6 +2610,7 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 				p.FastWorktreePath = fastWTPath
 			}
 			p.DefaultBaseBranch = baseBranch
+			p.DefaultHarness = defaultHarness
 			p.UseFastWorktrees = useFastWT
 			p.StartupScript = startupScript
 			p.TeardownScript = teardownScript
@@ -2601,7 +2675,7 @@ func (m model) moveSelectedProject(delta int) (tea.Model, tea.Cmd) {
 	return m, m.refreshCmd()
 }
 
-func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, promptContent string) tea.Cmd {
+func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, promptContent string, harnessType harness.Type) tea.Cmd {
 	return func() tea.Msg {
 		exePath, err := os.Executable()
 		if err != nil {
@@ -2613,6 +2687,9 @@ func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, 
 		}
 		if promptContent != "" {
 			args = append(args, "--prompts", promptContent)
+		}
+		if harnessType != "" {
+			args = append(args, "--harness", string(harnessType))
 		}
 		cmd := exec.Command(exePath, args...)
 		output, err := cmd.CombinedOutput()
@@ -2723,6 +2800,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
 	tmuxPane := a.TmuxPane
+	h := harness.Parse(a.Harness)
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
@@ -2731,7 +2809,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL)
+		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL, h)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
@@ -2778,7 +2856,7 @@ func killAgentPane(tm *tmux.Manager, paneID, windowID string) {
 	tm.KillWindow(windowID)
 }
 
-func writeReviewScript(agentID, worktreePath, prURL string) (string, error) {
+func writeReviewScript(agentID, worktreePath, prURL string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -2812,12 +2890,12 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-claude --continue --dangerously-skip-permissions \
+%s \
   "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback, then commit and push your changes."
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL))
+`, sq(agentID), sq(worktreePath), sq(prURL), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3120,7 +3198,7 @@ func getPRTitleFromURL(prURL string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func writeCIFixScript(agentID, worktreePath, prURL, failureSummary string) (string, error) {
+func writeCIFixScript(agentID, worktreePath, prURL, failureSummary string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -3155,12 +3233,12 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-claude --continue --dangerously-skip-permissions \
+%s \
   "CI checks have FAILED for the PR at $PR_URL. Failures: $FAILURE_SUMMARY -- Investigate the failures using: gh pr checks $PR_URL -- Fix the issues, then commit and push your changes."
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary))
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3226,12 +3304,13 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 	tmuxWindow := a.TmuxWindow
 	tmuxPane := a.TmuxPane
 	prURL := a.PRURL
+	h := harness.Parse(a.Harness)
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
 		})
 
-		scriptPath, err := writeCIFixScript(agentID, worktreePath, prURL, failureSummary)
+		scriptPath, err := writeCIFixScript(agentID, worktreePath, prURL, failureSummary, h)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write CI fix script: %w", err)}
 		}
@@ -3251,7 +3330,7 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 	}
 }
 
-func writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch string) (string, error) {
+func writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -3286,12 +3365,12 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-claude --continue --dangerously-skip-permissions \
+%s \
   "The PR at $PR_URL has merge conflicts with the base branch ($BASE_BRANCH). Resolve the merge conflicts and push your changes."
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch))
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3307,12 +3386,13 @@ func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
 	tmuxPane := a.TmuxPane
 	prURL := a.PRURL
 	baseBranch := a.BaseBranch
+	h := harness.Parse(a.Harness)
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
 		})
 
-		scriptPath, err := writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch)
+		scriptPath, err := writeMergeConflictScript(agentID, worktreePath, prURL, baseBranch, h)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write merge conflict script: %w", err)}
 		}
@@ -3337,6 +3417,7 @@ func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd 
 	worktreePath := a.WorktreePath
 	tmuxWindow := a.TmuxWindow
 	tmuxPane := a.TmuxPane
+	h := harness.Parse(a.Harness)
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
@@ -3345,7 +3426,7 @@ func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd 
 
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL)
+		scriptPath, err := writeReviewScript(agentID, worktreePath, prURL, h)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
@@ -3391,13 +3472,15 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 	tmuxWindow := a.TmuxWindow
 	tmuxPane := a.TmuxPane
 	baseBranch := a.BaseBranch
+	task := a.Task
+	h := harness.Parse(a.Harness)
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
 		})
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeRestartScript(agentID, worktreePath, baseBranch)
+		scriptPath, err := writeRestartScript(agentID, worktreePath, baseBranch, task, h)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write restart script: %w", err)}
 		}
@@ -3417,7 +3500,7 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 	}
 }
 
-func writeRestartScript(agentID, worktreePath, baseBranch string) (string, error) {
+func writeRestartScript(agentID, worktreePath, baseBranch, task string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -3437,6 +3520,7 @@ set -e
 
 AGENT_ID=%s
 WORKTREE_PATH=%s
+TASK=%s
 
 cd "$WORKTREE_PATH"
 
@@ -3445,7 +3529,7 @@ WHITE="\033[1;97m"
 DIM="\033[38;5;245m"
 RESET="\033[0m"
 echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
-echo -e "${DIM}Restarting agent (--continue)...${RESET}"
+echo -e "${DIM}Resuming agent...${RESET}"
 echo ""
 
 export CCMUX_AGENT_ID="$AGENT_ID"
@@ -3456,7 +3540,10 @@ PR_BASE_BRANCH="${PR_BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
-IMPORTANT: Your previous session was restarted. You are being resumed with --continue. Review your progress so far and continue where you left off.
+IMPORTANT: Your previous session was restarted. Review your progress so far with git log, git status and git diff, then continue where you left off.
+
+The original task was:
+$TASK
 
 When done with your task, commit your work and create a PR with:
     gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
@@ -3477,10 +3564,10 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
+%s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(promptsFile))
+`, sq(agentID), sq(worktreePath), sq(task), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3496,6 +3583,8 @@ func (m model) View() string {
 		content = renderMainView(m)
 	case ViewSelectProject:
 		content = renderSelectProjectView(m)
+	case ViewNewTaskHarness:
+		content = renderNewTaskHarnessView(m)
 	case ViewNewTaskBranch:
 		content = renderNewTaskBranchView(m)
 	case ViewNewTaskBranchInput:

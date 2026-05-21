@@ -2,7 +2,7 @@ package agent
 
 import "time"
 
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
 
 type Status string
 
@@ -47,6 +47,7 @@ type Agent struct {
 	ID                    string      `json:"id"`
 	Task                  string      `json:"task"`
 	ProjectName           string      `json:"project_name,omitempty"`
+	Harness               string      `json:"harness,omitempty"`
 	WorktreeName          string      `json:"worktree_name,omitempty"`
 	WorktreePath          string      `json:"worktree_path"`
 	BranchName            string      `json:"branch_name"`

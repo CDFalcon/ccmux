@@ -16,6 +16,7 @@ type helpCommand struct {
 var viewTitles = map[ViewState]string{
 	ViewMain:                 "Main",
 	ViewSelectProject:        "Select Project",
+	ViewNewTaskHarness:       "New Task - Harness",
 	ViewNewTaskBranch:        "New Task - Base Branch",
 	ViewNewTaskBranchInput:   "New Task - Specify Branch",
 	ViewNewTaskInput:         "New Task",
@@ -62,6 +63,11 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[/] search", Description: "Filter projects by name"},
 		{FooterText: "[enter] choose", Description: "Choose the selected project"},
 		{FooterText: "[esc] back", Description: "Return to main view or clear search"},
+	},
+	ViewNewTaskHarness: {
+		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the harness list"},
+		{FooterText: "[enter] choose", Description: "Use the selected coding agent for this task"},
+		{FooterText: "[esc] back", Description: "Return to project selection"},
 	},
 	ViewNewTaskBranch: {
 		{FooterText: "[↑/↓] select", Description: "Navigate the branch list"},

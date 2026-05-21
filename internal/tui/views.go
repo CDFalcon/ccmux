@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -20,6 +21,7 @@ type ViewState int
 const (
 	ViewMain ViewState = iota
 	ViewSelectProject
+	ViewNewTaskHarness
 	ViewNewTaskBranch
 	ViewNewTaskBranchInput
 	ViewNewTaskInput
@@ -228,6 +230,9 @@ func renderMainView(m model) string {
 				if p.DefaultBaseBranch != "" {
 					extras += "  " + dimStyle.Render("base:"+p.DefaultBaseBranch)
 				}
+				if p.EffectiveHarness() != harness.Default {
+					extras += "  " + dimStyle.Render("harness:"+string(p.EffectiveHarness()))
+				}
 				if p.UseFastWorktrees {
 					extras += "  " + dimStyle.Render("fast-worktrees")
 				}
@@ -291,6 +296,58 @@ func renderSelectProjectView(m model) string {
 	return b.String()
 }
 
+func renderNewTaskHarnessView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# New Task - Harness"))
+	b.WriteString("\n\n")
+
+	if m.selectedProj != nil {
+		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
+		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Select the coding agent to launch:\n\n")
+
+	var projectDefault harness.Type
+	if m.selectedProj != nil {
+		projectDefault = m.selectedProj.EffectiveHarness()
+	}
+
+	for i, h := range harness.All() {
+		style := queueItemStyle
+		selected := i == m.selectedIndex
+		if selected {
+			style = selectedItemStyle
+		}
+		var tags []string
+		if h == projectDefault {
+			tags = append(tags, "project default")
+		}
+		if !h.Installed() {
+			tags = append(tags, "not installed")
+		}
+		line := h.DisplayName()
+		if len(tags) > 0 {
+			suffix := "(" + strings.Join(tags, ", ") + ")"
+			if selected {
+				line += " " + suffix
+			} else {
+				line += " " + dimStyle.Render(suffix)
+			}
+		}
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	help := helpFooter(ViewNewTaskHarness)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
 func renderNewTaskBranchView(m model) string {
 	var b strings.Builder
 
@@ -300,6 +357,7 @@ func renderNewTaskBranchView(m model) string {
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
 		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
+		b.WriteString(fmt.Sprintf("Harness: %s\n", dimStyle.Render(m.spawnHarness.DisplayName())))
 		b.WriteString("\n")
 	}
 
@@ -374,6 +432,7 @@ func renderNewTaskInputView(m model) string {
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
 		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
+		b.WriteString(fmt.Sprintf("Harness: %s\n", dimStyle.Render(m.spawnHarness.DisplayName())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 		b.WriteString("\n")
 	}
@@ -397,6 +456,7 @@ func renderNewTaskWorktreeNameView(m model) string {
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
 		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
+		b.WriteString(fmt.Sprintf("Harness: %s\n", dimStyle.Render(m.spawnHarness.DisplayName())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(m.spawnTask)))
@@ -610,6 +670,7 @@ func renderManageProjectsView(m model) string {
 				b.WriteString("\n")
 				b.WriteString(fmt.Sprintf("  Path:        %s\n", dimStyle.Render(selected.EffectivePath())))
 				b.WriteString(fmt.Sprintf("  Base branch: %s\n", dimStyle.Render(selected.EffectiveBaseBranch())))
+				b.WriteString(fmt.Sprintf("  Harness:     %s\n", dimStyle.Render(selected.EffectiveHarness().DisplayName())))
 				fastWtStatus := "no"
 				if selected.UseFastWorktrees {
 					fastWtStatus = "yes (proj)"
@@ -749,6 +810,7 @@ func renderEditProjectView(m model) string {
 		{"Startup script:", m.editProjectForm.startupScriptInput.View()},
 		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 		{"Merge when accepted (yes/no):", m.editProjectForm.mergeWhenAcceptedInput.View()},
+		{"Default harness (claude/codex):", m.editProjectForm.harnessInput.View()},
 	}
 
 	for i, f := range fields {
@@ -977,6 +1039,7 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		b.WriteString("\n")
 		b.WriteString(fmt.Sprintf("ID:       %s\n", selected.ID))
 		b.WriteString(fmt.Sprintf("Task:     %s\n", wrapText(selected.Task, 60)))
+		b.WriteString(fmt.Sprintf("Harness:  %s\n", dimStyle.Render(harness.Parse(selected.Harness).DisplayName())))
 		b.WriteString(fmt.Sprintf("Branch:   %s\n", dimStyle.Render(selected.BranchName)))
 		b.WriteString(fmt.Sprintf("Worktree: %s\n", dimStyle.Render(selected.WorktreePath)))
 		if selected.PRURL != "" {
@@ -1429,6 +1492,7 @@ func renderNewTaskSelectPromptsView(m model) string {
 	if m.selectedProj != nil {
 		b.WriteString(fmt.Sprintf("Project: %s\n", projectStyle.Render(m.selectedProj.Name)))
 		b.WriteString(fmt.Sprintf("Path: %s\n", dimStyle.Render(m.selectedProj.EffectivePath())))
+		b.WriteString(fmt.Sprintf("Harness: %s\n", dimStyle.Render(m.spawnHarness.DisplayName())))
 		b.WriteString(fmt.Sprintf("Base branch: %s\n", dimStyle.Render(m.spawnBranch)))
 	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(m.spawnTask)))

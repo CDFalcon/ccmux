@@ -1,6 +1,8 @@
 package project
 
-const CurrentSchemaVersion = 7
+import "github.com/CDFalcon/ccmux/internal/harness"
+
+const CurrentSchemaVersion = 8
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -9,6 +11,7 @@ type Project struct {
 	Path              string `json:"path"`
 	FastWorktreePath  string `json:"fast_worktree_path,omitempty"`
 	DefaultBaseBranch string `json:"default_base_branch,omitempty"`
+	DefaultHarness    string `json:"default_harness,omitempty"`
 	UseFastWorktrees  bool   `json:"use_fast_worktrees,omitempty"`
 	SetupStatus       string `json:"setup_status,omitempty"`
 	StartupScript     string `json:"startup_script,omitempty"`
@@ -32,6 +35,13 @@ func (p *Project) EffectiveBaseBranch() string {
 		return "origin/master"
 	}
 	return p.DefaultBaseBranch
+}
+
+// EffectiveHarness returns the coding-agent CLI new tasks for this project
+// default to, falling back to harness.Default for projects created before
+// harness selection existed.
+func (p *Project) EffectiveHarness() harness.Type {
+	return harness.Parse(p.DefaultHarness)
 }
 
 type storeData struct {
