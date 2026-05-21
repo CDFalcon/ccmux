@@ -13,6 +13,7 @@ import (
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
+	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/project"
@@ -221,6 +222,7 @@ func spawnCmd() *cobra.Command {
 	var baseBranch string
 	var worktreeName string
 	var promptContent string
+	var harnessName string
 
 	cmd := &cobra.Command{
 		Use:    "spawn <task>",
@@ -228,7 +230,7 @@ func spawnCmd() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			task := args[0]
-			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q", task, projectName, baseBranch, worktreeName)
+			logging.Log("spawn: starting for task=%q project=%q branch=%q worktreeName=%q harness=%q", task, projectName, baseBranch, worktreeName, harnessName)
 
 			if projectName == "" {
 				return fmt.Errorf("--project is required")
@@ -236,6 +238,10 @@ func spawnCmd() *cobra.Command {
 
 			if baseBranch == "" {
 				baseBranch = "origin/master"
+			}
+
+			if harnessName != "" && !harness.Valid(harnessName) {
+				return fmt.Errorf("unknown harness: %s (expected claude or codex)", harnessName)
 			}
 
 			sessionID := getCurrentSessionID()
@@ -251,10 +257,17 @@ func spawnCmd() *cobra.Command {
 				return fmt.Errorf("project not found: %s", projectName)
 			}
 
+			// An explicit --harness wins; otherwise fall back to the
+			// project's configured default.
+			selectedHarness := proj.EffectiveHarness()
+			if harnessName != "" {
+				selectedHarness = harness.Parse(harnessName)
+			}
+
 			tmuxSessionName := fmt.Sprintf("ccmux-%s", sessionID)
 			tmuxManager := tmux.NewManager(tmuxSessionName)
 
-			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent, proj.StartupScript)
+			launcherScript, err := writeLauncherScript(agentID, task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, sanitizeWorktreeName(worktreeName), promptContent, proj.StartupScript, selectedHarness)
 			if err != nil {
 				return fmt.Errorf("failed to create launcher script: %w", err)
 			}
@@ -278,6 +291,7 @@ func spawnCmd() *cobra.Command {
 				ID:           agentID,
 				Task:         task,
 				ProjectName:  projectName,
+				Harness:      string(selectedHarness),
 				WorktreeName: sanitizeWorktreeName(worktreeName),
 				TmuxWindow:   windowID,
 				TmuxPane:     paneID,
@@ -297,12 +311,13 @@ func spawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: origin/master)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
 	cmd.Flags().StringVar(&promptContent, "prompts", "", "Custom prompt content to inject into the agent's system prompt")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "Coding agent CLI to launch: claude or codex (default: project default)")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -336,6 +351,7 @@ BASE_BRANCH=%s
 SESSION_ID=%s
 USE_FAST_WT=%s
 WT_SUFFIX=%s
+HARNESS=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -343,6 +359,7 @@ DIM="\033[38;5;245m"
 RESET="\033[0m"
 echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
 echo -e "${DIM}Task:${RESET} $TASK"
+echo -e "${DIM}Harness:${RESET} $HARNESS"
 echo ""
 
 if [ "$USE_FAST_WT" = "1" ]; then
@@ -394,7 +411,9 @@ else
   echo ""
 fi
 
-# Install hooks
+# Claude Code hook installation + directory trust. These are specific to the
+# Claude harness; other harnesses (e.g. Codex) ignore .claude/ entirely.
+if [ "$HARNESS" = "claude" ]; then
 echo "→ Installing Claude Code hooks..."
 mkdir -p .claude/hooks
 
@@ -515,6 +534,7 @@ else
 fi
 echo "✓ Directory trusted"
 echo ""
+fi
 
 # Register agent
 echo "→ Registering agent..."
@@ -535,7 +555,7 @@ if [ -n "$STARTUP_SCRIPT" ] && [ -f "$STARTUP_SCRIPT" ]; then
   echo ""
 fi
 
-echo -e "${DIM}Starting Claude Code...${RESET}"
+echo -e "${DIM}Starting $HARNESS...${RESET}"
 echo ""
 
 cd "$WORKTREE_PATH"
@@ -566,11 +586,10 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-claude --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT" \
-  "$TASK"
+%s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(startupScript), sq(promptsFilePath(agentID)))
+`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1046,7 +1065,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toCleanup = append(toCleanup, a)
 
 		case (a.Status == agent.StatusRunning || a.Status == agent.StatusSpawning) && worktreeExists:
-			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID)
+			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID, a.Task, harness.Parse(a.Harness))
 			if err != nil {
 				logging.Log("recovery: failed to write recovery script for %s: %v", a.ID, err)
 				continue
@@ -1163,7 +1182,7 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID string) (string, error) {
+func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID, task string, h harness.Type) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1184,6 +1203,8 @@ AGENT_ID=%s
 WORKTREE_PATH=%s
 BASE_BRANCH=%s
 SESSION_ID=%s
+TASK=%s
+HARNESS=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -1196,7 +1217,8 @@ echo ""
 
 cd "$WORKTREE_PATH"
 
-# Reinstall hooks
+# Reinstall Claude Code hooks (Claude harness only).
+if [ "$HARNESS" = "claude" ]; then
 mkdir -p .claude/hooks
 
 cat > .claude/hooks/stop.sh << 'HOOKEOF'
@@ -1302,18 +1324,22 @@ if [ -z "$SETTINGS_TRACKED" ]; then
 else
   git update-index --assume-unchanged .claude/settings.json
 fi
+fi
 
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-echo -e "${DIM}Starting Claude Code (--continue)...${RESET}"
+echo -e "${DIM}Resuming $HARNESS...${RESET}"
 echo ""
 
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
-IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). You are being resumed with --continue. Review your progress so far and continue where you left off.
+IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). Review your progress so far with git log, git status and git diff, then continue where you left off.
+
+The original task was:
+$TASK
 
 When done with your task, commit your work and create a PR with:
     gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
@@ -1334,10 +1360,10 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-claude --continue --dangerously-skip-permissions --system-prompt "$SYSTEM_PROMPT"
+%s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(promptsFilePath(agentID)))
+`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(promptsFilePath(agentID)), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

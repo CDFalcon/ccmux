@@ -75,4 +75,10 @@ func init() {
 		store.Version = 7
 		return json.Marshal(store)
 	})
+	migrations.Register(7, func(data []byte) ([]byte, error) {
+		// v7 -> v8: add the optional `default_harness` field. Existing
+		// projects leave it empty, which resolves to harness.Default
+		// (Claude Code) — no behaviour change until a user opts in.
+		return data, nil
+	})
 }

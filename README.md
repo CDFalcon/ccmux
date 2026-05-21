@@ -10,11 +10,13 @@
 
 # ccmux — Colby's Claude MUltipleXer
 
-A terminal-based orchestrator for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
+A terminal-based orchestrator for managing multiple coding agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
+
+ccmux can drive either [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://developers.openai.com/codex/cli) as the underlying agent ("harness"). You pick the harness when creating a task, and each project has a configurable default harness (set it from the Manage Projects screen).
 
 When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up. Agents will be automatically notified when their PRs fail CI, have merge conflicts, or receive merge conflicts. Users will only be notified to review PRs which are fully ready to merge.
 
-ccmux is designed to not interfere with users' current Claude Code setups. Spawned agents will respect existing Claude .MD's and additional agent prompting is kept to a minimum.
+ccmux is designed to not interfere with users' current agent setups. Spawned agents will respect existing Claude .MD's / AGENTS.md's and additional agent prompting is kept to a minimum.
 
 This project is in active development, so expect frequent updates. ccmux supports in-session updating, meaning users can update without fear of interrupting their existing agents. ccmux will automatically flag when updates are available. 
 
@@ -38,6 +40,9 @@ gh auth login
 # Install Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
 
+# (Optional) Install Codex if you want to drive it as a harness
+npm install -g @openai/codex
+
 # Install ccmux
 mkdir -p ~/.local/bin
 gh release download --repo CDFalcon/ccmux -p 'ccmux-linux-amd64'
@@ -59,6 +64,9 @@ gh auth login
 # Install Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
 
+# (Optional) Install Codex if you want to drive it as a harness
+npm install -g @openai/codex
+
 # Install ccmux
 mkdir -p ~/.local/bin
 gh release download --repo CDFalcon/ccmux -p 'ccmux-darwin-arm64'
@@ -73,9 +81,9 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 1. **Start a session:** `ccmux` (or `ccmux <name>` for a named session).
 
-2. **Register a project:** Press `P` to open project management, then `a` to add a git repository.
+2. **Register a project:** Press `P` to open project management, then `a` to add a git repository. Press `enter` on a project to edit it — including its default harness (Claude Code or Codex).
 
-3. **Spawn an agent:** Press `n`, select a project and base branch, describe the task. ccmux creates a worktree and launches Claude Code.
+3. **Spawn an agent:** Press `n`, select a project, pick the harness (defaults to the project's default), choose a base branch, and describe the task. ccmux creates a worktree and launches the selected agent.
 
 4. **Monitor and work the queue:** As agents work, items appear in the quick action queue. Press `q` to pop the top item and take action:
 

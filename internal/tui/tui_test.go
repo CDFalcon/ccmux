@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -238,7 +240,7 @@ func TestHandleNewTaskBranchKeys_ShouldClearFilter_GivenEscWithFilter(t *testing
 	}
 }
 
-func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T) {
+func TestHandleNewTaskBranchKeys_ShouldGoBackToHarness_GivenEscWithNoFilter(t *testing.T) {
 	// Setup.
 	m := newTestModel()
 	m.branchFilter.SetValue("")
@@ -246,10 +248,118 @@ func TestHandleNewTaskBranchKeys_ShouldGoBack_GivenEscWithNoFilter(t *testing.T)
 	// Execute.
 	result, _ := m.handleNewTaskBranchKeys(tea.KeyMsg{Type: tea.KeyEsc})
 
+	// Assert: esc steps back to the harness-selection step that now
+	// precedes branch selection.
+	rm := result.(model)
+	if rm.view != ViewNewTaskHarness {
+		t.Errorf("expected ViewNewTaskHarness, got %d", rm.view)
+	}
+}
+
+func TestHandleNewTaskHarnessKeys_ShouldAdvanceToBranch_GivenEnter(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskHarness
+	m.selectedIndex = 1 // second harness in harness.All()
+
+	// Execute.
+	result, _ := m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Assert.
+	rm := result.(model)
+	if rm.view != ViewNewTaskBranch {
+		t.Errorf("expected ViewNewTaskBranch, got %d", rm.view)
+	}
+	if rm.spawnHarness != harness.All()[1] {
+		t.Errorf("expected spawnHarness %q, got %q", harness.All()[1], rm.spawnHarness)
+	}
+}
+
+func TestHandleNewTaskHarnessKeys_ShouldGoBackToProject_GivenEsc(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskHarness
+
+	// Execute.
+	result, _ := m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyEsc})
+
 	// Assert.
 	rm := result.(model)
 	if rm.view != ViewSelectProject {
 		t.Errorf("expected ViewSelectProject, got %d", rm.view)
+	}
+}
+
+func TestHandleNewTaskHarnessKeys_ShouldNotMovePastEnds_GivenNavigation(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewNewTaskHarness
+	m.selectedIndex = 0
+
+	// Execute: up at the top is a no-op.
+	result, _ := m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyUp})
+
+	// Assert.
+	if result.(model).selectedIndex != 0 {
+		t.Errorf("expected selectedIndex to stay 0, got %d", result.(model).selectedIndex)
+	}
+
+	// Execute: down past the last harness is a no-op.
+	m.selectedIndex = len(harness.All()) - 1
+	result, _ = m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyDown})
+
+	// Assert.
+	if result.(model).selectedIndex != len(harness.All())-1 {
+		t.Errorf("expected selectedIndex to stay %d, got %d", len(harness.All())-1, result.(model).selectedIndex)
+	}
+}
+
+func TestResumeScripts_ShouldProduceValidBash_ForEveryHarness(t *testing.T) {
+	for _, h := range harness.All() {
+		t.Run(string(h), func(t *testing.T) {
+			id := fmt.Sprintf("scripttest-%s-%d", h, randomTestSuffix())
+
+			review, err := writeReviewScript(id, "/tmp/wt", "https://github.com/o/r/pull/1", h)
+			if err != nil {
+				t.Fatalf("writeReviewScript: %v", err)
+			}
+			defer os.Remove(review)
+
+			cifix, err := writeCIFixScript(id, "/tmp/wt", "https://github.com/o/r/pull/1", "boom", h)
+			if err != nil {
+				t.Fatalf("writeCIFixScript: %v", err)
+			}
+			defer os.Remove(cifix)
+
+			conflict, err := writeMergeConflictScript(id, "/tmp/wt", "https://github.com/o/r/pull/1", "origin/main", h)
+			if err != nil {
+				t.Fatalf("writeMergeConflictScript: %v", err)
+			}
+			defer os.Remove(conflict)
+
+			restart, err := writeRestartScript(id, "/tmp/wt", "origin/main", "the task", h)
+			if err != nil {
+				t.Fatalf("writeRestartScript: %v", err)
+			}
+			defer os.Remove(restart)
+
+			for _, path := range []string{review, cifix, conflict, restart} {
+				if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
+					t.Errorf("%s failed bash syntax check: %v\n%s", path, err, out)
+				}
+			}
+		})
+	}
+}
+
+func TestHarnessIndex_ShouldLocateHarness(t *testing.T) {
+	for i, h := range harness.All() {
+		if got := harnessIndex(h); got != i {
+			t.Errorf("harnessIndex(%q) = %d, want %d", h, got, i)
+		}
+	}
+	if got := harnessIndex(harness.Type("nonsense")); got != 0 {
+		t.Errorf("harnessIndex(unknown) = %d, want 0", got)
 	}
 }
 

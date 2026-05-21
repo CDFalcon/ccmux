@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/CDFalcon/ccmux/internal/harness"
 )
 
 func setupTestStore(t *testing.T) (*Store, string, func()) {
@@ -1079,5 +1081,53 @@ func TestMigrationV5ToV6_ShouldPreserveExistingFields(t *testing.T) {
 	}
 	if proj.MergeWhenAccepted {
 		t.Error("expected MergeWhenAccepted to default to false")
+	}
+}
+
+func TestMigrationV7ToV8_ShouldPreserveProjectsAndDefaultHarnessEmpty(t *testing.T) {
+	// Setup.
+	v7Data := `{
+		"version": 7,
+		"projects": {
+			"my-proj": {"name": "my-proj", "path": "/home/user/repo"}
+		},
+		"order": ["my-proj"]
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v7Data), 7, 8)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	proj := store.Projects["my-proj"]
+	if proj == nil {
+		t.Fatal("expected my-proj to survive the migration")
+	}
+	if proj.DefaultHarness != "" {
+		t.Errorf("expected empty default harness, got %q", proj.DefaultHarness)
+	}
+	if proj.EffectiveHarness() != harness.Default {
+		t.Errorf("expected EffectiveHarness to fall back to default, got %q", proj.EffectiveHarness())
+	}
+}
+
+func TestEffectiveHarness_ShouldReflectStoredValue(t *testing.T) {
+	cases := map[string]harness.Type{
+		"":       harness.Claude,
+		"claude": harness.Claude,
+		"codex":  harness.Codex,
+		"bogus":  harness.Claude,
+	}
+	for stored, want := range cases {
+		p := &Project{Name: "p", DefaultHarness: stored}
+		if got := p.EffectiveHarness(); got != want {
+			t.Errorf("DefaultHarness=%q: EffectiveHarness()=%q, want %q", stored, got, want)
+		}
 	}
 }
