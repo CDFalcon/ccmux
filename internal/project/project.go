@@ -69,6 +69,7 @@ func (s *Store) load() (*storeData, error) {
 
 func (s *Store) save(data *storeData) error {
 	data.Version = CurrentSchemaVersion
+	data.Order = reconcileOrder(data.Order, data.Projects)
 
 	bytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
@@ -80,6 +81,37 @@ func (s *Store) save(data *storeData) error {
 	}
 
 	return nil
+}
+
+// reconcileOrder ensures Order contains exactly the keys of projects:
+// it strips entries for projects that have been removed and appends any
+// projects (alphabetically) that are missing from Order. This keeps the
+// persisted order self-consistent even if the file was edited by hand.
+func reconcileOrder(order []string, projects map[string]*Project) []string {
+	known := make(map[string]bool, len(projects))
+	for name := range projects {
+		known[name] = true
+	}
+
+	seen := make(map[string]bool, len(order))
+	result := make([]string, 0, len(projects))
+	for _, name := range order {
+		if !known[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, name)
+	}
+
+	var missing []string
+	for name := range projects {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	result = append(result, missing...)
+	return result
 }
 
 func (s *Store) Add(project *Project) error {
@@ -119,6 +151,7 @@ func (s *Store) Add(project *Project) error {
 	}
 
 	data.Projects[project.Name] = project
+	data.Order = append(data.Order, project.Name)
 
 	return s.save(data)
 }
@@ -149,16 +182,60 @@ func (s *Store) List() ([]*Project, error) {
 		return nil, err
 	}
 
+	order := reconcileOrder(data.Order, data.Projects)
+
 	projects := make([]*Project, 0, len(data.Projects))
-	for _, project := range data.Projects {
-		projects = append(projects, project)
+	for _, name := range order {
+		if p, ok := data.Projects[name]; ok {
+			projects = append(projects, p)
+		}
 	}
 
-	sort.Slice(projects, func(i, j int) bool {
-		return projects[i].Name < projects[j].Name
-	})
-
 	return projects, nil
+}
+
+// Move shifts the project named `name` one slot up (delta=-1) or down
+// (delta=+1) in the persisted display order. Movement past either end is
+// a no-op so callers can blindly bind the action to arrow keys.
+func (s *Store) Move(name string, delta int) error {
+	if delta != -1 && delta != 1 {
+		return fmt.Errorf("Move delta must be -1 or 1, got %d", delta)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.load()
+	if err != nil {
+		return err
+	}
+
+	if _, exists := data.Projects[name]; !exists {
+		return fmt.Errorf("project %s not found", name)
+	}
+
+	order := reconcileOrder(data.Order, data.Projects)
+	idx := -1
+	for i, n := range order {
+		if n == name {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("project %s not found in order", name)
+	}
+
+	target := idx + delta
+	if target < 0 || target >= len(order) {
+		// Already at the boundary; nothing to do.
+		return nil
+	}
+
+	order[idx], order[target] = order[target], order[idx]
+	data.Order = order
+
+	return s.save(data)
 }
 
 func (s *Store) Update(name string, fn func(p *Project)) error {
@@ -203,6 +280,14 @@ func (s *Store) Remove(name string) error {
 	}
 
 	delete(data.Projects, name)
+	// reconcileOrder in save() will strip the removed name, but doing it
+	// here keeps the in-memory data consistent if a caller inspects it.
+	for i, n := range data.Order {
+		if n == name {
+			data.Order = append(data.Order[:i], data.Order[i+1:]...)
+			break
+		}
+	}
 
 	return s.save(data)
 }

@@ -1,6 +1,6 @@
 package project
 
-const CurrentSchemaVersion = 6
+const CurrentSchemaVersion = 7
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -37,4 +37,5 @@ func (p *Project) EffectiveBaseBranch() string {
 type storeData struct {
 	Version  int                 `json:"version"`
 	Projects map[string]*Project `json:"projects"`
+	Order    []string            `json:"order,omitempty"`
 }
