@@ -128,7 +128,7 @@ func TestList_ShouldReturnAllProjects_GivenMultipleProjects(t *testing.T) {
 	}
 }
 
-func TestList_ShouldReturnSortedByName_GivenMultipleProjects(t *testing.T) {
+func TestList_ShouldReturnInInsertionOrder_GivenMultipleProjects(t *testing.T) {
 	// Setup.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -142,8 +142,224 @@ func TestList_ShouldReturnSortedByName_GivenMultipleProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if projects[0].Name != "alpha" {
-		t.Errorf("expected first project to be 'alpha', got '%s'", projects[0].Name)
+	if projects[0].Name != "zebra" {
+		t.Errorf("expected first project to be 'zebra' (insertion order), got '%s'", projects[0].Name)
+	}
+	if projects[1].Name != "alpha" {
+		t.Errorf("expected second project to be 'alpha', got '%s'", projects[1].Name)
+	}
+}
+
+func TestMove_ShouldShiftDown_GivenDeltaPlusOne(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "first", Path: repoDir})
+	store.Add(&Project{Name: "second", Path: repoDir})
+	store.Add(&Project{Name: "third", Path: repoDir})
+
+	// Execute.
+	err := store.Move("first", 1)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	projects, _ := store.List()
+	names := []string{projects[0].Name, projects[1].Name, projects[2].Name}
+	want := []string{"second", "first", "third"}
+	if names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Errorf("expected order %v, got %v", want, names)
+	}
+}
+
+func TestMove_ShouldShiftUp_GivenDeltaMinusOne(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "first", Path: repoDir})
+	store.Add(&Project{Name: "second", Path: repoDir})
+	store.Add(&Project{Name: "third", Path: repoDir})
+
+	// Execute.
+	err := store.Move("third", -1)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	projects, _ := store.List()
+	names := []string{projects[0].Name, projects[1].Name, projects[2].Name}
+	want := []string{"first", "third", "second"}
+	if names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Errorf("expected order %v, got %v", want, names)
+	}
+}
+
+func TestMove_ShouldNoOp_GivenBoundary(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "first", Path: repoDir})
+	store.Add(&Project{Name: "second", Path: repoDir})
+
+	// Execute.
+	errUp := store.Move("first", -1)
+	errDown := store.Move("second", 1)
+
+	// Assert.
+	if errUp != nil {
+		t.Fatalf("unexpected error moving top item up: %v", errUp)
+	}
+	if errDown != nil {
+		t.Fatalf("unexpected error moving bottom item down: %v", errDown)
+	}
+	projects, _ := store.List()
+	if projects[0].Name != "first" || projects[1].Name != "second" {
+		t.Errorf("expected order unchanged at boundaries, got [%s, %s]", projects[0].Name, projects[1].Name)
+	}
+}
+
+func TestMove_ShouldFail_GivenInvalidDelta(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "p", Path: repoDir})
+
+	// Execute.
+	err := store.Move("p", 2)
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for delta=2, got nil")
+	}
+}
+
+func TestMove_ShouldFail_GivenUnknownProject(t *testing.T) {
+	// Setup.
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	err := store.Move("ghost", 1)
+
+	// Assert.
+	if err == nil {
+		t.Error("expected error for unknown project, got nil")
+	}
+}
+
+func TestMove_ShouldPersist_AcrossReloads(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "a", Path: repoDir})
+	store.Add(&Project{Name: "b", Path: repoDir})
+	store.Add(&Project{Name: "c", Path: repoDir})
+	store.Move("c", -1)
+	store.Move("c", -1)
+
+	// Execute (new store pointing at the same file simulates a restart).
+	store2 := &Store{filePath: store.filePath}
+	projects, err := store2.List()
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"c", "a", "b"}
+	for i, n := range want {
+		if projects[i].Name != n {
+			t.Errorf("position %d: expected %q, got %q", i, n, projects[i].Name)
+		}
+	}
+}
+
+func TestRemove_ShouldDropFromOrder(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "a", Path: repoDir})
+	store.Add(&Project{Name: "b", Path: repoDir})
+	store.Add(&Project{Name: "c", Path: repoDir})
+
+	// Execute.
+	if err := store.Remove("b"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert.
+	projects, _ := store.List()
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projects))
+	}
+	if projects[0].Name != "a" || projects[1].Name != "c" {
+		t.Errorf("expected order [a, c], got [%s, %s]", projects[0].Name, projects[1].Name)
+	}
+}
+
+func TestMigrationV6ToV7_ShouldSeedOrderAlphabetically(t *testing.T) {
+	// Setup.
+	v6Data := `{
+		"version": 6,
+		"projects": {
+			"zebra": {"name": "zebra", "path": "/home/user/zebra"},
+			"alpha": {"name": "alpha", "path": "/home/user/alpha"},
+			"mango": {"name": "mango", "path": "/home/user/mango"}
+		}
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v6Data), 6, 7)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	if store.Version != 7 {
+		t.Errorf("expected version 7, got %d", store.Version)
+	}
+	want := []string{"alpha", "mango", "zebra"}
+	if len(store.Order) != len(want) {
+		t.Fatalf("expected order length %d, got %d (%v)", len(want), len(store.Order), store.Order)
+	}
+	for i, n := range want {
+		if store.Order[i] != n {
+			t.Errorf("position %d: expected %q, got %q", i, n, store.Order[i])
+		}
+	}
+}
+
+func TestMigrationV6ToV7_ShouldPreserveExistingOrder(t *testing.T) {
+	// Setup: simulate a hand-edited file that already has an order array
+	// (e.g. someone re-upgraded after a downgrade). The migration must not
+	// clobber a non-empty Order.
+	v6Data := `{
+		"version": 6,
+		"projects": {
+			"alpha": {"name": "alpha", "path": "/home/user/alpha"},
+			"zebra": {"name": "zebra", "path": "/home/user/zebra"}
+		},
+		"order": ["zebra", "alpha"]
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v6Data), 6, 7)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	// Assert.
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	if len(store.Order) != 2 || store.Order[0] != "zebra" || store.Order[1] != "alpha" {
+		t.Errorf("expected order [zebra, alpha], got %v", store.Order)
 	}
 }
 

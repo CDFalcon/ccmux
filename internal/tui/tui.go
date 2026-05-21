@@ -1814,6 +1814,10 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedIndex < len(m.projects)-1 {
 			m.selectedIndex++
 		}
+	case "shift+up", "K":
+		return m.moveSelectedProject(-1)
+	case "shift+down", "J":
+		return m.moveSelectedProject(1)
 	case "a":
 		m.view = ViewAddProjectName
 		m.projectForm.reset()
@@ -2570,6 +2574,31 @@ func (m model) removeProjectCmd(name string) tea.Cmd {
 		}
 		return successMsg{fmt.Sprintf("Removed project '%s'", name)}
 	}
+}
+
+// moveSelectedProject reorders the currently highlighted project up
+// (delta=-1) or down (delta=+1), persists the new order, and keeps the
+// cursor on the moved row so the user can chain presses.
+func (m model) moveSelectedProject(delta int) (tea.Model, tea.Cmd) {
+	if m.selectedIndex < 0 || m.selectedIndex >= len(m.projects) {
+		return m, nil
+	}
+	target := m.selectedIndex + delta
+	if target < 0 || target >= len(m.projects) {
+		return m, nil
+	}
+
+	name := m.projects[m.selectedIndex].Name
+	if err := m.projectStore.Move(name, delta); err != nil {
+		m.err = err
+		return m, clearMessageCmd()
+	}
+
+	// Reflect the swap locally so the UI updates instantly; the next
+	// refreshMsg will overwrite m.projects with fresh data in the same order.
+	m.projects[m.selectedIndex], m.projects[target] = m.projects[target], m.projects[m.selectedIndex]
+	m.selectedIndex = target
+	return m, m.refreshCmd()
 }
 
 func (m model) spawnAgentCmd(task string, proj *project.Project, branch string, worktreeName string, promptContent string) tea.Cmd {

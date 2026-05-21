@@ -2,6 +2,7 @@ package project
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/CDFalcon/ccmux/internal/migration"
 )
@@ -50,5 +51,28 @@ func init() {
 	})
 	migrations.Register(5, func(data []byte) ([]byte, error) {
 		return data, nil
+	})
+	migrations.Register(6, func(data []byte) ([]byte, error) {
+		// v6 -> v7: introduce an explicit `order` array preserving the
+		// previous alphabetical-by-name display order so existing users
+		// see no change until they start reordering themselves.
+		var store struct {
+			Version  int                        `json:"version"`
+			Projects map[string]json.RawMessage `json:"projects"`
+			Order    []string                   `json:"order,omitempty"`
+		}
+		if err := json.Unmarshal(data, &store); err != nil {
+			return nil, err
+		}
+		if len(store.Order) == 0 && len(store.Projects) > 0 {
+			names := make([]string, 0, len(store.Projects))
+			for name := range store.Projects {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			store.Order = names
+		}
+		store.Version = 7
+		return json.Marshal(store)
 	})
 }
