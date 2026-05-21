@@ -91,3 +91,132 @@ func TestGetSystemMemPercent_ShouldReturnInRange(t *testing.T) {
 		t.Error("getSystemMemPercent() = 0; expected a positive percentage on a running system")
 	}
 }
+
+// vmStatAppleSiliconSample is real `vm_stat` output captured on an M-series
+// Mac with 64 GiB RAM (page size 16384). Used to lock in the Activity
+// Monitor-style "Memory Used" formula so it doesn't regress back to the
+// older (active + wired + compressed) calculation that overcounted by tens
+// of percentage points on Apple Silicon.
+const vmStatAppleSiliconSample = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                              218300.
+Pages active:                           1710528.
+Pages inactive:                         1690555.
+Pages speculative:                        19287.
+Pages throttled:                              0.
+Pages wired down:                        289969.
+Pages purgeable:                          33053.
+"Translation faults":                2606666516.
+Pages copy-on-write:                  212606154.
+Pages zero filled:                   1609269626.
+Pages reactivated:                      3966618.
+Pages purged:                           4595027.
+File-backed pages:                      1028761.
+Anonymous pages:                        2372980.
+Pages stored in compressor:              669728.
+Pages occupied by compressor:            224419.
+Decompressions:                          983255.
+Compressions:                           1383735.
+Pageins:                               11200986.
+Pageouts:                                203837.
+Swapins:                                      0.
+Swapouts:                                     0.
+`
+
+// vmStatIntelSample mirrors the same workload at the Intel 4 KiB page size so
+// we exercise the dynamic page-size parsing branch.
+const vmStatIntelSample = `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages free:                              218300.
+Pages active:                           1710528.
+Pages inactive:                         1690555.
+Pages speculative:                        19287.
+Pages throttled:                              0.
+Pages wired down:                        289969.
+Pages purgeable:                          33053.
+File-backed pages:                      1028761.
+Anonymous pages:                        2372980.
+Pages occupied by compressor:            224419.
+`
+
+func TestParseVmStatUsedBytes_AppleSiliconMatchesActivityMonitorFormula(t *testing.T) {
+	got, ok := parseVmStatUsedBytes(vmStatAppleSiliconSample)
+	if !ok {
+		t.Fatal("parseVmStatUsedBytes returned ok=false on valid input")
+	}
+	// (anonymous - purgeable) + wired + compressed, scaled by 16 KiB page:
+	// (2372980 - 33053) + 289969 + 224419 = 2854315 pages * 16384 = 46765096960
+	const want int64 = 46765096960
+	if got != want {
+		t.Errorf("parseVmStatUsedBytes = %d, want %d", got, want)
+	}
+}
+
+func TestParseVmStatUsedBytes_IntelUsesParsedPageSize(t *testing.T) {
+	got, ok := parseVmStatUsedBytes(vmStatIntelSample)
+	if !ok {
+		t.Fatal("parseVmStatUsedBytes returned ok=false on valid input")
+	}
+	// Same page counts, but 4 KiB page: 2854315 * 4096 = 11691274240
+	const want int64 = 11691274240
+	if got != want {
+		t.Errorf("parseVmStatUsedBytes = %d, want %d", got, want)
+	}
+}
+
+func TestParseVmStatUsedBytes_IgnoresFileBackedAndActiveFields(t *testing.T) {
+	// Construct a sample where "Pages active" and "File-backed pages" are
+	// huge but anonymous/wired/compressed are tiny. The old
+	// (active + wired + compressed) formula would have produced a large
+	// number; the new formula should ignore those reclaimable file caches
+	// entirely and report a small value driven only by anonymous + wired +
+	// compressed.
+	input := `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Pages active:                          1000000.
+Pages inactive:                              0.
+Pages wired down:                          100.
+Pages purgeable:                             0.
+File-backed pages:                      999000.
+Anonymous pages:                          1000.
+Pages occupied by compressor:               50.
+`
+	got, ok := parseVmStatUsedBytes(input)
+	if !ok {
+		t.Fatal("parseVmStatUsedBytes returned ok=false on valid input")
+	}
+	// (1000 - 0) + 100 + 50 = 1150 pages * 4096 = 4710400 bytes.
+	// Critically this is ~1000x smaller than what the previous formula
+	// would have produced (which would have summed in the 1,000,000-page
+	// active set, ~99% of which is file cache).
+	const want int64 = 4710400
+	if got != want {
+		t.Errorf("parseVmStatUsedBytes = %d, want %d", got, want)
+	}
+}
+
+func TestParseVmStatUsedBytes_ReturnsFalseOnMissingFields(t *testing.T) {
+	// Only the page-size header; no usable counts.
+	_, ok := parseVmStatUsedBytes("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n")
+	if ok {
+		t.Error("parseVmStatUsedBytes returned ok=true on header-only input")
+	}
+}
+
+func TestParseVmStatUsedBytes_ClampsNegativeAppPagesToZero(t *testing.T) {
+	// Pathological: purgeable > anonymous. Real systems don't hit this, but
+	// the sysctls are independently sampled so a brief inversion is possible.
+	// We must not produce a negative byte count.
+	input := `Mach Virtual Memory Statistics: (page size of 4096 bytes)
+Anonymous pages:                              10.
+Pages purgeable:                              50.
+Pages wired down:                              5.
+Pages occupied by compressor:                  3.
+`
+	got, ok := parseVmStatUsedBytes(input)
+	if !ok {
+		t.Fatal("parseVmStatUsedBytes returned ok=false on valid input")
+	}
+	// appPages clamped to 0, so result is (0 + 5 + 3) * 4096 = 32768.
+	const want int64 = 32768
+	if got != want {
+		t.Errorf("parseVmStatUsedBytes = %d, want %d", got, want)
+	}
+}
