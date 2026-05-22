@@ -50,12 +50,16 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 }
 
 func TestWriteLauncherScript_ShouldReflectDraftPRsSetting(t *testing.T) {
-	cases := map[bool]string{
-		true:  "DRAFT_PRS='1'",
-		false: "DRAFT_PRS='0'",
+	cases := []struct {
+		draftPRs bool
+		wantFlag string // the DRAFT_PRS shell assignment
+		wantNote string // an explicit phrase the agent must see
+	}{
+		{true, "DRAFT_PRS='1'", "keep the --draft flag"},
+		{false, "DRAFT_PRS='0'", "do NOT add a --draft flag"},
 	}
-	for draftPRs, want := range cases {
-		path, err := writeLauncherScript("draft-test", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Default, draftPRs)
+	for _, tc := range cases {
+		path, err := writeLauncherScript("draft-test", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Default, tc.draftPRs)
 		if err != nil {
 			t.Fatalf("writeLauncherScript failed: %v", err)
 		}
@@ -69,13 +73,19 @@ func TestWriteLauncherScript_ShouldReflectDraftPRsSetting(t *testing.T) {
 		}
 		content := string(data)
 
-		if !strings.Contains(content, want) {
-			t.Errorf("launcher script with draftPRs=%v should contain %q", draftPRs, want)
+		if !strings.Contains(content, tc.wantFlag) {
+			t.Errorf("launcher script with draftPRs=%v should contain %q", tc.draftPRs, tc.wantFlag)
 		}
 		// The agent's gh pr create instruction picks up --draft at runtime
 		// via the PR_DRAFT_FLAG shell variable.
 		if !strings.Contains(content, "gh pr create ${PR_DRAFT_FLAG}--base") {
 			t.Error("launcher script should build the gh pr create command from PR_DRAFT_FLAG")
+		}
+		// Omitting --draft from the example command is too implicit: agents
+		// re-add it from habit. The script must also state the intent
+		// explicitly so a disabled setting is actually honoured.
+		if !strings.Contains(content, tc.wantNote) {
+			t.Errorf("launcher script with draftPRs=%v should explicitly instruct the agent: %q", tc.draftPRs, tc.wantNote)
 		}
 	}
 }
