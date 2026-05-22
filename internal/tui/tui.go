@@ -192,12 +192,13 @@ type editProjectFormModel struct {
 	teardownScriptInput    textinput.Model
 	mergeWhenAcceptedInput textinput.Model
 	harnessInput           textinput.Model
-	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=harness
+	draftPRsInput          textinput.Model
+	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=harness, 7=draftPRs
 }
 
 // editProjectFieldCount is the number of focusable fields in the edit-project
 // form; focusIndex cycles modulo this value.
-const editProjectFieldCount = 7
+const editProjectFieldCount = 8
 
 type promptFormModel struct {
 	nameInput    textinput.Model
@@ -361,6 +362,11 @@ func newEditProjectForm() editProjectFormModel {
 	harnessInput.Width = 20
 	harnessInput.CharLimit = 20
 
+	draftPRsInput := textinput.New()
+	draftPRsInput.Placeholder = "yes"
+	draftPRsInput.Width = 10
+	draftPRsInput.CharLimit = 5
+
 	return editProjectFormModel{
 		pathInput:              pathInput,
 		baseBranchInput:        baseBranchInput,
@@ -369,6 +375,7 @@ func newEditProjectForm() editProjectFormModel {
 		teardownScriptInput:    teardownScriptInput,
 		mergeWhenAcceptedInput: mergeWhenAcceptedInput,
 		harnessInput:           harnessInput,
+		draftPRsInput:          draftPRsInput,
 		focusIndex:             0,
 	}
 }
@@ -381,6 +388,7 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.teardownScriptInput.Blur()
 	ef.mergeWhenAcceptedInput.Blur()
 	ef.harnessInput.Blur()
+	ef.draftPRsInput.Blur()
 }
 
 func (ef *editProjectFormModel) focusCurrent() {
@@ -400,6 +408,8 @@ func (ef *editProjectFormModel) focusCurrent() {
 		ef.mergeWhenAcceptedInput.Focus()
 	case 6:
 		ef.harnessInput.Focus()
+	case 7:
+		ef.draftPRsInput.Focus()
 	}
 }
 
@@ -419,6 +429,11 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 		ef.mergeWhenAcceptedInput.SetValue("")
 	}
 	ef.harnessInput.SetValue(string(p.EffectiveHarness()))
+	if p.EffectiveDraftPRs() {
+		ef.draftPRsInput.SetValue("yes")
+	} else {
+		ef.draftPRsInput.SetValue("")
+	}
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -2021,6 +2036,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		teardownScript := strings.TrimSpace(m.editProjectForm.teardownScriptInput.Value())
 		mergeStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.mergeWhenAcceptedInput.Value()))
 		mergeWhenAccepted := mergeStr == "yes" || mergeStr == "true" || mergeStr == "y"
+		draftStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.draftPRsInput.Value()))
+		draftPRs := draftStr == "yes" || draftStr == "true" || draftStr == "y"
 		// An unrecognised harness value resolves to "" so EffectiveHarness
 		// falls back to the default rather than persisting garbage.
 		harnessStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.harnessInput.Value()))
@@ -2035,7 +2052,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, harnessStr)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, harnessStr, draftPRs)
 	}
 
 	var cmd tea.Cmd
@@ -2054,6 +2071,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
 	case 6:
 		m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+	case 7:
+		m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -2669,7 +2688,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool, defaultHarness string) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool, defaultHarness string, draftPRs bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		var fastWTPath string
@@ -2697,6 +2716,8 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 			p.StartupScript = startupScript
 			p.TeardownScript = teardownScript
 			p.MergeWhenAccepted = mergeWhenAccepted
+			draft := draftPRs
+			p.DraftPRs = &draft
 			if needsImport {
 				p.SetupStatus = project.SetupStatusSettingUp
 			}
@@ -3589,13 +3610,21 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 	baseBranch := a.BaseBranch
 	task := a.Task
 	h := harness.Parse(a.Harness)
+	// Resolve the project's draft-PR preference, defaulting to true when
+	// the project is unknown (e.g. removed since the agent was spawned).
+	draftPRs := true
+	if a.ProjectName != "" {
+		if proj, err := m.projectStore.Get(a.ProjectName); err == nil {
+			draftPRs = proj.EffectiveDraftPRs()
+		}
+	}
 	return func() tea.Msg {
 		m.agentStore.Update(agentID, func(ag *agent.Agent) {
 			ag.Status = agent.StatusRunning
 		})
 		m.queueManager.RemoveByAgent(agentID)
 
-		scriptPath, err := writeRestartScript(agentID, worktreePath, baseBranch, task, h)
+		scriptPath, err := writeRestartScript(agentID, worktreePath, baseBranch, task, h, draftPRs)
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to write restart script: %w", err)}
 		}
@@ -3615,7 +3644,7 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 	}
 }
 
-func writeRestartScript(agentID, worktreePath, baseBranch, task string, h harness.Type) (string, error) {
+func writeRestartScript(agentID, worktreePath, baseBranch, task string, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -3629,6 +3658,11 @@ func writeRestartScript(agentID, worktreePath, baseBranch, task string, h harnes
 	scriptPath := filepath.Join(launcherDir, agentID+"-restart.sh")
 	promptsFile := filepath.Join(launcherDir, agentID+"-prompts.txt")
 
+	draftPRsFlag := "0"
+	if draftPRs {
+		draftPRsFlag = "1"
+	}
+
 	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
@@ -3636,6 +3670,7 @@ set -e
 AGENT_ID=%s
 WORKTREE_PATH=%s
 TASK=%s
+DRAFT_PRS=%s
 
 cd "$WORKTREE_PATH"
 
@@ -3653,6 +3688,11 @@ unset CLAUDECODE
 PR_BASE_BRANCH=%s
 PR_BASE_BRANCH="${PR_BASE_BRANCH#origin/}"
 
+PR_DRAFT_FLAG=""
+if [ "$DRAFT_PRS" = "1" ]; then
+  PR_DRAFT_FLAG="--draft "
+fi
+
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was restarted. Review your progress so far with git log, git status and git diff, then continue where you left off.
@@ -3661,7 +3701,7 @@ The original task was:
 $TASK
 
 When done with your task, commit your work and create a PR with:
-    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
+    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\""
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -3682,7 +3722,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(task), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
+`, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

@@ -22,7 +22,7 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 	for _, h := range harness.All() {
 		t.Run(string(h), func(t *testing.T) {
 			agentID := "test-" + string(h)
-			path, err := writeLauncherScript(agentID, "do the thing", "/tmp/repo", "origin/main", "sess", false, "", "", "", h)
+			path, err := writeLauncherScript(agentID, "do the thing", "/tmp/repo", "origin/main", "sess", false, "", "", "", h, true)
 			if err != nil {
 				t.Fatalf("writeLauncherScript failed: %v", err)
 			}
@@ -46,6 +46,37 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 				t.Errorf("expected the (gated) Claude hook block to be present in the template")
 			}
 		})
+	}
+}
+
+func TestWriteLauncherScript_ShouldReflectDraftPRsSetting(t *testing.T) {
+	cases := map[bool]string{
+		true:  "DRAFT_PRS='1'",
+		false: "DRAFT_PRS='0'",
+	}
+	for draftPRs, want := range cases {
+		path, err := writeLauncherScript("draft-test", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Default, draftPRs)
+		if err != nil {
+			t.Fatalf("writeLauncherScript failed: %v", err)
+		}
+		defer os.Remove(path)
+
+		assertValidBash(t, path)
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("failed to read script: %v", err)
+		}
+		content := string(data)
+
+		if !strings.Contains(content, want) {
+			t.Errorf("launcher script with draftPRs=%v should contain %q", draftPRs, want)
+		}
+		// The agent's gh pr create instruction picks up --draft at runtime
+		// via the PR_DRAFT_FLAG shell variable.
+		if !strings.Contains(content, "gh pr create ${PR_DRAFT_FLAG}--base") {
+			t.Error("launcher script should build the gh pr create command from PR_DRAFT_FLAG")
+		}
 	}
 }
 
@@ -100,7 +131,7 @@ func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 	for _, h := range harness.All() {
 		t.Run(string(h), func(t *testing.T) {
 			agentID := "rec-" + string(h)
-			path, err := writeRecoveryScript(agentID, "/tmp/repo/wt", "origin/main", "sess", "the original task", h)
+			path, err := writeRecoveryScript(agentID, "/tmp/repo/wt", "origin/main", "sess", "the original task", h, true)
 			if err != nil {
 				t.Fatalf("writeRecoveryScript failed: %v", err)
 			}

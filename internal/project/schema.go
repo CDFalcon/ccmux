@@ -2,7 +2,7 @@ package project
 
 import "github.com/CDFalcon/ccmux/internal/harness"
 
-const CurrentSchemaVersion = 8
+const CurrentSchemaVersion = 9
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -17,6 +17,11 @@ type Project struct {
 	StartupScript     string `json:"startup_script,omitempty"`
 	TeardownScript    string `json:"teardown_script,omitempty"`
 	MergeWhenAccepted bool   `json:"merge_when_accepted,omitempty"`
+	// DraftPRs controls whether agents are instructed to open pull requests
+	// as drafts. A nil pointer means "unset" and resolves to true via
+	// EffectiveDraftPRs, so projects created before this setting existed
+	// keep the original draft-PR behaviour.
+	DraftPRs *bool `json:"draft_prs,omitempty"`
 }
 
 func (p *Project) IsSettingUp() bool {
@@ -42,6 +47,16 @@ func (p *Project) EffectiveBaseBranch() string {
 // harness selection existed.
 func (p *Project) EffectiveHarness() harness.Type {
 	return harness.Parse(p.DefaultHarness)
+}
+
+// EffectiveDraftPRs reports whether agents working in this project should
+// open pull requests as drafts. It defaults to true when unset (DraftPRs ==
+// nil) so projects created before this setting existed are unaffected.
+func (p *Project) EffectiveDraftPRs() bool {
+	if p.DraftPRs == nil {
+		return true
+	}
+	return *p.DraftPRs
 }
 
 type storeData struct {
