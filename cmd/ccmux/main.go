@@ -283,7 +283,7 @@ func runSpawn(opts spawnOptions) (string, error) {
 
 	worktreeName := sanitizeWorktreeName(opts.WorktreeName)
 
-	launcherScript, err := writeLauncherScript(agentID, opts.Task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, worktreeName, opts.PromptContent, proj.StartupScript, selectedHarness)
+	launcherScript, err := writeLauncherScript(agentID, opts.Task, proj.EffectivePath(), baseBranch, sessionID, proj.UseFastWorktrees, worktreeName, opts.PromptContent, proj.StartupScript, selectedHarness, proj.EffectiveDraftPRs())
 	if err != nil {
 		return "", fmt.Errorf("failed to create launcher script: %w", err)
 	}
@@ -423,7 +423,7 @@ Examples:
 	}
 }
 
-func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string, h harness.Type) (string, error) {
+func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -439,6 +439,11 @@ func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, 
 	useFastWT := "0"
 	if useFastWorktrees {
 		useFastWT = "1"
+	}
+
+	draftPRsFlag := "0"
+	if draftPRs {
+		draftPRsFlag = "1"
 	}
 
 	wtSuffix := agentID
@@ -458,6 +463,7 @@ SESSION_ID=%s
 USE_FAST_WT=%s
 WT_SUFFIX=%s
 HARNESS=%s
+DRAFT_PRS=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -671,10 +677,15 @@ unset CLAUDECODE
 
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
+PR_DRAFT_FLAG=""
+if [ "$DRAFT_PRS" = "1" ]; then
+  PR_DRAFT_FLAG="--draft "
+fi
+
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 When done with your task, commit your work and create a PR with:
-    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
+    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\""
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -695,7 +706,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
+`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1163,6 +1174,11 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 	var toRemove []string
 	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
 
+	// projectStore lets recovery honour each agent's project-level
+	// settings (e.g. draft PRs). A failure here is non-fatal — callers
+	// fall back to the default behaviour.
+	projectStore, _ := project.NewStore()
+
 	for _, a := range agents {
 		worktreeExists := a.WorktreePath != "" && dirExists(a.WorktreePath)
 
@@ -1171,7 +1187,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toCleanup = append(toCleanup, a)
 
 		case (a.Status == agent.StatusRunning || a.Status == agent.StatusSpawning) && worktreeExists:
-			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID, a.Task, harness.Parse(a.Harness))
+			scriptPath, err := writeRecoveryScript(a.ID, a.WorktreePath, a.BaseBranch, sessionID, a.Task, harness.Parse(a.Harness), agentDraftPRs(projectStore, a.ProjectName))
 			if err != nil {
 				logging.Log("recovery: failed to write recovery script for %s: %v", a.ID, err)
 				continue
@@ -1288,7 +1304,21 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID, task string, h harness.Type) (string, error) {
+// agentDraftPRs resolves the draft-PR setting for an agent's project,
+// defaulting to true when the store is unavailable or the project is
+// unknown (e.g. it was removed after the agent was spawned).
+func agentDraftPRs(store *project.Store, projectName string) bool {
+	if store == nil || projectName == "" {
+		return true
+	}
+	proj, err := store.Get(projectName)
+	if err != nil {
+		return true
+	}
+	return proj.EffectiveDraftPRs()
+}
+
+func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID, task string, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1301,6 +1331,11 @@ func writeRecoveryScript(agentID, worktreePath, baseBranch, sessionID, task stri
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-recovery.sh")
 
+	draftPRsFlag := "0"
+	if draftPRs {
+		draftPRsFlag = "1"
+	}
+
 	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
@@ -1311,6 +1346,7 @@ BASE_BRANCH=%s
 SESSION_ID=%s
 TASK=%s
 HARNESS=%s
+DRAFT_PRS=%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -1440,6 +1476,11 @@ echo ""
 
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
+PR_DRAFT_FLAG=""
+if [ "$DRAFT_PRS" = "1" ]; then
+  PR_DRAFT_FLAG="--draft "
+fi
+
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
 
 IMPORTANT: Your previous session was interrupted by a session loss (e.g., tmux crash or reboot). Review your progress so far with git log, git status and git diff, then continue where you left off.
@@ -1448,7 +1489,7 @@ The original task was:
 $TASK
 
 When done with your task, commit your work and create a PR with:
-    gh pr create --draft --base $PR_BASE_BRANCH --title \"...\" --body \"...\""
+    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\""
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1469,7 +1510,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(promptsFilePath(agentID)), h.ContinueCommand())
+`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), sq(promptsFilePath(agentID)), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

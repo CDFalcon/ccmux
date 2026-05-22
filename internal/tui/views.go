@@ -811,6 +811,7 @@ func renderEditProjectView(m model) string {
 		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 		{"Merge when accepted (yes/no):", m.editProjectForm.mergeWhenAcceptedInput.View()},
 		{"Default harness (claude/codex):", m.editProjectForm.harnessInput.View()},
+		{"Draft PRs (yes/no):", m.editProjectForm.draftPRsInput.View()},
 	}
 
 	for i, f := range fields {

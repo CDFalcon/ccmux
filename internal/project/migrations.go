@@ -81,4 +81,10 @@ func init() {
 		// (Claude Code) — no behaviour change until a user opts in.
 		return data, nil
 	})
+	migrations.Register(8, func(data []byte) ([]byte, error) {
+		// v8 -> v9: add the optional `draft_prs` field. Existing projects
+		// leave it unset, which resolves to true (open PRs as drafts) via
+		// EffectiveDraftPRs — no behaviour change until a user opts out.
+		return data, nil
+	})
 }

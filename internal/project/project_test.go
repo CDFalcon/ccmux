@@ -1047,6 +1047,73 @@ func TestAdd_ShouldOmitMergeWhenAccepted_GivenFalse(t *testing.T) {
 	}
 }
 
+func TestEffectiveDraftPRs_ShouldDefaultToTrue_GivenUnset(t *testing.T) {
+	// Setup.
+	p := &Project{Name: "p", Path: "/repo"}
+
+	// Execute & Assert.
+	if !p.EffectiveDraftPRs() {
+		t.Error("expected EffectiveDraftPRs to default to true when DraftPRs is unset")
+	}
+}
+
+func TestEffectiveDraftPRs_ShouldReflectExplicitValue_GivenSet(t *testing.T) {
+	// Setup.
+	yes, no := true, false
+
+	// Execute & Assert.
+	if !(&Project{DraftPRs: &yes}).EffectiveDraftPRs() {
+		t.Error("expected EffectiveDraftPRs to be true when DraftPRs is explicitly true")
+	}
+	if (&Project{DraftPRs: &no}).EffectiveDraftPRs() {
+		t.Error("expected EffectiveDraftPRs to be false when DraftPRs is explicitly false")
+	}
+}
+
+func TestUpdate_ShouldPersistDraftPRs_GivenFalse(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "no-draft", Path: repoDir})
+
+	// Execute.
+	err := store.Update("no-draft", func(p *Project) {
+		no := false
+		p.DraftPRs = &no
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("no-draft")
+	if retrieved.DraftPRs == nil || *retrieved.DraftPRs {
+		t.Error("expected DraftPRs to persist as false")
+	}
+	if retrieved.EffectiveDraftPRs() {
+		t.Error("expected EffectiveDraftPRs to be false after persisting false")
+	}
+}
+
+func TestAdd_ShouldOmitDraftPRs_GivenUnset(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	store.Add(&Project{Name: "default-draft", Path: repoDir})
+
+	// Assert.
+	raw, _ := os.ReadFile(store.filePath)
+	var data map[string]interface{}
+	json.Unmarshal(raw, &data)
+	projects := data["projects"].(map[string]interface{})
+	proj := projects["default-draft"].(map[string]interface{})
+	if _, exists := proj["draft_prs"]; exists {
+		t.Error("expected draft_prs to be omitted from JSON when unset")
+	}
+}
+
 func TestMigrationV5ToV6_ShouldPreserveExistingFields(t *testing.T) {
 	// Setup.
 	v5Data := `{

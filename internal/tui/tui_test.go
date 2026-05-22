@@ -337,7 +337,7 @@ func TestResumeScripts_ShouldProduceValidBash_ForEveryHarness(t *testing.T) {
 			}
 			defer os.Remove(conflict)
 
-			restart, err := writeRestartScript(id, "/tmp/wt", "origin/main", "the task", h)
+			restart, err := writeRestartScript(id, "/tmp/wt", "origin/main", "the task", h, true)
 			if err != nil {
 				t.Fatalf("writeRestartScript: %v", err)
 			}
