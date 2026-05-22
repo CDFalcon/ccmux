@@ -89,3 +89,31 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
    - 💤 **Idle** — agent's terminal has gone quiet (may be stuck). Jump in to check on it or send it a message.
    - 🔀 **PR Ready** — agent opened a pull request. `a`ccept (cleanup agent and worktree), `c`omment (resume agent to address feedback), `r`eject (close PR + cleanup), or `b`rowser (open PR in browser).
+
+## Spawning tasks from the CLI
+
+Agents (or you) can spawn new tasks from inside a ccmux session without going
+through the TUI, using the `ccmux task` command:
+
+```
+ccmux task <project> <description> [harness] [base-branch] [branch-name]
+```
+
+Only the project name and description are required. The remaining arguments
+are optional and positional — pass `-` to skip one while still supplying a
+later one:
+
+- `harness` — `claude` or `codex` (defaults to the project's configured harness)
+- `base-branch` — branch the worktree is created from (defaults to `origin/master`)
+- `branch-name` — human-readable name for the worktree and branch
+
+```bash
+ccmux task myproject "Fix the login bug"
+ccmux task myproject "Add dark mode" codex
+ccmux task myproject "Refactor the API" claude origin/develop
+ccmux task myproject "Write docs" - - docs-update
+```
+
+Each invocation creates its own worktree, branch, and tmux window — exactly
+like spawning from the TUI — so a running agent can delegate or parallelise
+work by shelling out to `ccmux task`.
