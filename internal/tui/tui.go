@@ -112,6 +112,12 @@ type model struct {
 	ciChecking      map[string]bool
 	ciCheckProgress map[string]ciProgress
 
+	// Codex PR detection. Claude Code agents announce a freshly opened PR
+	// through the PostToolUse hook; Codex has no equivalent hook, so ccmux
+	// polls `gh pr list` for Codex agents that have no PR recorded yet.
+	prDetectLastChecked map[string]time.Time
+	prDetectChecking    map[string]bool
+
 	// Resource monitoring
 	agentResources  map[string]*AgentResources
 	liveDailyCosts  map[string]float64
@@ -613,6 +619,14 @@ type ciProgress struct {
 	Total     int
 }
 
+// prDetectedMsg reports the result of polling for a Codex agent's PR. prURL is
+// empty when no open PR was found for the agent's branch (or the lookup
+// failed); the agent is simply left alone until the next poll.
+type prDetectedMsg struct {
+	agentID string
+	prURL   string
+}
+
 func newFixedTextarea(placeholder string, width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = placeholder
@@ -655,36 +669,38 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 	progress := new(int64)
 
 	return model{
-		view:               ViewMain,
-		taskInput:          taskInput,
-		branchInput:        branchInput,
-		branchFilter:       branchFilter,
-		projectFilter:      projectFilter,
-		worktreeNameInput:  worktreeNameInput,
-		interveneInput:     interveneInput,
-		projectForm:        newProjectForm(),
-		editProjectForm:    newEditProjectForm(),
-		promptForm:         newPromptForm(),
-		editPromptForm:     newEditPromptForm(),
-		spawnPromptEnabled: make(map[string]bool),
-		ciLastChecked:      make(map[string]time.Time),
-		ciChecking:         make(map[string]bool),
-		ciCheckProgress:    make(map[string]ciProgress),
-		prevWindowNames:    make(map[string]string),
-		totalMemKB:         getTotalMemoryKB(),
-		clkTck:             getClockTicks(),
-		prevCPUTicks:       make(map[int]int64),
-		downloadProgress:   progress,
-		projSetupBuffers:   make(map[string]*projImportBuffer),
-		agentStore:         agentStore,
-		queueManager:       queueManager,
-		projectStore:       projectStore,
-		promptStore:        promptStore,
-		settingsStore:      settingsStore,
-		dailyCostStore:     dailyCostStore,
-		tmuxManager:        tmuxManager,
-		sessionID:          sessionID,
-		betaChannel:        loadBetaChannel(settingsStore),
+		view:                ViewMain,
+		taskInput:           taskInput,
+		branchInput:         branchInput,
+		branchFilter:        branchFilter,
+		projectFilter:       projectFilter,
+		worktreeNameInput:   worktreeNameInput,
+		interveneInput:      interveneInput,
+		projectForm:         newProjectForm(),
+		editProjectForm:     newEditProjectForm(),
+		promptForm:          newPromptForm(),
+		editPromptForm:      newEditPromptForm(),
+		spawnPromptEnabled:  make(map[string]bool),
+		ciLastChecked:       make(map[string]time.Time),
+		ciChecking:          make(map[string]bool),
+		ciCheckProgress:     make(map[string]ciProgress),
+		prDetectLastChecked: make(map[string]time.Time),
+		prDetectChecking:    make(map[string]bool),
+		prevWindowNames:     make(map[string]string),
+		totalMemKB:          getTotalMemoryKB(),
+		clkTck:              getClockTicks(),
+		prevCPUTicks:        make(map[int]int64),
+		downloadProgress:    progress,
+		projSetupBuffers:    make(map[string]*projImportBuffer),
+		agentStore:          agentStore,
+		queueManager:        queueManager,
+		projectStore:        projectStore,
+		promptStore:         promptStore,
+		settingsStore:       settingsStore,
+		dailyCostStore:      dailyCostStore,
+		tmuxManager:         tmuxManager,
+		sessionID:           sessionID,
+		betaChannel:         loadBetaChannel(settingsStore),
 	}
 }
 
@@ -965,6 +981,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.ciCheckProgress, id)
 			}
 		}
+
+		// Codex has no PostToolUse hook, so ccmux never sees `gh pr create`
+		// the way it does for Claude Code. Poll `gh pr list` for Codex
+		// agents that are still working/idle and have no PR recorded, so a
+		// PR they opened still gets picked up for CI monitoring.
+		const prDetectInterval = 20 * time.Second
+		detectingPR := make(map[string]bool)
+		for _, a := range m.agents {
+			if a.PRURL != "" || a.BranchName == "" || a.WorktreePath == "" {
+				continue
+			}
+			if harness.Parse(a.Harness) != harness.Codex {
+				continue
+			}
+			if a.Status != agent.StatusRunning && a.Status != agent.StatusReady {
+				continue
+			}
+			detectingPR[a.ID] = true
+			if m.prDetectChecking[a.ID] {
+				continue
+			}
+			lastCheck, checked := m.prDetectLastChecked[a.ID]
+			if checked && time.Since(lastCheck) < prDetectInterval {
+				continue
+			}
+			m.prDetectChecking[a.ID] = true
+			m.prDetectLastChecked[a.ID] = time.Now()
+			cmds = append(cmds, detectCodexPRCmd(a.ID, a.BranchName, a.WorktreePath))
+		}
+		for id := range m.prDetectLastChecked {
+			if !detectingPR[id] {
+				delete(m.prDetectLastChecked, id)
+				delete(m.prDetectChecking, id)
+			}
+		}
+
 		if len(cmds) > 0 {
 			return m, tea.Batch(cmds...)
 		}
@@ -972,6 +1024,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spawnStartedMsg:
 		return m, nil
+
+	case prDetectedMsg:
+		delete(m.prDetectChecking, msg.agentID)
+		if msg.prURL == "" {
+			return m, nil
+		}
+		var detected *agent.Agent
+		for _, ag := range m.agents {
+			if ag.ID == msg.agentID {
+				detected = ag
+				break
+			}
+		}
+		// Skip if the agent already picked up a PR through another path, or
+		// is no longer in a state where attaching one makes sense.
+		if detected == nil || detected.PRURL != "" {
+			return m, nil
+		}
+		if detected.Status != agent.StatusRunning && detected.Status != agent.StatusReady {
+			return m, nil
+		}
+		// Mirror `ccmux ci-wait`: record the PR and hand the agent off to CI
+		// monitoring, clearing any idle item raised while it was working.
+		m.queueManager.RemoveByAgentAndType(msg.agentID, queue.ItemTypeIdle)
+		m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusWaitingCI
+			ag.PRURL = msg.prURL
+			ag.CIWaitAt = time.Now()
+		})
+		return m, m.refreshCmd()
 
 	case ciCheckResultMsg:
 		delete(m.ciChecking, msg.agentID)
@@ -3103,6 +3185,39 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) t
 
 		return ciCheckResultMsg{agentID: agentID, status: status, summary: summary, prURL: prURL, completed: completed, total: total, hasMergeConflict: hasMergeConflict, hasNewReview: hasNewReview}
 	}
+}
+
+// detectCodexPRCmd looks for an open PR whose head is the agent's branch.
+// Claude Code agents report a new PR via the PostToolUse hook (`ccmux
+// ci-wait`); Codex has no such hook, so ccmux discovers the PR by polling
+// `gh pr list` from the agent's worktree.
+func detectCodexPRCmd(agentID, branchName, worktreePath string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+			"--head", branchName, "--state", "open",
+			"--json", "url", "--limit", "1")
+		cmd.Dir = worktreePath
+		output, err := cmd.Output()
+		if err != nil {
+			return prDetectedMsg{agentID: agentID}
+		}
+		return prDetectedMsg{agentID: agentID, prURL: firstPRURL(output)}
+	}
+}
+
+// firstPRURL returns the url of the first PR in `gh pr list --json url`
+// output, or "" when the list is empty or cannot be parsed.
+func firstPRURL(output []byte) string {
+	var prs []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(output, &prs); err != nil || len(prs) == 0 {
+		return ""
+	}
+	return prs[0].URL
 }
 
 type prReview struct {
