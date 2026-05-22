@@ -104,7 +104,7 @@ are optional and positional — pass `-` to skip one while still supplying a
 later one:
 
 - `harness` — `claude` or `codex` (defaults to the project's configured harness)
-- `base-branch` — branch the worktree is created from (defaults to `origin/master`)
+- `base-branch` — branch the worktree is created from (defaults to the project's configured base branch). Must exist on the project repo's `origin` remote, or the command fails fast with the list of available branches.
 - `branch-name` — human-readable name for the worktree and branch
 
 ```bash
