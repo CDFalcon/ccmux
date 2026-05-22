@@ -3692,8 +3692,10 @@ PR_BASE_BRANCH=%s
 PR_BASE_BRANCH="${PR_BASE_BRANCH#origin/}"
 
 PR_DRAFT_FLAG=""
+PR_DRAFT_NOTE="IMPORTANT: this project opens pull requests ready for review — do NOT add a --draft flag."
 if [ "$DRAFT_PRS" = "1" ]; then
   PR_DRAFT_FLAG="--draft "
+  PR_DRAFT_NOTE="This project opens pull requests as drafts — keep the --draft flag."
 fi
 
 SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
@@ -3704,7 +3706,8 @@ The original task was:
 $TASK
 
 When done with your task, commit your work and create a PR with:
-    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\""
+    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+${PR_DRAFT_NOTE}"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
