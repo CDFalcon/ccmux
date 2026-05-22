@@ -49,6 +49,53 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 	}
 }
 
+func TestOptionalArg_ShouldTreatDashAsDefault(t *testing.T) {
+	cases := map[string]string{
+		"-":       "",
+		"":        "",
+		"claude":  "claude",
+		"codex":   "codex",
+		"origin/m": "origin/m",
+	}
+	for in, want := range cases {
+		if got := optionalArg(in); got != want {
+			t.Errorf("optionalArg(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTaskCmd_ShouldAcceptTwoToFivePositionalArgs(t *testing.T) {
+	cmd := taskCmd()
+
+	if cmd.Use == "" || !strings.HasPrefix(cmd.Use, "task ") {
+		t.Errorf("taskCmd Use = %q, want it to start with %q", cmd.Use, "task ")
+	}
+	if cmd.Hidden {
+		t.Error("taskCmd should be visible so agents can discover it via --help")
+	}
+
+	cases := []struct {
+		args    []string
+		wantErr bool
+	}{
+		{[]string{"proj"}, true},
+		{[]string{"proj", "desc"}, false},
+		{[]string{"proj", "desc", "claude"}, false},
+		{[]string{"proj", "desc", "claude", "origin/main"}, false},
+		{[]string{"proj", "desc", "claude", "origin/main", "branch"}, false},
+		{[]string{"proj", "desc", "claude", "origin/main", "branch", "extra"}, true},
+	}
+	for _, tc := range cases {
+		err := cmd.Args(cmd, tc.args)
+		if tc.wantErr && err == nil {
+			t.Errorf("taskCmd.Args(%v) = nil, want error", tc.args)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("taskCmd.Args(%v) = %v, want nil", tc.args, err)
+		}
+	}
+}
+
 func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.T) {
 	for _, h := range harness.All() {
 		t.Run(string(h), func(t *testing.T) {
