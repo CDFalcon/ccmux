@@ -413,27 +413,28 @@ func (ef *editProjectFormModel) focusCurrent() {
 	}
 }
 
+// yesNo renders a boolean as the literal the edit-project form's yes/no
+// fields expect. A disabled setting must show an explicit "no" rather than an
+// empty string: an empty input renders its placeholder instead, and the Draft
+// PRs field's placeholder is "yes" (its default), so an empty value there
+// looks identical to the enabled state and an edit to "no" appears not to
+// have saved.
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
 func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	ef.pathInput.SetValue(p.Path)
 	ef.baseBranchInput.SetValue(p.DefaultBaseBranch)
-	if p.UseFastWorktrees {
-		ef.fastWTInput.SetValue("yes")
-	} else {
-		ef.fastWTInput.SetValue("")
-	}
+	ef.fastWTInput.SetValue(yesNo(p.UseFastWorktrees))
 	ef.startupScriptInput.SetValue(p.StartupScript)
 	ef.teardownScriptInput.SetValue(p.TeardownScript)
-	if p.MergeWhenAccepted {
-		ef.mergeWhenAcceptedInput.SetValue("yes")
-	} else {
-		ef.mergeWhenAcceptedInput.SetValue("")
-	}
+	ef.mergeWhenAcceptedInput.SetValue(yesNo(p.MergeWhenAccepted))
 	ef.harnessInput.SetValue(string(p.EffectiveHarness()))
-	if p.EffectiveDraftPRs() {
-		ef.draftPRsInput.SetValue("yes")
-	} else {
-		ef.draftPRsInput.SetValue("")
-	}
+	ef.draftPRsInput.SetValue(yesNo(p.EffectiveDraftPRs()))
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -1330,6 +1331,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
 		case 6:
 			m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+		case 7:
+			m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)

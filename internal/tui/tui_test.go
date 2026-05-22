@@ -704,6 +704,37 @@ func TestHandleManageProjectsKeys_ShouldEditProject_GivenEnterOnReadyProject(t *
 	}
 }
 
+func TestLoadFromProject_ShouldShowDraftPRsValue_GivenEachState(t *testing.T) {
+	yes := true
+	no := false
+	cases := []struct {
+		name     string
+		draftPRs *bool
+		want     string
+	}{
+		{"unset defaults to yes", nil, "yes"},
+		{"explicitly enabled", &yes, "yes"},
+		{"explicitly disabled", &no, "no"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Setup.
+			ef := newEditProjectForm()
+			p := &project.Project{Name: "test", Path: "/test", DraftPRs: tc.draftPRs}
+
+			// Execute.
+			ef.loadFromProject(p)
+
+			// Assert. A disabled setting must render as an explicit "no";
+			// an empty value would display the placeholder "yes" instead and
+			// look identical to the enabled state.
+			if got := ef.draftPRsInput.Value(); got != tc.want {
+				t.Errorf("draftPRsInput value = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParsePRURL_ShouldReturnOwnerRepoNumber_GivenValidURL(t *testing.T) {
 	// Setup.
 	url := "https://github.com/myorg/myrepo/pull/42"
