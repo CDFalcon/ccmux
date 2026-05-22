@@ -739,6 +739,45 @@ func TestParsePRURL_ShouldReturnError_GivenInvalidURL(t *testing.T) {
 	}
 }
 
+func TestFirstPRURL_ShouldReturnURL_GivenNonEmptyList(t *testing.T) {
+	// Setup. Shape of `gh pr list --json url` output.
+	output := []byte(`[{"url":"https://github.com/myorg/myrepo/pull/42"}]`)
+
+	// Execute.
+	got := firstPRURL(output)
+
+	// Assert.
+	if got != "https://github.com/myorg/myrepo/pull/42" {
+		t.Errorf("expected PR url, got '%s'", got)
+	}
+}
+
+func TestFirstPRURL_ShouldReturnEmpty_GivenEmptyList(t *testing.T) {
+	// Setup. `gh pr list` prints an empty array when no PR matches the head.
+	output := []byte(`[]`)
+
+	// Execute.
+	got := firstPRURL(output)
+
+	// Assert.
+	if got != "" {
+		t.Errorf("expected empty string for empty list, got '%s'", got)
+	}
+}
+
+func TestFirstPRURL_ShouldReturnEmpty_GivenUnparseableOutput(t *testing.T) {
+	// Setup. A gh failure or auth error may yield non-JSON on stdout.
+	output := []byte("gh: could not determine repository")
+
+	// Execute.
+	got := firstPRURL(output)
+
+	// Assert.
+	if got != "" {
+		t.Errorf("expected empty string for unparseable output, got '%s'", got)
+	}
+}
+
 func TestEvaluateCIChecks_ShouldReturnPassed_GivenAllSuccess(t *testing.T) {
 	// Setup.
 	checks := []prCheckResult{
