@@ -127,6 +127,60 @@ func TestTaskCmd_ShouldAcceptTwoToFivePositionalArgs(t *testing.T) {
 	}
 }
 
+// newRepoWithOriginBranch builds a throwaway git repo whose "origin" remote
+// exposes exactly one branch, and returns the repo path.
+func newRepoWithOriginBranch(t *testing.T, branch string) string {
+	t.Helper()
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	originDir := t.TempDir()
+	runGit(originDir, "init", "-q")
+	runGit(originDir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+	runGit(originDir, "config", "user.email", "test@test.com")
+	runGit(originDir, "config", "user.name", "test")
+	runGit(originDir, "commit", "--allow-empty", "-q", "-m", "init")
+
+	repoDir := t.TempDir()
+	runGit(repoDir, "init", "-q")
+	runGit(repoDir, "remote", "add", "origin", originDir)
+
+	return repoDir
+}
+
+func TestVerifyBaseBranch_ShouldAcceptExistingBranch(t *testing.T) {
+	repo := newRepoWithOriginBranch(t, "master")
+
+	// Both the "origin/"-prefixed and bare forms should resolve, since the
+	// launcher strips the prefix before fetching.
+	for _, ref := range []string{"origin/master", "master"} {
+		if err := verifyBaseBranch("proj", repo, ref); err != nil {
+			t.Errorf("verifyBaseBranch(%q) = %v, want nil", ref, err)
+		}
+	}
+}
+
+func TestVerifyBaseBranch_ShouldRejectMissingBranch(t *testing.T) {
+	repo := newRepoWithOriginBranch(t, "master")
+
+	err := verifyBaseBranch("proj", repo, "origin/main")
+	if err == nil {
+		t.Fatal("verifyBaseBranch(origin/main) = nil, want error for a repo with only master")
+	}
+	// The error should be actionable: name the bad branch and list what is
+	// actually available so a calling agent can self-correct.
+	if !strings.Contains(err.Error(), "origin/main") || !strings.Contains(err.Error(), "master") {
+		t.Errorf("error %q should mention the missing branch and the available ones", err)
+	}
+}
+
 func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.T) {
 	for _, h := range harness.All() {
 		t.Run(string(h), func(t *testing.T) {
