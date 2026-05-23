@@ -1162,6 +1162,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ciStatusFailed:
 			if currentAgent != nil {
 				if m.isDuplicateCIFailure(currentAgent, msg.summary) {
+					// We've already resumed the agent once for this exact
+					// failure. Don't re-prompt (that's the loop the dedup
+					// check guards against), but still count the poll toward
+					// the throttle window so a truly stuck agent — pushed a
+					// "fix" but CI keeps reporting the same failure — gets
+					// flipped to idle instead of sitting in WaitingCI forever
+					// with a stale "0/N checks left" indicator.
+					if m.shouldThrottleResume(currentAgent) {
+						m.throttleAgent(msg.agentID)
+						return m, m.refreshCmd()
+					}
+					m.recordResume(msg.agentID)
 					return m, nil
 				}
 				if m.shouldThrottleResume(currentAgent) {
