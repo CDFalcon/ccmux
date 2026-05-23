@@ -14,6 +14,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
+	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -1462,6 +1463,137 @@ func TestIsDuplicateCIFailure_ShouldReturnFalse_GivenNilAgent(t *testing.T) {
 	// Assert.
 	if result {
 		t.Error("expected not duplicate for nil agent")
+	}
+}
+
+// newTestModelWithStoreAndQueue wires both the agent store and a queue to the
+// same session so we can drive Update through paths that touch both.
+func newTestModelWithStoreAndQueue(t *testing.T) model {
+	t.Helper()
+	m := newTestModel()
+	sessionID := fmt.Sprintf("test-%d-%d", time.Now().UnixNano(), randomTestSuffix())
+	store, err := agent.NewStore(sessionID)
+	if err != nil {
+		t.Fatalf("failed to create agent store: %v", err)
+	}
+	q, err := queue.NewQueue(sessionID)
+	if err != nil {
+		t.Fatalf("failed to create queue: %v", err)
+	}
+	t.Cleanup(func() { _ = removeTestStore(sessionID) })
+	m.agentStore = store
+	m.queueManager = q
+	m.ciCheckProgress = make(map[string]ciProgress)
+	m.ciChecking = make(map[string]bool)
+	m.ciLastChecked = make(map[string]time.Time)
+	return m
+}
+
+func TestDuplicateCIFailure_ShouldRecordResume_GivenAgentBelowThrottleThreshold(t *testing.T) {
+	// Setup. Agent was resumed once for "CI checks failed: lint". GH still
+	// reports the same failure on the next poll — either because the agent's
+	// fix didn't actually fix anything, or no new workflow has run yet.
+	// Previously this branch returned silently, leaving the agent stuck in
+	// WaitingCI with a stale "0/N checks left" indicator forever. The fix is
+	// to still count the duplicate poll toward the throttle window so a
+	// truly stuck agent eventually escapes to the idle queue.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:                    "agent-1",
+		Status:                agent.StatusWaitingCI,
+		PRURL:                 "https://github.com/owner/repo/pull/1",
+		CILastNotifiedSummary: "CI checks failed: lint",
+		CIResumeHistory:       []time.Time{time.Now().Add(-1 * time.Minute)},
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	// Execute. Drive the same duplicate-failure poll.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusFailed,
+		summary:   "CI checks failed: lint",
+		prURL:     a.PRURL,
+		completed: 5,
+		total:     5,
+	})
+	_ = updated
+
+	// Assert. Agent should stay in WaitingCI (no re-prompt), but the
+	// duplicate poll should count toward the throttle window.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected agent to stay in WaitingCI on first duplicate; got %s", reloaded.Status)
+	}
+	if len(reloaded.CIResumeHistory) != 2 {
+		t.Errorf("expected duplicate poll to record a resume (history length 2), got %d", len(reloaded.CIResumeHistory))
+	}
+}
+
+func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *testing.T) {
+	// Setup. Agent has already burned its 3 resume attempts inside the window.
+	// A further duplicate poll must escape the stuck state by throttling the
+	// agent (idle queue item + status flipped to Ready), instead of silently
+	// returning and leaving "0/N checks left" on screen.
+	m := newTestModelWithStoreAndQueue(t)
+	now := time.Now()
+	a := &agent.Agent{
+		ID:                    "agent-1",
+		Status:                agent.StatusWaitingCI,
+		PRURL:                 "https://github.com/owner/repo/pull/1",
+		CILastNotifiedSummary: "CI checks failed: lint",
+		CIResumeHistory: []time.Time{
+			now.Add(-10 * time.Minute),
+			now.Add(-5 * time.Minute),
+			now.Add(-1 * time.Minute),
+		},
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciCheckProgress["agent-1"] = ciProgress{Completed: 5, Total: 5}
+
+	// Execute.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusFailed,
+		summary:   "CI checks failed: lint",
+		prURL:     a.PRURL,
+		completed: 5,
+		total:     5,
+	})
+	_ = updated
+
+	// Assert. Status flipped to Ready, idle item added, stale progress cleared.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected throttled agent in Ready, got %s", reloaded.Status)
+	}
+	if _, exists := m.ciCheckProgress["agent-1"]; exists {
+		t.Error("expected stale ciCheckProgress entry cleared on throttle")
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	foundIdle := false
+	for _, it := range items {
+		if it.AgentID == "agent-1" && it.Type == queue.ItemTypeIdle {
+			foundIdle = true
+			break
+		}
+	}
+	if !foundIdle {
+		t.Error("expected an idle queue item for throttled agent")
 	}
 }
 
