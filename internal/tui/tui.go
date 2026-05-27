@@ -3009,7 +3009,7 @@ export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
 %s \
-  "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback, then commit and push your changes."
+  "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback, then commit and push your changes. If your changes meaningfully alter the PR's scope, behavior, or approach, also update the PR description with 'gh pr edit $PR_URL --body ...' so it reflects the current state."
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
