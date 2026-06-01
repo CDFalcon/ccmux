@@ -1939,3 +1939,84 @@ func TestIsMergeConflictFailure_ShouldNotDetect_GivenUnrelatedFailure(t *testing
 		t.Error("expected unrelated failure NOT to be reported as a merge conflict")
 	}
 }
+
+func TestIsAgentBusy_ShouldReturnFalse_GivenNilAgent(t *testing.T) {
+	// Nil-agent guard so callers don't crash when CI fires for an agent that
+	// was deleted between message dispatch and handler execution.
+	if isAgentBusy(nil, nil, nil, nil, nil, 0, ciIdleThreshold) {
+		t.Error("expected nil agent to be reported as not busy")
+	}
+}
+
+func TestIsAgentBusy_ShouldReturnFalse_GivenEmptyTmuxWindow(t *testing.T) {
+	// Test agents (and any pre-spawn record) have no TmuxWindow. We treat
+	// "no pane to query" as not busy so the CI-pass handler still transitions
+	// to StatusWaitingReview the way it did before this feature.
+	a := &agent.Agent{ID: "agent-1"}
+	if isAgentBusy(a, nil, nil, nil, nil, 0, ciIdleThreshold) {
+		t.Error("expected agent with empty TmuxWindow to be reported as not busy")
+	}
+}
+
+func TestIsAgentBusy_ShouldReturnFalse_GivenNilTmuxManager(t *testing.T) {
+	// Defensive: if tmuxManager isn't wired up (early init, tests), don't
+	// pretend the agent is busy — fall through to the existing transition.
+	a := &agent.Agent{ID: "agent-1", TmuxWindow: "@5"}
+	if isAgentBusy(a, nil, nil, nil, nil, 0, ciIdleThreshold) {
+		t.Error("expected nil tmux manager to be reported as not busy")
+	}
+}
+
+func TestCIPassed_ShouldTransitionToWaitingReview_GivenIdleAgent(t *testing.T) {
+	// Setup. Agent in WaitingCI with no tmux window (the test path) — the
+	// isAgentBusy gate falls through to "not busy", so the CI-pass handler
+	// should promote to StatusWaitingReview and add the PR-ready queue item
+	// the way it did before this feature.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciCheckProgress["agent-1"] = ciProgress{Completed: 5, Total: 5}
+
+	// Execute.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusPassed,
+		prURL:     a.PRURL,
+		completed: 5,
+		total:     5,
+	})
+	_ = updated
+
+	// Assert. Status promoted, PR-ready item recorded, stale CI progress cleared.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingReview {
+		t.Errorf("expected idle agent to transition to WaitingReview on CI pass, got %s", reloaded.Status)
+	}
+	if _, exists := m.ciCheckProgress["agent-1"]; exists {
+		t.Error("expected ciCheckProgress cleared on CI pass transition")
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	foundPRReady := false
+	for _, it := range items {
+		if it.AgentID == "agent-1" && it.Type == queue.ItemTypePRReady {
+			foundPRReady = true
+			break
+		}
+	}
+	if !foundPRReady {
+		t.Error("expected a PR-ready queue item after CI pass for idle agent")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/tmux"
@@ -220,6 +221,45 @@ func isProcessTreeActive(
 		return false
 	}
 	return isProcessTreeActiveFromPID(panePID, procs, currentTicks, prevTicks, clkTck)
+}
+
+// isAgentBusy reports whether the agent's pane shows recent activity or its
+// process tree has measurable CPU usage. It's the same idle test refreshCmd
+// uses to flip StatusRunning to StatusReady, exposed so the CI-pass handler
+// and the StatusWaitingReview revert path can gate "PR ready for review" on
+// the underlying agent actually being idle.
+//
+// procs/currentTicks may be nil — refreshCmd has fresh snapshots from the top
+// of its loop and passes them through to avoid the extra fork; one-off
+// callers (the CI-pass message handler) pass nil and let us sample inline.
+//
+// Returns false (treats the agent as idle) when there's no tmux window to
+// query or the tmux manager isn't wired up — this keeps tests, which
+// construct agents without a real pane, on the existing transition path.
+func isAgentBusy(
+	a *agent.Agent,
+	tmuxMgr *tmux.Manager,
+	procs map[int]*procInfo,
+	currentTicks map[int]int64,
+	prevTicks map[int]int64,
+	clkTck int64,
+	idleThreshold time.Duration,
+) bool {
+	if a == nil || a.TmuxWindow == "" || tmuxMgr == nil {
+		return false
+	}
+	if activity, err := tmuxMgr.GetWindowActivity(a.TmuxWindow); err == nil {
+		if time.Since(activity) <= idleThreshold {
+			return true
+		}
+	}
+	if procs == nil {
+		procs = listAllProcesses()
+	}
+	if currentTicks == nil {
+		currentTicks = readAllProcTicks()
+	}
+	return isProcessTreeActive(a.TmuxWindow, tmuxMgr, procs, currentTicks, prevTicks, clkTck)
 }
 
 func isProcessTreeActiveFromPID(
