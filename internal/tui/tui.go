@@ -753,13 +753,18 @@ func spinnerTickCmd() tea.Cmd {
 	})
 }
 
+// ciIdleThreshold matches refreshCmd's idleThreshold and is used by the CI
+// handler to make the same "agent is idle" call when deciding whether to
+// surface a PR as ready for review.
+const ciIdleThreshold = 10 * time.Second
+
 func (m model) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
 		agents, _ := m.agentStore.List()
 		projects, _ := m.projectStore.List()
 
 		now := time.Now()
-		const idleThreshold = 10 * time.Second
+		const idleThreshold = ciIdleThreshold
 		const readyGracePeriod = 15 * time.Second
 
 		queueItems, _ := m.queueManager.List()
@@ -826,6 +831,29 @@ func (m model) refreshCmd() tea.Cmd {
 						ag.Status = agent.StatusRunning
 					})
 					m.queueManager.RemoveByAgent(a.ID)
+					changed = true
+				}
+			} else if a.Status == agent.StatusWaitingReview {
+				// "Ready for review" only holds while the agent stays idle.
+				// If the user types in the pane or the agent picks up
+				// follow-up work, revert to running and drop the PR-ready
+				// queue item — the next CI poll (StatusRunning is included
+				// in the poll list below when PRURL is set) will re-promote
+				// to StatusWaitingReview once the agent settles again.
+				if now.Sub(a.UpdatedAt) < readyGracePeriod {
+					continue
+				}
+				activity, err := m.tmuxManager.GetWindowActivity(a.TmuxWindow)
+				if err != nil {
+					continue
+				}
+				paneActive := now.Sub(activity) < idleThreshold
+				cpuActive := isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, procTicks, m.prevCPUTicks, m.clkTck)
+				if paneActive || cpuActive {
+					m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+						ag.Status = agent.StatusRunning
+					})
+					m.queueManager.RemoveByAgentAndType(a.ID, queue.ItemTypePRReady)
 					changed = true
 				}
 			}
@@ -978,7 +1006,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		const ciPollInterval = 30 * time.Second
 		for _, a := range m.agents {
-			if (a.Status == agent.StatusWaitingCI || a.Status == agent.StatusWaitingReview || a.Status == agent.StatusReady) && a.PRURL != "" {
+			// StatusRunning is included so an agent reverted from
+			// StatusWaitingReview (because it picked up follow-up work)
+			// keeps getting polled — once it goes idle and CI is still
+			// passing, the next poll re-promotes it to StatusWaitingReview.
+			if (a.Status == agent.StatusWaitingCI || a.Status == agent.StatusWaitingReview || a.Status == agent.StatusReady || a.Status == agent.StatusRunning) && a.PRURL != "" {
 				activeWaiting[a.ID] = true
 				if !m.ciChecking[a.ID] {
 					lastCheck, checked := m.ciLastChecked[a.ID]
@@ -1139,6 +1171,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// "CI failed: X" message to the agent forever.
 		case ciStatusPassed:
 			if !wasWaitingReview {
+				// Only mark the PR as ready for review when the underlying
+				// agent is actually idle. If it's still working — typing in
+				// the pane, pushing follow-up commits, running tests — defer
+				// the transition; the next CI poll will retry once the agent
+				// settles. Without this gate, "waiting for review" can light
+				// up while the agent is still mid-task and the PR isn't
+				// actually ready for a human to look at.
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+					return m, nil
+				}
 				delete(m.ciCheckProgress, msg.agentID)
 				summary := getPRTitleFromURL(msg.prURL)
 				if summary == "" {
