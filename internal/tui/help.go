@@ -135,7 +135,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 		{FooterText: "[esc] back", Description: "Return to name entry"},
 	},
 	ViewAddProjectFastWT: {
-		{FooterText: "[y]es", Description: "Enable fast worktrees (proj) for this project"},
+		{FooterText: "[y]es", Description: "Enable fast worktrees (rift) for this project"},
 		{FooterText: "[n]o", Description: "Use standard git worktrees"},
 		{FooterText: "[esc] back", Description: "Return to path entry"},
 	},

@@ -448,17 +448,15 @@ func TestEffectiveBaseBranch_ShouldReturnCustom_GivenNonEmptyValue(t *testing.T)
 }
 
 func TestAdd_ShouldStoreProject_GivenFastWorktreesEnabled(t *testing.T) {
-	// Setup.
-	store, _, cleanup := setupTestStore(t)
+	// Setup. Fast-worktree projects only need to be a git repo at Add
+	// time — rift init runs as a separate setup step, so the store
+	// itself does not require the `.rift` marker to be present.
+	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	tmpDir, _ := os.MkdirTemp("", "proj-dir")
-	defer os.RemoveAll(tmpDir)
-	repoDir := filepath.Join(tmpDir, ".repo")
-	os.MkdirAll(repoDir, 0755)
 
 	project := &Project{
 		Name:             "fast-project",
-		Path:             tmpDir,
+		Path:             repoDir,
 		UseFastWorktrees: true,
 	}
 
@@ -478,11 +476,11 @@ func TestAdd_ShouldStoreProject_GivenFastWorktreesEnabled(t *testing.T) {
 	}
 }
 
-func TestAdd_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
+func TestAdd_ShouldFail_GivenFastWorktreesOnNonGitPath(t *testing.T) {
 	// Setup.
 	store, _, cleanup := setupTestStore(t)
 	defer cleanup()
-	tmpDir, _ := os.MkdirTemp("", "no-proj")
+	tmpDir, _ := os.MkdirTemp("", "not-a-repo")
 	defer os.RemoveAll(tmpDir)
 
 	project := &Project{
@@ -496,76 +494,47 @@ func TestAdd_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
 
 	// Assert.
 	if err == nil {
-		t.Error("expected error for missing .repo directory, got nil")
+		t.Error("expected error when fast-worktree project path is not a git repo")
 	}
 }
 
-func TestIsProjDirectory_ShouldReturnTrue_GivenDirWithRepo(t *testing.T) {
+func TestIsRiftInitialized_ShouldReturnTrue_GivenDirWithRiftMarker(t *testing.T) {
 	// Setup.
-	tmpDir, _ := os.MkdirTemp("", "proj-test")
+	tmpDir, _ := os.MkdirTemp("", "rift-marker-test")
 	defer os.RemoveAll(tmpDir)
-	os.MkdirAll(filepath.Join(tmpDir, ".repo"), 0755)
+	if err := os.WriteFile(filepath.Join(tmpDir, ".rift"), []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Execute.
-	result := IsProjDirectory(tmpDir)
+	result := IsRiftInitialized(tmpDir)
 
 	// Assert.
 	if !result {
-		t.Error("expected true for directory with .repo")
+		t.Error("expected true for directory with .rift marker")
 	}
 }
 
-func TestIsProjDirectory_ShouldReturnFalse_GivenDirWithoutRepo(t *testing.T) {
+func TestIsRiftInitialized_ShouldReturnFalse_GivenDirWithoutRiftMarker(t *testing.T) {
 	// Setup.
-	tmpDir, _ := os.MkdirTemp("", "no-proj-test")
+	tmpDir, _ := os.MkdirTemp("", "no-rift-test")
 	defer os.RemoveAll(tmpDir)
 
 	// Execute.
-	result := IsProjDirectory(tmpDir)
+	result := IsRiftInitialized(tmpDir)
 
 	// Assert.
 	if result {
-		t.Error("expected false for directory without .repo")
+		t.Error("expected false for directory without .rift marker")
 	}
 }
 
-func TestFindProjTemplateDir_ShouldReturnPath_GivenTemplateExists(t *testing.T) {
-	// Setup.
-	tmpDir, _ := os.MkdirTemp("", "proj-template-test")
-	defer os.RemoveAll(tmpDir)
-	templateDir := filepath.Join(tmpDir, "00-master")
-	os.MkdirAll(templateDir, 0755)
-
-	// Execute.
-	result := FindProjTemplateDir(tmpDir)
-
-	// Assert.
-	if result != templateDir {
-		t.Errorf("expected '%s', got '%s'", templateDir, result)
-	}
-}
-
-func TestFindProjTemplateDir_ShouldReturnEmpty_GivenNoTemplate(t *testing.T) {
-	// Setup.
-	tmpDir, _ := os.MkdirTemp("", "no-template-test")
-	defer os.RemoveAll(tmpDir)
-
-	// Execute.
-	result := FindProjTemplateDir(tmpDir)
-
-	// Assert.
-	if result != "" {
-		t.Errorf("expected empty string, got '%s'", result)
-	}
-}
-
-func TestUpdate_ShouldToggleFastWorktrees_GivenProjDirectory(t *testing.T) {
-	// Setup.
-	store, _, cleanup := setupTestStore(t)
+func TestUpdate_ShouldToggleFastWorktrees_GivenGitRepo(t *testing.T) {
+	// Setup. Toggling UseFastWorktrees on an existing git repo is
+	// permitted — rift init runs separately via the TUI's setup flow.
+	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	projDir := t.TempDir()
-	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
-	store.Add(&Project{Name: "toggleable", Path: projDir, UseFastWorktrees: true})
+	store.Add(&Project{Name: "toggleable", Path: repoDir})
 
 	// Execute.
 	err := store.Update("toggleable", func(p *Project) {
@@ -579,23 +548,6 @@ func TestUpdate_ShouldToggleFastWorktrees_GivenProjDirectory(t *testing.T) {
 	retrieved, _ := store.Get("toggleable")
 	if !retrieved.UseFastWorktrees {
 		t.Error("expected UseFastWorktrees to be true after update")
-	}
-}
-
-func TestUpdate_ShouldFail_GivenFastWorktreesWithNoProjDir(t *testing.T) {
-	// Setup.
-	store, repoDir, cleanup := setupTestStore(t)
-	defer cleanup()
-	store.Add(&Project{Name: "not-proj", Path: repoDir})
-
-	// Execute.
-	err := store.Update("not-proj", func(p *Project) {
-		p.UseFastWorktrees = true
-	})
-
-	// Assert.
-	if err == nil {
-		t.Error("expected error for missing .repo directory, got nil")
 	}
 }
 
@@ -648,122 +600,47 @@ func TestDetectDefaultBranch_ShouldReturnMain_GivenMainBranch(t *testing.T) {
 	}
 }
 
-func TestProjImport_ShouldFail_GivenNoProjInstalled(t *testing.T) {
+func TestRiftInit_ShouldFail_GivenNoRiftInstalled(t *testing.T) {
 	// Setup.
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", "/nonexistent")
 	defer os.Setenv("PATH", origPath)
 
 	// Execute.
-	_, err := ProjImport("/some/path", nil)
+	_, err := RiftInit("/some/path", nil)
 
 	// Assert.
 	if err == nil {
-		t.Error("expected error when proj is not installed")
+		t.Error("expected error when rift is not installed")
 	}
 }
 
-func TestEffectivePath_ShouldReturnFastWorktreePath_GivenFastWorktreesEnabled(t *testing.T) {
-	// Setup.
-	p := &Project{
-		Name:             "test",
-		Path:             "/home/user/repo",
-		FastWorktreePath: "/proj/projects/repo",
-		UseFastWorktrees: true,
-	}
-
-	// Execute.
-	result := p.EffectivePath()
-
-	// Assert.
-	if result != "/proj/projects/repo" {
-		t.Errorf("expected '/proj/projects/repo', got '%s'", result)
+// EffectivePath used to swap between the project path and a separate
+// fast-worktree root when the proj backend was in use. With rift the
+// repo is initialised in place, so the helper always returns Path —
+// these tests guard that invariant. They also cover the fast-worktrees
+// flag explicitly so any reintroduction of a divergent root would fail.
+func TestEffectivePath_ShouldReturnPath_GivenFastWorktreesEnabled(t *testing.T) {
+	p := &Project{Name: "test", Path: "/home/user/repo", UseFastWorktrees: true}
+	if got := p.EffectivePath(); got != "/home/user/repo" {
+		t.Errorf("expected '/home/user/repo', got '%s'", got)
 	}
 }
 
-func TestEffectivePath_ShouldReturnBasePath_GivenFastWorktreesDisabled(t *testing.T) {
-	// Setup.
-	p := &Project{
-		Name:             "test",
-		Path:             "/home/user/repo",
-		FastWorktreePath: "/proj/projects/repo",
-		UseFastWorktrees: false,
-	}
-
-	// Execute.
-	result := p.EffectivePath()
-
-	// Assert.
-	if result != "/home/user/repo" {
-		t.Errorf("expected '/home/user/repo', got '%s'", result)
+func TestEffectivePath_ShouldReturnPath_GivenFastWorktreesDisabled(t *testing.T) {
+	p := &Project{Name: "test", Path: "/home/user/repo", UseFastWorktrees: false}
+	if got := p.EffectivePath(); got != "/home/user/repo" {
+		t.Errorf("expected '/home/user/repo', got '%s'", got)
 	}
 }
 
-func TestEffectivePath_ShouldReturnBasePath_GivenNoFastWorktreePath(t *testing.T) {
-	// Setup.
-	p := &Project{
-		Name:             "test",
-		Path:             "/home/user/repo",
-		UseFastWorktrees: true,
-	}
-
-	// Execute.
-	result := p.EffectivePath()
-
-	// Assert.
-	if result != "/home/user/repo" {
-		t.Errorf("expected '/home/user/repo', got '%s'", result)
-	}
-}
-
-func TestAdd_ShouldStoreBothPaths_GivenFastWorktreesEnabled(t *testing.T) {
-	// Setup.
-	store, _, cleanup := setupTestStore(t)
-	defer cleanup()
-	projDir := t.TempDir()
-	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
-
-	repoDir := t.TempDir()
-	cmd := exec.Command("git", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
-
-	project := &Project{
-		Name:             "dual-path",
-		Path:             repoDir,
-		FastWorktreePath: projDir,
-		UseFastWorktrees: true,
-	}
-
-	// Execute.
-	err := store.Add(project)
-
-	// Assert.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	retrieved, _ := store.Get("dual-path")
-	if retrieved.Path != repoDir {
-		t.Errorf("expected base path '%s', got '%s'", repoDir, retrieved.Path)
-	}
-	if retrieved.FastWorktreePath != projDir {
-		t.Errorf("expected fast worktree path '%s', got '%s'", projDir, retrieved.FastWorktreePath)
-	}
-}
-
-func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) {
-	// Setup.
+func TestUpdate_ShouldTogglingFastWorktreesOff_PreservesPath(t *testing.T) {
+	// Setup. EffectivePath() always returns Path now, but exercising the
+	// store round-trip still guards the Update validation path against
+	// regressions where flipping the flag accidentally clears Path.
 	store, repoDir, cleanup := setupTestStore(t)
 	defer cleanup()
-	projDir := t.TempDir()
-	os.MkdirAll(filepath.Join(projDir, ".repo"), 0755)
-
-	store.Add(&Project{
-		Name:             "revertable",
-		Path:             repoDir,
-		FastWorktreePath: projDir,
-		UseFastWorktrees: true,
-	})
+	store.Add(&Project{Name: "revertable", Path: repoDir, UseFastWorktrees: true})
 
 	// Execute.
 	err := store.Update("revertable", func(p *Project) {
@@ -776,7 +653,7 @@ func TestUpdate_ShouldRevertToBasePath_GivenFastWorktreesDisabled(t *testing.T) 
 	}
 	retrieved, _ := store.Get("revertable")
 	if retrieved.EffectivePath() != repoDir {
-		t.Errorf("expected effective path to revert to '%s', got '%s'", repoDir, retrieved.EffectivePath())
+		t.Errorf("expected effective path '%s', got '%s'", repoDir, retrieved.EffectivePath())
 	}
 }
 
@@ -966,7 +843,12 @@ func TestMigrationV4ToV5_ShouldPreserveExistingFields(t *testing.T) {
 	}
 }
 
-func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *testing.T) {
+// The v3→v4 migration sets `fast_worktree_path` for projects with
+// `use_fast_worktrees: true`. That field has since been removed from the
+// Project struct (v9→v10 drops it again), so we have to inspect the
+// migration's intermediate JSON output directly rather than round-tripping
+// through json.Unmarshal into Project.
+func TestMigrationV3ToV4_ShouldSetFastWorktreePathInJSON_GivenFastWorktreeProject(t *testing.T) {
 	// Setup.
 	v3Data := `{
 		"version": 3,
@@ -990,20 +872,79 @@ func TestMigrationV3ToV4_ShouldSetFastWorktreePath_GivenFastWorktreeProject(t *t
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
-	var store storeData
-	if err := json.Unmarshal(result, &store); err != nil {
+	var raw struct {
+		Version  int                        `json:"version"`
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(result, &raw); err != nil {
 		t.Fatalf("failed to parse migrated data: %v", err)
 	}
-	if store.Version != 4 {
-		t.Errorf("expected version 4, got %d", store.Version)
+	if raw.Version != 4 {
+		t.Errorf("expected version 4, got %d", raw.Version)
 	}
-	fastProj := store.Projects["fast-proj"]
-	if fastProj.FastWorktreePath != "/proj/projects/myrepo" {
-		t.Errorf("expected fast worktree path '/proj/projects/myrepo', got '%s'", fastProj.FastWorktreePath)
+	var fastProj map[string]interface{}
+	json.Unmarshal(raw.Projects["fast-proj"], &fastProj)
+	if got, _ := fastProj["fast_worktree_path"].(string); got != "/proj/projects/myrepo" {
+		t.Errorf("expected fast_worktree_path '/proj/projects/myrepo', got %v", fastProj["fast_worktree_path"])
 	}
-	normalProj := store.Projects["normal-proj"]
-	if normalProj.FastWorktreePath != "" {
-		t.Errorf("expected empty fast worktree path for normal project, got '%s'", normalProj.FastWorktreePath)
+	var normalProj map[string]interface{}
+	json.Unmarshal(raw.Projects["normal-proj"], &normalProj)
+	if _, exists := normalProj["fast_worktree_path"]; exists {
+		t.Errorf("expected fast_worktree_path absent for normal project, got %v", normalProj["fast_worktree_path"])
+	}
+}
+
+// v9→v10 switches the fast-worktree backend from proj to rift and drops
+// `fast_worktree_path` from the persisted shape. Verify the field is
+// scrubbed for both proj-era and post-proj projects.
+func TestMigrationV9ToV10_ShouldDropFastWorktreePath(t *testing.T) {
+	// Setup.
+	v9Data := `{
+		"version": 9,
+		"projects": {
+			"fast-proj": {
+				"name": "fast-proj",
+				"path": "/home/user/myrepo",
+				"use_fast_worktrees": true,
+				"fast_worktree_path": "/proj/projects/myrepo"
+			},
+			"normal-proj": {
+				"name": "normal-proj",
+				"path": "/home/user/repo"
+			}
+		}
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v9Data), 9, 10)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var raw struct {
+		Version  int                        `json:"version"`
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(result, &raw); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	if raw.Version != 10 {
+		t.Errorf("expected version 10, got %d", raw.Version)
+	}
+	for _, name := range []string{"fast-proj", "normal-proj"} {
+		var proj map[string]interface{}
+		json.Unmarshal(raw.Projects[name], &proj)
+		if _, exists := proj["fast_worktree_path"]; exists {
+			t.Errorf("%s: expected fast_worktree_path to be dropped, got %v", name, proj["fast_worktree_path"])
+		}
+	}
+	// fast-proj should keep use_fast_worktrees: rift inherits the flag, the
+	// user just has to run rift init the next time they spawn an agent.
+	var fastProj map[string]interface{}
+	json.Unmarshal(raw.Projects["fast-proj"], &fastProj)
+	if got, _ := fastProj["use_fast_worktrees"].(bool); !got {
+		t.Errorf("expected use_fast_worktrees preserved for fast-proj, got %v", fastProj["use_fast_worktrees"])
 	}
 }
 

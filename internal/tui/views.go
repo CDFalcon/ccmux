@@ -661,7 +661,7 @@ func renderManageProjectsView(m model) string {
 			if selected.IsSettingUp() {
 				b.WriteString(headerStyle.Render("## Setting up"))
 				b.WriteString("\n")
-				b.WriteString(dimStyle.Render("  Importing project for fast worktrees..."))
+				b.WriteString(dimStyle.Render("  Initializing rift for fast worktrees..."))
 				b.WriteString("\n")
 				b.WriteString(dimStyle.Render("  Press [enter] to view progress"))
 				b.WriteString("\n\n")
@@ -673,7 +673,7 @@ func renderManageProjectsView(m model) string {
 				b.WriteString(fmt.Sprintf("  Harness:     %s\n", dimStyle.Render(selected.EffectiveHarness().DisplayName())))
 				fastWtStatus := "no"
 				if selected.UseFastWorktrees {
-					fastWtStatus = "yes (proj)"
+					fastWtStatus = "yes (rift)"
 				}
 				b.WriteString(fmt.Sprintf("  Fast worktrees: %s\n", dimStyle.Render(fastWtStatus)))
 				if selected.StartupScript != "" {
@@ -745,7 +745,7 @@ func renderAddProjectFastWTView(m model) string {
 	b.WriteString("\n\n")
 
 	b.WriteString("Enable fast worktrees? (y/n)\n\n")
-	b.WriteString(dimStyle.Render("Runs 'proj import' to enable near-instant worktree creation."))
+	b.WriteString(dimStyle.Render("Runs 'rift init' on the repo to enable near-instant copy-on-write worktree creation."))
 	b.WriteString("\n\n")
 
 	help := helpFooter(ViewAddProjectFastWT)
@@ -762,7 +762,7 @@ func renderProjImportingView(m model) string {
 
 	b.WriteString(fmt.Sprintf("Project: %s\n\n", projectStyle.Render(m.projSetupName)))
 
-	b.WriteString(fmt.Sprintf("%s Importing project (this may take a while)...\n\n", spinner(m.spinnerFrame)))
+	b.WriteString(fmt.Sprintf("%s Initializing rift on project (usually a few seconds)...\n\n", spinner(m.spinnerFrame)))
 
 	var lines []string
 	if buf, ok := m.projSetupBuffers[m.projSetupName]; ok {

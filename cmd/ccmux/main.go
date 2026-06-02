@@ -523,23 +523,30 @@ echo -e "${DIM}Harness:${RESET} $HARNESS"
 echo ""
 
 if [ "$USE_FAST_WT" = "1" ]; then
-  # Fast worktree mode using proj (reflink copy)
-  PROJ_DIR="$REPO_PATH"
-  WORKTREE_PATH="$PROJ_DIR/ccmux-$WT_SUFFIX"
-  BRANCH_NAME="${PROJ_PREFIX:-$USER}/ccmux-$WT_SUFFIX"
+  # Fast worktree mode using rift (copy-on-write snapshot of the repo)
+  WORKTREE_PARENT="$(dirname "$REPO_PATH")"
+  WORKTREE_PATH="$WORKTREE_PARENT/ccmux-$WT_SUFFIX"
+  BRANCH_NAME="ccmux/$WT_SUFFIX"
 
-  echo "→ Creating fast worktree at $WORKTREE_PATH..."
-  cd "$PROJ_DIR"
-  proj new "ccmux-$WT_SUFFIX"
-  cd "$WORKTREE_PATH"
-  echo "✓ Fast worktree created (proj)"
-  echo ""
-
+  # Fetch in the SOURCE repo first so the snapshot picks up fresh remote
+  # refs immediately. rift create then clones a repo that already knows
+  # about $BASE_BRANCH, avoiding a redundant fetch in the new workspace.
   FETCH_REF="${BASE_BRANCH#origin/}"
   echo "→ Fetching latest $FETCH_REF from origin..."
+  cd "$REPO_PATH"
   git fetch origin "$FETCH_REF"
-  git reset --hard "$BASE_BRANCH"
-  echo "✓ Reset to latest $BASE_BRANCH"
+
+  echo "→ Creating fast worktree at $WORKTREE_PATH..."
+  rift create --name "ccmux-$WT_SUFFIX" --into "$WORKTREE_PARENT" > /dev/null
+  cd "$WORKTREE_PATH"
+  echo "✓ Fast worktree created (rift)"
+  echo ""
+
+  # Each rift snapshot has its own .git, so the source repo's branches
+  # exist locally in the snapshot too — just check one out at $BASE_BRANCH.
+  echo "→ Creating branch $BRANCH_NAME..."
+  git checkout -B "$BRANCH_NAME" "$BASE_BRANCH"
+  echo "✓ Branch created"
   echo ""
 
   echo "→ Updating remote branch refs..."
