@@ -124,20 +124,12 @@ func (s *Store) Add(project *Project) error {
 	}
 	project.Path = absPath
 
-	if project.FastWorktreePath != "" {
-		absFWP, err := filepath.Abs(project.FastWorktreePath)
-		if err != nil {
-			return fmt.Errorf("failed to get absolute fast worktree path: %w", err)
-		}
-		project.FastWorktreePath = absFWP
-	}
-
-	if project.UseFastWorktrees && !project.IsSettingUp() {
-		effectivePath := project.EffectivePath()
-		if !IsProjDirectory(effectivePath) {
-			return fmt.Errorf("path is not a proj directory (missing .repo): %s", effectivePath)
-		}
-	} else if !project.UseFastWorktrees && !isGitRepo(project.Path) {
+	// Both standard worktrees and rift-backed fast worktrees require the
+	// path to be a real git repo. Rift adds a `.rift` marker on top via
+	// `rift init`, but that runs as a separate setup step after Add;
+	// during initial registration we only insist on git so the user can
+	// opt in to fast worktrees later without having to re-add the project.
+	if !project.IsSettingUp() && !isGitRepo(project.Path) {
 		return fmt.Errorf("path is not a git repository: %s", project.Path)
 	}
 
@@ -254,12 +246,9 @@ func (s *Store) Update(name string, fn func(p *Project)) error {
 
 	fn(p)
 
-	if p.UseFastWorktrees && !p.IsSettingUp() {
-		effectivePath := p.EffectivePath()
-		if !IsProjDirectory(effectivePath) {
-			return fmt.Errorf("path is not a proj directory (missing .repo): %s", effectivePath)
-		}
-	} else if !p.UseFastWorktrees && !isGitRepo(p.Path) {
+	// See Add for why the validation is just "is git repo" regardless of
+	// UseFastWorktrees: rift init runs as a separate setup step.
+	if !p.IsSettingUp() && !isGitRepo(p.Path) {
 		return fmt.Errorf("path is not a git repository: %s", p.Path)
 	}
 
@@ -298,31 +287,20 @@ func isGitRepo(path string) bool {
 	return cmd.Run() == nil
 }
 
-func IsProjInstalled() bool {
-	_, err := exec.LookPath("proj")
+// IsRiftInstalled reports whether the `rift` CLI is on PATH. ccmux uses
+// rift (https://github.com/anomalyco/rift) to create copy-on-write
+// snapshots of project repos for fast worktree creation.
+func IsRiftInstalled() bool {
+	_, err := exec.LookPath("rift")
 	return err == nil
 }
 
-func IsProjDirectory(path string) bool {
-	repoDir := filepath.Join(path, ".repo")
-	info, err := os.Stat(repoDir)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
-}
-
-func FindProjTemplateDir(projDir string) string {
-	entries, err := os.ReadDir(projDir)
-	if err != nil {
-		return ""
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "00-") {
-			return filepath.Join(projDir, entry.Name())
-		}
-	}
-	return ""
+// IsRiftInitialized reports whether the given directory has been set up as
+// a rift root (i.e. `rift init` has been run on it). Rift marks every
+// managed root with a `.rift` file/directory at the top level.
+func IsRiftInitialized(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".rift"))
+	return err == nil
 }
 
 func DetectDefaultBranch(repoPath string) string {
@@ -336,18 +314,26 @@ func DetectDefaultBranch(repoPath string) string {
 	return "master"
 }
 
-func ProjImport(repoPath string, onLine func(string)) (string, error) {
-	if !IsProjInstalled() {
-		return "", fmt.Errorf("proj is not installed")
+// RiftInit runs `rift init --here` on the given repo path so subsequent
+// `rift create` calls can snapshot it. Setup output is streamed line-by-line
+// via onLine for the TUI's progress view. If the directory is already
+// registered as a rift root, this is a near-instant no-op and still returns
+// nil — rift init is idempotent.
+//
+// The function returns the (unchanged) repo path on success. The path is
+// returned rather than discarded so the TUI's setup machinery, which was
+// originally built around proj's separate-root model, can keep its current
+// shape. With rift, the registered root IS the repo path.
+func RiftInit(repoPath string, onLine func(string)) (string, error) {
+	if !IsRiftInstalled() {
+		return "", fmt.Errorf("rift is not installed (https://github.com/anomalyco/rift)")
 	}
-	projRoot := os.Getenv("PROJ_ROOT")
-	if projRoot == "" {
-		return "", fmt.Errorf("PROJ_ROOT is not set")
-	}
-	branch := DetectDefaultBranch(repoPath)
-	repoName := filepath.Base(repoPath)
-	projDir := filepath.Join(projRoot, "projects", repoName)
-	cmd := exec.Command("proj", "import", "--local", repoPath, "--branch", branch)
+
+	// `--here` pins init to exactly this directory. Without it, rift may
+	// walk upward looking for an existing root and register a parent we
+	// didn't mean to manage.
+	cmd := exec.Command("rift", "init", "--here")
+	cmd.Dir = repoPath
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -356,7 +342,7 @@ func ProjImport(repoPath string, onLine func(string)) (string, error) {
 	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("proj import failed to start: %w", err)
+		return "", fmt.Errorf("rift init failed to start: %w", err)
 	}
 
 	var lastLines []string
@@ -374,19 +360,19 @@ func ProjImport(repoPath string, onLine func(string)) (string, error) {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		if IsProjDirectory(projDir) && FindProjTemplateDir(projDir) != "" {
-			return projDir, nil
+		// If the marker is present despite a non-zero exit, treat it as
+		// success — rift sometimes warns (e.g. "already initialized") on
+		// re-runs with a non-zero status we don't want to surface.
+		if IsRiftInitialized(repoPath) {
+			return repoPath, nil
 		}
 		output := strings.Join(lastLines, "\n")
-		return "", fmt.Errorf("proj import failed: %w\noutput:\n%s", err, output)
+		return "", fmt.Errorf("rift init failed: %w\noutput:\n%s", err, output)
 	}
-	if !IsProjDirectory(projDir) {
-		return "", fmt.Errorf("proj import completed but %s is missing .repo directory", projDir)
+	if !IsRiftInitialized(repoPath) {
+		return "", fmt.Errorf("rift init completed but %s has no .rift marker", repoPath)
 	}
-	if FindProjTemplateDir(projDir) == "" {
-		return "", fmt.Errorf("proj import completed but %s has no template worktree", projDir)
-	}
-	return projDir, nil
+	return repoPath, nil
 }
 
 func GetRepoRoot(path string) (string, error) {

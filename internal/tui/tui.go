@@ -455,10 +455,6 @@ func findProjectPath(name string) string {
 		homeDir + "/repos",
 	}
 
-	if projRoot := os.Getenv("PROJ_ROOT"); projRoot != "" {
-		searchDirs = append(searchDirs, projRoot+"/projects")
-	}
-
 	for _, dir := range searchDirs {
 		candidate := dir + "/" + name
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
@@ -2102,7 +2098,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			harnessStr = ""
 		}
 		projName := m.selectedProj.Name
-		alreadyHasFastWT := m.selectedProj.UseFastWorktrees && m.selectedProj.FastWorktreePath != ""
+		// If fast worktrees was already enabled, the repo is already a
+		// rift root — toggling other fields shouldn't re-run rift init.
+		// Only schedule a setup buffer for the rift init progress view
+		// when this update is what flips fast worktrees on.
+		alreadyHasFastWT := m.selectedProj.UseFastWorktrees
 		m.editProjectForm.blurAll()
 		m.selectedProj = nil
 		m.view = ViewManageProjects
@@ -2175,13 +2175,18 @@ func (m model) handleAddProjectPathKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.newProjectPath = path
-		if project.IsProjDirectory(path) && project.IsProjInstalled() {
-			m.view = ViewManageProjects
-			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
-		}
-		if !project.IsProjInstalled() {
+		// If rift isn't on PATH, skip the fast-worktree prompt — there's
+		// no backend to drive it.
+		if !project.IsRiftInstalled() {
 			m.view = ViewManageProjects
 			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, false)
+		}
+		// If the repo was already `rift init`'d (by ccmux on a prior run
+		// or by the user), the prompt would just be answered "yes" anyway
+		// — short-circuit so adding the project is a single keystroke.
+		if project.IsRiftInitialized(path) {
+			m.view = ViewManageProjects
+			return m, m.addProjectCmd(m.newProjectName, m.newProjectPath, true)
 		}
 		m.view = ViewAddProjectFastWT
 		return m, nil
@@ -2703,32 +2708,27 @@ func (m model) detachCmd() tea.Cmd {
 func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
-		var fastWTPath string
-		needsImport := false
-		if useFastWT {
-			if project.IsProjDirectory(path) {
-				fastWTPath = path
-			} else {
-				needsImport = true
-			}
-		}
+		// Rift init only needs to run when the user is opting into fast
+		// worktrees AND the path hasn't already been initialised by an
+		// earlier ccmux run / manual setup.
+		needsRiftInit := useFastWT && !project.IsRiftInitialized(path)
 		setupStatus := ""
-		if needsImport {
+		if needsRiftInit {
 			setupStatus = project.SetupStatusSettingUp
 		}
 		p := &project.Project{
 			Name:             name,
 			Path:             path,
-			FastWorktreePath: fastWTPath,
 			UseFastWorktrees: useFastWT,
 			SetupStatus:      setupStatus,
 		}
 		if err := m.projectStore.Add(p); err != nil {
 			return errMsg{err}
 		}
-		if needsImport {
-			projDir, err := project.ProjImport(path, buf.addLine)
-			if err != nil {
+		if needsRiftInit {
+			if _, err := project.RiftInit(path, buf.addLine); err != nil {
+				// Roll the project back to a non-fast configuration so
+				// it's still usable; surface the rift failure to the TUI.
 				m.projectStore.Update(name, func(p *project.Project) {
 					p.SetupStatus = ""
 					p.UseFastWorktrees = false
@@ -2736,7 +2736,6 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 				return projSetupFailedMsg{name: name, err: err}
 			}
 			m.projectStore.Update(name, func(p *project.Project) {
-				p.FastWorktreePath = projDir
 				p.SetupStatus = ""
 			})
 			return projSetupCompleteMsg{name: name}
@@ -2748,24 +2747,14 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool, defaultHarness string, draftPRs bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
-		var fastWTPath string
-		needsImport := false
-		if useFastWT && path != "" {
-			existing, _ := m.projectStore.Get(name)
-			if existing != nil && existing.FastWorktreePath != "" && project.IsProjDirectory(existing.FastWorktreePath) {
-				fastWTPath = existing.FastWorktreePath
-			} else if project.IsProjDirectory(path) {
-				fastWTPath = path
-			} else {
-				needsImport = true
-			}
-		}
+		// Only run rift init when the user has just opted in (or moved
+		// the project to a path that isn't a rift root yet). Re-runs on
+		// already-initialised roots are cheap but still surface progress
+		// UI we don't want for trivial field edits.
+		needsRiftInit := useFastWT && path != "" && !project.IsRiftInitialized(path)
 		err := m.projectStore.Update(name, func(p *project.Project) {
 			if path != "" {
 				p.Path = path
-			}
-			if fastWTPath != "" {
-				p.FastWorktreePath = fastWTPath
 			}
 			p.DefaultBaseBranch = baseBranch
 			p.DefaultHarness = defaultHarness
@@ -2775,16 +2764,15 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 			p.MergeWhenAccepted = mergeWhenAccepted
 			draft := draftPRs
 			p.DraftPRs = &draft
-			if needsImport {
+			if needsRiftInit {
 				p.SetupStatus = project.SetupStatusSettingUp
 			}
 		})
 		if err != nil {
 			return errMsg{err}
 		}
-		if needsImport {
-			projDir, err := project.ProjImport(path, buf.addLine)
-			if err != nil {
+		if needsRiftInit {
+			if _, err := project.RiftInit(path, buf.addLine); err != nil {
 				m.projectStore.Update(name, func(p *project.Project) {
 					p.SetupStatus = ""
 					p.UseFastWorktrees = false
@@ -2792,7 +2780,6 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 				return projSetupFailedMsg{name: name, err: err}
 			}
 			m.projectStore.Update(name, func(p *project.Project) {
-				p.FastWorktreePath = projDir
 				p.SetupStatus = ""
 			})
 			return projSetupCompleteMsg{name: name}

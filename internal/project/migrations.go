@@ -87,4 +87,35 @@ func init() {
 		// EffectiveDraftPRs — no behaviour change until a user opts out.
 		return data, nil
 	})
+	migrations.Register(9, func(data []byte) ([]byte, error) {
+		// v9 -> v10: switch the fast-worktree backend from proj to rift.
+		// Drop the now-unused `fast_worktree_path` field. For projects that
+		// had `use_fast_worktrees: true`, the `path` already points at the
+		// real git repo (the v3->v4 migration only added fast_worktree_path
+		// alongside it), so they continue to work after a one-time
+		// `rift init` on that path. The migration itself is a pure schema
+		// scrub — operators or the TUI run `rift init` separately.
+		var store struct {
+			Version  int                        `json:"version"`
+			Projects map[string]json.RawMessage `json:"projects"`
+			Order    []string                   `json:"order,omitempty"`
+		}
+		if err := json.Unmarshal(data, &store); err != nil {
+			return nil, err
+		}
+		for name, raw := range store.Projects {
+			var full map[string]interface{}
+			if err := json.Unmarshal(raw, &full); err != nil {
+				continue
+			}
+			delete(full, "fast_worktree_path")
+			updated, err := json.Marshal(full)
+			if err != nil {
+				continue
+			}
+			store.Projects[name] = updated
+		}
+		store.Version = 10
+		return json.Marshal(store)
+	})
 }

@@ -43,6 +43,10 @@ curl -fsSL https://claude.ai/install.sh | bash
 # (Optional) Install Codex if you want to drive it as a harness
 npm install -g @openai/codex
 
+# (Optional) Install rift for fast copy-on-write worktrees
+# https://github.com/anomalyco/rift
+npm install -g rift-snapshot
+
 # Install ccmux
 mkdir -p ~/.local/bin
 gh release download --repo CDFalcon/ccmux -p 'ccmux-linux-amd64'
@@ -66,6 +70,10 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 # (Optional) Install Codex if you want to drive it as a harness
 npm install -g @openai/codex
+
+# (Optional) Install rift for fast copy-on-write worktrees
+# https://github.com/anomalyco/rift
+npm install -g rift-snapshot
 
 # Install ccmux
 mkdir -p ~/.local/bin
