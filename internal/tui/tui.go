@@ -1226,6 +1226,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// "fix" but CI keeps reporting the same failure — gets
 					// flipped to idle instead of sitting in WaitingCI forever
 					// with a stale "0/N checks left" indicator.
+					//
+					// Gate that counting on the agent actually being idle.
+					// Since c13696a, the Stop hook hands every end-of-turn
+					// back to the CI poller, so an agent that's actively
+					// pushing a fix gets polled every 30s while it works —
+					// without this gate, 3 polls (~90s) inflate the resume
+					// history to the throttle threshold and we flip an
+					// actively-working agent to "needs manual intervention"
+					// (StatusReady, which renders as "idle"). Only let the
+					// counter advance when the pane and process tree are
+					// genuinely quiet — the same idle check refreshCmd uses
+					// to decide running→idle, and the ciStatusPassed branch
+					// above uses for the same kind of "agent settled?" gate.
+					if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+						return m, nil
+					}
 					if m.shouldThrottleResume(currentAgent) {
 						m.throttleAgent(msg.agentID)
 						return m, m.refreshCmd()
