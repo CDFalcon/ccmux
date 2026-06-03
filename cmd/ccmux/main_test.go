@@ -93,6 +93,90 @@ func TestWriteLauncherScript_ShouldReflectDraftPRsSetting(t *testing.T) {
 	}
 }
 
+// TestWriteLauncherScript_ShouldWireOTelEnv_GivenClaudeHarness pins the
+// OpenTelemetry export block in the generated launcher script. The TUI's
+// in-process collector relies on every spawned claude session pointing its
+// OTLP exporter at the local endpoint with ccmux.agent.id stamped on the
+// resource block — without it, cost.usage metrics would be unattributable
+// and the displayed cost would silently fall back to the JSONL estimate.
+func TestWriteLauncherScript_ShouldWireOTelEnv_GivenClaudeHarness(t *testing.T) {
+	// Setup.
+	agentID := "otel-test-agent"
+	path, err := writeLauncherScript(agentID, "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Claude, true)
+	if err != nil {
+		t.Fatalf("writeLauncherScript: %v", err)
+	}
+	defer os.Remove(path)
+
+	assertValidBash(t, path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	content := string(data)
+
+	// Assert. The literal env exports the OTel SDK consumes.
+	wantExports := []string{
+		`export CLAUDE_CODE_ENABLE_TELEMETRY=1`,
+		`export OTEL_METRICS_EXPORTER=otlp`,
+		`export OTEL_EXPORTER_OTLP_PROTOCOL=http/json`,
+		`export OTEL_EXPORTER_OTLP_ENDPOINT=`,
+		`export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent.id=$AGENT_ID,ccmux.worktree.path=$WORKTREE_PATH"`,
+	}
+	for _, want := range wantExports {
+		if !strings.Contains(content, want) {
+			t.Errorf("launcher script missing required OTel export: %q", want)
+		}
+	}
+
+	// The block must be gated on (1) Claude harness, (2) no pre-existing
+	// OTEL_EXPORTER_OTLP_ENDPOINT (don't clobber the user's setup),
+	// (3) the endpoint advertisement file being readable.
+	if !strings.Contains(content, `[ "$HARNESS" = "claude" ]`) {
+		t.Error("OTel block should be gated on HARNESS=claude")
+	}
+	if !strings.Contains(content, `[ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]`) {
+		t.Error("OTel block should respect a user-set OTEL_EXPORTER_OTLP_ENDPOINT")
+	}
+	if !strings.Contains(content, `[ -r "$HOME/.ccmux/otel-endpoint" ]`) {
+		t.Error("OTel block should require the endpoint advertisement file")
+	}
+}
+
+// TestWriteLauncherScript_ShouldNotWireOTelEnv_GivenCodexHarness guards
+// the Codex carve-out: Codex CLI does not currently emit OTel metrics, so
+// injecting CLAUDE_CODE_ENABLE_TELEMETRY (and friends) into its env would
+// be noise at best, an Anthropic-specific feature flag in a non-Anthropic
+// process at worst.
+func TestWriteLauncherScript_ShouldNotWireOTelEnv_GivenCodexHarness(t *testing.T) {
+	// Setup.
+	path, err := writeLauncherScript("codex-test", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Codex, true)
+	if err != nil {
+		t.Fatalf("writeLauncherScript: %v", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	content := string(data)
+
+	// Assert. The block is in the template but its enclosing `if` predicate
+	// ('"$HARNESS" = "claude"') keeps it dormant for Codex. The script must
+	// not unconditionally export Claude-specific env.
+	if !strings.Contains(content, `HARNESS='codex'`) {
+		t.Fatal("expected codex harness assignment in script — test fixture has drifted")
+	}
+	// The OTel export should remain gated; what we're really asserting is
+	// that the gate is on HARNESS rather than something that's always true
+	// for Codex too.
+	if !strings.Contains(content, `[ "$HARNESS" = "claude" ] && [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]`) {
+		t.Error("OTel block must be gated on HARNESS=claude so Codex doesn't pick it up")
+	}
+}
+
 func TestOptionalArg_ShouldTreatDashAsDefault(t *testing.T) {
 	cases := map[string]string{
 		"-":       "",

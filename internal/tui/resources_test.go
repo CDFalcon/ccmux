@@ -1,12 +1,19 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/otelcollector"
 )
 
 func TestFormatBytes_ShouldReturnGb_GivenGigabyteValue(t *testing.T) {
@@ -704,6 +711,153 @@ func TestGetAgentSessionTokens_ShouldNotMergeDistinctTurns_GivenIdenticalSignatu
 	if result.CacheRead != 2000 {
 		t.Errorf("expected CacheRead 2000 (two distinct turns), got %d", result.CacheRead)
 	}
+}
+
+// TestQueryAllAgentResources_ShouldPreferCollectorCost_GivenCollectorHasData
+// pins the source-of-truth precedence in queryAllAgentResources: when the
+// in-process OTel collector has observed cost for an agent, that figure
+// (Claude's own total_cost_usd) wins over the JSONL-derived estimate, and
+// the per-day rollup swaps the JSONL contribution out for the collector's.
+//
+// Without this guarantee the displayed cost would silently drift between
+// "what Anthropic billed" and "what our pricing table guesses" depending
+// on which path queryAllAgentResources happened to take.
+func TestQueryAllAgentResources_ShouldPreferCollectorCost_GivenCollectorHasData(t *testing.T) {
+	// Setup. One agent with a JSONL session (so the fallback path has
+	// something to compute) plus a collector that's already recorded a
+	// known different cost for that agent.
+	worktreePath := "/tmp/ccmux-test-otel-prefer-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","timestamp":"2026-06-01T10:00:00.000Z","message":{"id":"msg_A","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("CCMUX_OTEL_ENDPOINT_FILE", filepath.Join(tmp, "endpoint"))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c, err := otelcollector.Start(ctx)
+	if err != nil {
+		t.Fatalf("collector start: %v", err)
+	}
+
+	// Inject a synthetic cost for the agent so the test doesn't depend
+	// on any HTTP round-trip. The collector's HTTP path is exercised by
+	// its own package tests; here we only care about queryAllAgentResources'
+	// precedence logic.
+	postCost(t, c, "agent-with-otel", 1.2345, "2026-06-01")
+
+	agents := []*agent.Agent{{
+		ID:           "agent-with-otel",
+		WorktreePath: worktreePath,
+		TmuxWindow:   "", // skip the tmux/process tree path entirely
+	}}
+
+	// Execute.
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c)
+
+	// Assert.
+	res, ok := resources["agent-with-otel"]
+	if !ok {
+		t.Fatal("expected agent resources to be returned")
+	}
+	const want = 1.2345
+	if math.Abs(res.CostUSD-want) > 1e-9 {
+		t.Errorf("expected CostUSD to come from collector (%.4f), got %.4f", want, res.CostUSD)
+	}
+	if math.Abs(dailyCosts["2026-06-01"]-want) > 1e-9 {
+		t.Errorf("expected daily rollup to match collector (%.4f), got %.4f", want, dailyCosts["2026-06-01"])
+	}
+}
+
+// TestQueryAllAgentResources_ShouldFallBackToJSONL_GivenCollectorEmpty pins
+// the other half of the precedence rule: agents the collector hasn't seen
+// (pre-upgrade agents, Codex agents, agents whose OTel pipeline was
+// disabled) must keep showing the JSONL-derived estimate rather than $0.
+func TestQueryAllAgentResources_ShouldFallBackToJSONL_GivenCollectorEmpty(t *testing.T) {
+	// Setup.
+	worktreePath := "/tmp/ccmux-test-otel-fallback-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+	jsonl := `{"type":"assistant","timestamp":"2026-06-01T10:00:00.000Z","message":{"id":"msg_A","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("CCMUX_OTEL_ENDPOINT_FILE", filepath.Join(tmp, "endpoint"))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c, err := otelcollector.Start(ctx)
+	if err != nil {
+		t.Fatalf("collector start: %v", err)
+	}
+	// Note: deliberately NOT calling postCost — the collector is running
+	// but has no data for this agent.
+
+	agents := []*agent.Agent{{
+		ID:           "agent-no-otel",
+		WorktreePath: worktreePath,
+		TmuxWindow:   "",
+	}}
+
+	// Execute.
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c)
+
+	// Assert. The JSONL estimate is 1000 input + 500 output at Sonnet
+	// pricing → $0.003 + $0.0075 = $0.0105.
+	wantCost := estimateCost("claude-sonnet-4-20250514", claudeUsage{
+		InputTokens: 1000, OutputTokens: 500,
+	})
+	res := resources["agent-no-otel"]
+	if math.Abs(res.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("expected JSONL-derived cost %.6f when collector has no data, got %.6f", wantCost, res.CostUSD)
+	}
+	if math.Abs(dailyCosts["2026-06-01"]-wantCost) > 1e-9 {
+		t.Errorf("expected daily rollup to match JSONL estimate %.6f, got %.6f", wantCost, dailyCosts["2026-06-01"])
+	}
+}
+
+// postCost POSTs a single claude_code.cost.usage data point so the
+// test can seed the collector without depending on a real Claude Code
+// session. Goes through the real HTTP path so it also exercises the
+// ingest code, which is what queryAllAgentResources reads via Cost().
+func postCost(t *testing.T, c *otelcollector.Collector, agentID string, usd float64, date string) {
+	t.Helper()
+	nanos := mustParseDateNano(t, date)
+	payload := fmt.Sprintf(`{
+		"resourceMetrics": [{
+			"resource": {"attributes": [
+				{"key":"ccmux.agent.id","value":{"stringValue":%q}}
+			]},
+			"scopeMetrics": [{
+				"metrics": [{
+					"name": "claude_code.cost.usage",
+					"sum": {"dataPoints": [{
+						"attributes": [],
+						"timeUnixNano": %q,
+						"asDouble": %g
+					}]}
+				}]
+			}]
+		}]
+	}`, agentID, fmt.Sprintf("%d", nanos), usd)
+
+	resp, err := http.Post(c.Endpoint()+"/v1/metrics", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("post cost: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func mustParseDateNano(t *testing.T, date string) int64 {
+	t.Helper()
+	tt, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		t.Fatalf("parse date %q: %v", date, err)
+	}
+	return tt.UTC().UnixNano()
 }
 
 func TestIsNewOpus_ShouldReturnTrue_GivenOpus45Plus(t *testing.T) {

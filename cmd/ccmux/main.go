@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/logging"
+	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
@@ -204,7 +206,22 @@ func runSession(sessionID string) error {
 		return err
 	}
 
-	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, tmuxManager, sessionID)
+	// In-process OTel collector: receives `claude_code.cost.usage` from
+	// every spawned Claude agent (see the OTEL_* block in the launcher
+	// script) so the TUI can show Anthropic's own cost figure instead of
+	// re-deriving it. Start failure is non-fatal — the TUI silently
+	// falls back to the JSONL-derived estimate. Shutdown is tied to the
+	// TUI's lifetime so the loopback port and endpoint advertisement file
+	// are released before the next restart of ccmux runs.
+	collectorCtx, cancelCollector := context.WithCancel(context.Background())
+	defer cancelCollector()
+	otelCollector, err := otelcollector.Start(collectorCtx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: OpenTelemetry collector failed to start (%v); falling back to JSONL cost estimation\n", err)
+		otelCollector = nil
+	}
+
+	restart, err := tui.Run(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, otelCollector, tmuxManager, sessionID)
 	if err != nil {
 		return err
 	}
@@ -729,6 +746,39 @@ cd "$WORKTREE_PATH"
 
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
+
+# OpenTelemetry to in-process ccmux collector.
+#
+# Claude Code emits a "claude_code.cost.usage" counter (in USD) over OTLP
+# when telemetry is enabled. Pointing the exporter at the collector
+# started by the ccmux TUI gives us Anthropic's own per-turn cost figure
+# - more accurate than re-deriving cost from the JSONL transcript and
+# automatically correct for any current/future model.
+#
+# Best-effort:
+#   - We never clobber a user's existing OTEL_EXPORTER_OTLP_ENDPOINT
+#     (e.g. someone already running TokenKeeper). They keep their
+#     pipeline; ccmux falls back to the JSONL estimate for those agents.
+#   - We only enable for the Claude harness — the Codex CLI does not
+#     currently emit OTel metrics. Re-evaluate if/when it does.
+#   - If no collector is running (no TUI, or it crashed) the endpoint
+#     file is absent and we skip the export. The agent runs normally
+#     with no telemetry side-effects.
+if [ "$HARNESS" = "claude" ] && [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] && [ -r "$HOME/.ccmux/otel-endpoint" ]; then
+  CCMUX_OTEL_ENDPOINT=$(cat "$HOME/.ccmux/otel-endpoint" 2>/dev/null || true)
+  if [ -n "$CCMUX_OTEL_ENDPOINT" ]; then
+    export CLAUDE_CODE_ENABLE_TELEMETRY=1
+    export OTEL_METRICS_EXPORTER=otlp
+    export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+    export OTEL_EXPORTER_OTLP_ENDPOINT="$CCMUX_OTEL_ENDPOINT"
+    export OTEL_METRIC_EXPORT_INTERVAL=15000
+    # Stamp every metric with the ccmux agent id (resource attribute) so
+    # the collector can attribute cost without depending on Claude's
+    # internal session.id mapping. The worktree path is informational —
+    # handy for future per-project rollups.
+    export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent.id=$AGENT_ID,ccmux.worktree.path=$WORKTREE_PATH"
+  fi
+fi
 
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 

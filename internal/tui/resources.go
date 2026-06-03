@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 )
 
@@ -53,6 +54,7 @@ func queryAllAgentResources(
 	clkTck int64,
 	prevCPUTicks map[int]int64,
 	fastWTProjects map[string]bool,
+	collector *otelcollector.Collector,
 ) (map[string]*AgentResources, map[int]int64, map[string]float64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
@@ -121,8 +123,13 @@ func queryAllAgentResources(
 		tokenMap[r.agentID] = r.tokens
 	}
 
+	// Keep both the per-agent JSONL contribution and the rolled-up total so
+	// that, if the OTel collector has accurate cost for an agent, we can
+	// swap that agent's slice without re-parsing the JSONL.
+	perAgentJSONLDaily := make(map[string]map[string]float64)
 	liveDailyCosts := make(map[string]float64)
 	for r := range dailyCostCh {
+		perAgentJSONLDaily[r.agentID] = r.costs
 		for date, cost := range r.costs {
 			liveDailyCosts[date] += cost
 		}
@@ -175,8 +182,49 @@ func queryAllAgentResources(
 		res.TokensOut = tb.Out
 		res.TokensCacheRead = tb.CacheRead
 		res.TokensCacheCreate = tb.CacheCreate
-		res.CostUSD = tb.CostUSD
+		// Cost source preference, per-agent: the OpenTelemetry collector
+		// gets first refusal because that figure is Claude's own
+		// total_cost_usd, not our derivation. We fall back to the JSONL
+		// estimate when the collector has never seen this agent — which
+		// happens for pre-upgrade agents, Codex agents, and any agent
+		// that didn't pick up the OTel env (e.g. user has their own
+		// exporter already configured, so we don't clobber).
+		if collector != nil {
+			if c, ok := collector.Cost(a.ID); ok {
+				res.CostUSD = c
+			} else {
+				res.CostUSD = tb.CostUSD
+			}
+		} else {
+			res.CostUSD = tb.CostUSD
+		}
 		resources[a.ID] = res
+	}
+
+	// Same source preference, applied to the daily rollup: every per-agent
+	// day the collector has seen overrides whatever the JSONL fallback
+	// computed for that agent, so the displayed "Today's cost" matches
+	// Claude's own number whenever telemetry is on. Agents the collector
+	// has never seen keep their JSONL-derived contribution.
+	if collector != nil {
+		for _, a := range agents {
+			perDay := collector.DailyCostsForAgent(a.ID)
+			if len(perDay) == 0 {
+				continue
+			}
+			// Subtract this agent's JSONL contribution from the rollup
+			// (captured above, no second JSONL read) so the per-day
+			// total isn't double-counted when we add the collector's.
+			for date, cost := range perAgentJSONLDaily[a.ID] {
+				liveDailyCosts[date] -= cost
+				if liveDailyCosts[date] < 0 {
+					liveDailyCosts[date] = 0
+				}
+			}
+			for date, cost := range perDay {
+				liveDailyCosts[date] += cost
+			}
+		}
 	}
 
 	return resources, newCPUTicks, liveDailyCosts
