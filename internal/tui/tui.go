@@ -19,6 +19,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/harness"
+	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
@@ -137,6 +138,7 @@ type model struct {
 	promptStore    *prompt.Store
 	settingsStore  *settings.Store
 	dailyCostStore *dailycost.Store
+	otelCollector  *otelcollector.Collector
 	tmuxManager    *tmux.Manager
 	sessionID      string
 }
@@ -665,7 +667,7 @@ func newFixedTextarea(placeholder string, width int) textarea.Model {
 	return ta
 }
 
-func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, tmuxManager *tmux.Manager, sessionID string) model {
+func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, otelCollector *otelcollector.Collector, tmuxManager *tmux.Manager, sessionID string) model {
 	taskInput := newFixedTextarea("Describe the task...", 60)
 	branchInput := textinput.New()
 	branchInput.Placeholder = "origin/master"
@@ -721,6 +723,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		promptStore:         promptStore,
 		settingsStore:       settingsStore,
 		dailyCostStore:      dailyCostStore,
+		otelCollector:       otelCollector,
 		tmuxManager:         tmuxManager,
 		sessionID:           sessionID,
 		betaChannel:         loadBetaChannel(settingsStore),
@@ -896,7 +899,7 @@ func (m model) refreshCmd() tea.Cmd {
 			}
 		}
 		resources, newCPUTicks, liveDailyCosts := queryAllAgentResources(
-			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects,
+			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects, m.otelCollector,
 		)
 
 		prompts, _ := m.promptStore.List()
@@ -3929,8 +3932,8 @@ func (m model) View() string {
 	return content
 }
 
-func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
-	m := initialModel(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, tmuxManager, sessionID)
+func Run(agentStore *agent.Store, queueManager *queue.Queue, projectStore *project.Store, promptStore *prompt.Store, settingsStore *settings.Store, dailyCostStore *dailycost.Store, otelCollector *otelcollector.Collector, tmuxManager *tmux.Manager, sessionID string) (bool, error) {
+	m := initialModel(agentStore, queueManager, projectStore, promptStore, settingsStore, dailyCostStore, otelCollector, tmuxManager, sessionID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {

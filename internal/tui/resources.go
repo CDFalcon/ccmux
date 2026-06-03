@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 )
 
@@ -53,6 +54,7 @@ func queryAllAgentResources(
 	clkTck int64,
 	prevCPUTicks map[int]int64,
 	fastWTProjects map[string]bool,
+	collector *otelcollector.Collector,
 ) (map[string]*AgentResources, map[int]int64, map[string]float64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
@@ -121,8 +123,13 @@ func queryAllAgentResources(
 		tokenMap[r.agentID] = r.tokens
 	}
 
+	// Keep both the per-agent JSONL contribution and the rolled-up total so
+	// that, if the OTel collector has accurate cost for an agent, we can
+	// swap that agent's slice without re-parsing the JSONL.
+	perAgentJSONLDaily := make(map[string]map[string]float64)
 	liveDailyCosts := make(map[string]float64)
 	for r := range dailyCostCh {
+		perAgentJSONLDaily[r.agentID] = r.costs
 		for date, cost := range r.costs {
 			liveDailyCosts[date] += cost
 		}
@@ -175,8 +182,49 @@ func queryAllAgentResources(
 		res.TokensOut = tb.Out
 		res.TokensCacheRead = tb.CacheRead
 		res.TokensCacheCreate = tb.CacheCreate
-		res.CostUSD = tb.CostUSD
+		// Cost source preference, per-agent: the OpenTelemetry collector
+		// gets first refusal because that figure is Claude's own
+		// total_cost_usd, not our derivation. We fall back to the JSONL
+		// estimate when the collector has never seen this agent — which
+		// happens for pre-upgrade agents, Codex agents, and any agent
+		// that didn't pick up the OTel env (e.g. user has their own
+		// exporter already configured, so we don't clobber).
+		if collector != nil {
+			if c, ok := collector.Cost(a.ID); ok {
+				res.CostUSD = c
+			} else {
+				res.CostUSD = tb.CostUSD
+			}
+		} else {
+			res.CostUSD = tb.CostUSD
+		}
 		resources[a.ID] = res
+	}
+
+	// Same source preference, applied to the daily rollup: every per-agent
+	// day the collector has seen overrides whatever the JSONL fallback
+	// computed for that agent, so the displayed "Today's cost" matches
+	// Claude's own number whenever telemetry is on. Agents the collector
+	// has never seen keep their JSONL-derived contribution.
+	if collector != nil {
+		for _, a := range agents {
+			perDay := collector.DailyCostsForAgent(a.ID)
+			if len(perDay) == 0 {
+				continue
+			}
+			// Subtract this agent's JSONL contribution from the rollup
+			// (captured above, no second JSONL read) so the per-day
+			// total isn't double-counted when we add the collector's.
+			for date, cost := range perAgentJSONLDaily[a.ID] {
+				liveDailyCosts[date] -= cost
+				if liveDailyCosts[date] < 0 {
+					liveDailyCosts[date] = 0
+				}
+			}
+			for date, cost := range perDay {
+				liveDailyCosts[date] += cost
+			}
+		}
 	}
 
 	return resources, newCPUTicks, liveDailyCosts
@@ -364,14 +412,47 @@ func computeCPUPercent(prevTicks int64, currTicks int64, deltaSeconds float64, c
 	return cpuPct
 }
 
+// Note on cost source: Claude Code does NOT write per-turn cost to the session
+// JSONL — the `total_cost_usd` and `modelUsage[*].costUSD` fields are emitted
+// only by `claude --print --output-format json` and by the OpenTelemetry
+// exporter (`claude_code.cost.usage` metric, requires `OTEL_METRICS_EXPORTER`
+// and a running collector). Codex CLI is the same. Running a per-agent OTLP
+// receiver purely to read cost would be heavier than the JSONL re-derivation
+// below, so we re-derive cost from the usage blocks Claude already records.
+// Pricing in estimateCost() is reconciled against Claude's own internal
+// calculation — see TestEstimateCost_ShouldMatchClaudeInternal_*.
+type claudeCacheCreation struct {
+	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+}
+
 type claudeUsage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	InputTokens              int64               `json:"input_tokens"`
+	OutputTokens             int64               `json:"output_tokens"`
+	CacheCreationInputTokens int64               `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64               `json:"cache_read_input_tokens"`
+	CacheCreation            claudeCacheCreation `json:"cache_creation"`
+}
+
+// cacheCreate5m returns the portion of cache-creation tokens billed at the 5m
+// ephemeral rate. When the JSONL carries the explicit split (modern Claude
+// Code), prefer that; otherwise fall back to attributing the whole bucket to
+// 5m, which was the historical default before 1h caching shipped.
+func (u claudeUsage) cacheCreate5m() int64 {
+	if u.CacheCreation.Ephemeral5mInputTokens != 0 || u.CacheCreation.Ephemeral1hInputTokens != 0 {
+		return u.CacheCreation.Ephemeral5mInputTokens
+	}
+	return u.CacheCreationInputTokens
+}
+
+// cacheCreate1h returns the portion of cache-creation tokens billed at the 1h
+// ephemeral rate.
+func (u claudeUsage) cacheCreate1h() int64 {
+	return u.CacheCreation.Ephemeral1hInputTokens
 }
 
 type claudeAPIMessage struct {
+	ID         string      `json:"id"`
 	Model      string      `json:"model"`
 	Usage      claudeUsage `json:"usage"`
 	StopReason *string     `json:"stop_reason"`
@@ -383,10 +464,21 @@ type claudeMessage struct {
 	Timestamp string           `json:"timestamp"`
 }
 
-type inputSignature struct {
-	InputTokens              int64
-	CacheReadInputTokens     int64
-	CacheCreationInputTokens int64
+// dedupKey returns a stable per-API-call identity for an assistant entry.
+// Claude Code logs each content block (thinking/text/tool_use) of one turn as
+// a separate JSONL line, all sharing the same message.id and the same usage
+// object — without dedup we'd double-count by 2-5x. Prefer the explicit
+// message.id; fall back to an input-token signature for older formats that
+// did not stamp an id.
+func dedupKey(m claudeAPIMessage) string {
+	if m.ID != "" {
+		return m.ID
+	}
+	return fmt.Sprintf("sig:%d:%d:%d",
+		m.Usage.InputTokens,
+		m.Usage.CacheReadInputTokens,
+		m.Usage.CacheCreationInputTokens,
+	)
 }
 
 type tokenBreakdown struct {
@@ -443,7 +535,8 @@ func getAgentSessionTokens(worktreePath string) tokenBreakdown {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	var prevSig inputSignature
+	var prevKey string
+	var prevUsage claudeUsage
 	var prevModel string
 	var maxOutputTokens int64
 	firstGroup := true
@@ -452,16 +545,13 @@ func getAgentSessionTokens(worktreePath string) tokenBreakdown {
 		if firstGroup {
 			return
 		}
-		result.In += prevSig.InputTokens
-		result.Out += maxOutputTokens
-		result.CacheRead += prevSig.CacheReadInputTokens
-		result.CacheCreate += prevSig.CacheCreationInputTokens
-		result.CostUSD += estimateCost(prevModel, claudeUsage{
-			InputTokens:              prevSig.InputTokens,
-			OutputTokens:             maxOutputTokens,
-			CacheCreationInputTokens: prevSig.CacheCreationInputTokens,
-			CacheReadInputTokens:     prevSig.CacheReadInputTokens,
-		})
+		folded := prevUsage
+		folded.OutputTokens = maxOutputTokens
+		result.In += folded.InputTokens
+		result.Out += folded.OutputTokens
+		result.CacheRead += folded.CacheReadInputTokens
+		result.CacheCreate += folded.CacheCreationInputTokens
+		result.CostUSD += estimateCost(prevModel, folded)
 	}
 
 	for scanner.Scan() {
@@ -477,16 +567,13 @@ func getAgentSessionTokens(worktreePath string) tokenBreakdown {
 			continue
 		}
 
+		key := dedupKey(msg.Message)
 		u := msg.Message.Usage
-		sig := inputSignature{
-			InputTokens:              u.InputTokens,
-			CacheReadInputTokens:     u.CacheReadInputTokens,
-			CacheCreationInputTokens: u.CacheCreationInputTokens,
-		}
 
-		if sig != prevSig || firstGroup {
+		if key != prevKey || firstGroup {
 			flushGroup()
-			prevSig = sig
+			prevKey = key
+			prevUsage = u
 			prevModel = msg.Message.Model
 			maxOutputTokens = u.OutputTokens
 			firstGroup = false
@@ -500,31 +587,53 @@ func getAgentSessionTokens(worktreePath string) tokenBreakdown {
 	return result
 }
 
-func estimateCost(model string, u claudeUsage) float64 {
-	var inputPer1M, outputPer1M float64
+// modelRates is the list-price per-1M-token rate for input and output, in USD.
+// Cache rates derive from input: read = 0.10x, 5m write = 1.25x, 1h write =
+// 2.00x (Anthropic prompt-caching pricing).
+type modelRates struct {
+	inputPer1M  float64
+	outputPer1M float64
+}
 
+// modelRatesFor returns the published Anthropic rates for the given model
+// string. Rates verified against `claude --print --output-format json`'s own
+// `total_cost_usd` field — see TestEstimateCost_ShouldMatchClaudeInternal_*.
+func modelRatesFor(model string) modelRates {
 	switch {
+	// Opus 4.5+ subscription / list rates (input $5, output $25). Verified
+	// against Claude's internal cost computation for opus-4-7.
 	case isNewOpus(model):
-		inputPer1M = 5.0
-		outputPer1M = 25.0
+		return modelRates{inputPer1M: 5.0, outputPer1M: 25.0}
+	// Legacy Opus 3 / 4 / 4.1 list rates.
 	case strings.Contains(model, "opus"):
-		inputPer1M = 15.0
-		outputPer1M = 75.0
+		return modelRates{inputPer1M: 15.0, outputPer1M: 75.0}
+	// Haiku 4.5 list rates (input $1, output $5). Haiku 3.5 was $0.80 / $4
+	// but is no longer in active service rotation; the 1/5 default is a
+	// safe over-estimate of pennies on the rare retro lookup.
 	case strings.Contains(model, "haiku"):
-		inputPer1M = 1.0
-		outputPer1M = 5.0
+		return modelRates{inputPer1M: 1.0, outputPer1M: 5.0}
+	// Sonnet (3.5, 4, 4.5, 4.6, ...) — the default branch. Same $3/$15
+	// list rates across the line at the time of writing.
 	default:
-		inputPer1M = 3.0
-		outputPer1M = 15.0
+		return modelRates{inputPer1M: 3.0, outputPer1M: 15.0}
 	}
+}
 
-	cacheReadPer1M := inputPer1M * 0.10
-	cacheCreatePer1M := inputPer1M * 1.25
+func estimateCost(model string, u claudeUsage) float64 {
+	r := modelRatesFor(model)
 
-	cost := float64(u.InputTokens) * inputPer1M / 1_000_000
-	cost += float64(u.OutputTokens) * outputPer1M / 1_000_000
-	cost += float64(u.CacheReadInputTokens) * cacheReadPer1M / 1_000_000
-	cost += float64(u.CacheCreationInputTokens) * cacheCreatePer1M / 1_000_000
+	// Anthropic prompt-caching multipliers (constant across the Claude line).
+	const (
+		cacheReadMult     = 0.10 // read is always 10% of input rate
+		cacheCreate5mMult = 1.25 // 5-minute ephemeral write
+		cacheCreate1hMult = 2.00 // 1-hour ephemeral write — DEFAULT for modern Claude Code
+	)
+
+	cost := float64(u.InputTokens) * r.inputPer1M / 1_000_000
+	cost += float64(u.OutputTokens) * r.outputPer1M / 1_000_000
+	cost += float64(u.CacheReadInputTokens) * (r.inputPer1M * cacheReadMult) / 1_000_000
+	cost += float64(u.cacheCreate5m()) * (r.inputPer1M * cacheCreate5mMult) / 1_000_000
+	cost += float64(u.cacheCreate1h()) * (r.inputPer1M * cacheCreate1hMult) / 1_000_000
 	return cost
 }
 
@@ -587,7 +696,8 @@ func getAgentSessionDailyCosts(worktreePath string) map[string]float64 {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	type groupEntry struct {
-		sig             inputSignature
+		key             string
+		usage           claudeUsage
 		model           string
 		maxOutputTokens int64
 		date            string
@@ -598,13 +708,9 @@ func getAgentSessionDailyCosts(worktreePath string) map[string]float64 {
 		if prevGroup == nil {
 			return
 		}
-		cost := estimateCost(prevGroup.model, claudeUsage{
-			InputTokens:              prevGroup.sig.InputTokens,
-			OutputTokens:             prevGroup.maxOutputTokens,
-			CacheCreationInputTokens: prevGroup.sig.CacheCreationInputTokens,
-			CacheReadInputTokens:     prevGroup.sig.CacheReadInputTokens,
-		})
-		result[prevGroup.date] += cost
+		folded := prevGroup.usage
+		folded.OutputTokens = prevGroup.maxOutputTokens
+		result[prevGroup.date] += estimateCost(prevGroup.model, folded)
 	}
 
 	for scanner.Scan() {
@@ -621,18 +727,14 @@ func getAgentSessionDailyCosts(worktreePath string) map[string]float64 {
 		}
 
 		date := extractDate(msg.Timestamp)
-
+		key := dedupKey(msg.Message)
 		u := msg.Message.Usage
-		sig := inputSignature{
-			InputTokens:              u.InputTokens,
-			CacheReadInputTokens:     u.CacheReadInputTokens,
-			CacheCreationInputTokens: u.CacheCreationInputTokens,
-		}
 
-		if prevGroup == nil || sig != prevGroup.sig {
+		if prevGroup == nil || key != prevGroup.key {
 			flushGroup()
 			prevGroup = &groupEntry{
-				sig:             sig,
+				key:             key,
+				usage:           u,
 				model:           msg.Message.Model,
 				maxOutputTokens: u.OutputTokens,
 				date:            date,
