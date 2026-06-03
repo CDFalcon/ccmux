@@ -5,8 +5,11 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/harness"
+	"github.com/CDFalcon/ccmux/internal/queue"
 )
 
 // assertValidBash syntax-checks a generated script with `bash -n`.
@@ -214,6 +217,159 @@ func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 			}
 			if !strings.Contains(content, "The original task was:") {
 				t.Errorf("recovery script for %s should embed the original task", h)
+			}
+		})
+	}
+}
+
+// setupStopHookTestStores points HOME at a tmpdir and returns a fresh
+// agent.Store + queue.Queue rooted there. Used by the handleAgentStopped
+// tests so they can exercise the real on-disk paths without touching the
+// developer's ~/.ccmux/.
+func setupStopHookTestStores(t *testing.T) (*agent.Store, *queue.Queue) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := agent.NewStore("stop-hook-test")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	q, err := queue.NewQueue("stop-hook-test")
+	if err != nil {
+		t.Fatalf("NewQueue: %v", err)
+	}
+	return store, q
+}
+
+func TestHandleAgentStopped_ShouldHandOffToCIPoller_WhenAgentHasPR(t *testing.T) {
+	// Stop hooks fire at end-of-turn during interactive CI-fix / review
+	// resumes. If the agent decided to retrigger CI instead of pushing
+	// (e.g. `gh run rerun` on a flaky eval), nothing else flips status back
+	// to WaitingCI — so handleAgentStopped MUST do it for any Running agent
+	// with a known PR. Otherwise the agent gets stuck in Ready + "Agent
+	// finished (no PR)" forever, and the CI poller (which only walks
+	// WaitingCI agents) never re-examines the PR.
+
+	store, q := setupStopHookTestStores(t)
+	before := time.Now()
+
+	if err := store.Create(&agent.Agent{
+		ID:     "agent-with-pr",
+		Status: agent.StatusRunning,
+		PRURL:  "https://github.com/o/r/pull/42",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a, _ := store.Get("agent-with-pr")
+
+	if err := handleAgentStopped(store, q, a); err != nil {
+		t.Fatalf("handleAgentStopped: %v", err)
+	}
+
+	got, _ := store.Get("agent-with-pr")
+	if got.Status != agent.StatusWaitingCI {
+		t.Errorf("status = %s, want %s — agent with a PR must go back to the CI poller, not be marked idle", got.Status, agent.StatusWaitingCI)
+	}
+	if got.CIWaitAt.Before(before) {
+		t.Errorf("CIWaitAt = %v, want >= %v — CIWaitAt should be bumped so the poller treats this as a fresh wait window", got.CIWaitAt, before)
+	}
+
+	items, err := q.List()
+	if err != nil {
+		t.Fatalf("queue List: %v", err)
+	}
+	for _, it := range items {
+		if it.AgentID == "agent-with-pr" {
+			t.Errorf("queue gained item %q for an agent we handed back to the CI poller — should be empty", it.Summary)
+		}
+	}
+}
+
+func TestHandleAgentStopped_ShouldMarkIdle_WhenAgentNeverMadePR(t *testing.T) {
+	// Genuinely new agent that finished its first task without opening a PR.
+	// This is the only Running case where the user does want to be told
+	// "this one needs your attention".
+
+	store, q := setupStopHookTestStores(t)
+
+	if err := store.Create(&agent.Agent{
+		ID:     "agent-no-pr",
+		Status: agent.StatusRunning,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a, _ := store.Get("agent-no-pr")
+
+	if err := handleAgentStopped(store, q, a); err != nil {
+		t.Fatalf("handleAgentStopped: %v", err)
+	}
+
+	got, _ := store.Get("agent-no-pr")
+	if got.Status != agent.StatusReady {
+		t.Errorf("status = %s, want %s", got.Status, agent.StatusReady)
+	}
+
+	items, err := q.List()
+	if err != nil {
+		t.Fatalf("queue List: %v", err)
+	}
+	var found *queue.QueueItem
+	for _, it := range items {
+		if it.AgentID == "agent-no-pr" {
+			found = it
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected an idle queue item for the no-PR agent, got none")
+	}
+	if found.Type != queue.ItemTypeIdle {
+		t.Errorf("queue item type = %s, want %s", found.Type, queue.ItemTypeIdle)
+	}
+	if !strings.Contains(found.Summary, "no PR") {
+		t.Errorf("queue item summary = %q, want it to mention there's no PR", found.Summary)
+	}
+}
+
+func TestHandleAgentStopped_ShouldNotDisturb_NonRunningStatuses(t *testing.T) {
+	// Stop hooks fire many times across an agent's life. For any status
+	// other than Running, the agent is in a state another part of ccmux owns
+	// (CI poller, review queue, merge queue, post-cleanup) and we must
+	// leave it alone.
+
+	cases := []agent.Status{
+		agent.StatusReady,
+		agent.StatusWaitingReview,
+		agent.StatusWaitingCI,
+		agent.StatusWaitingMergeQueue,
+	}
+	for _, status := range cases {
+		t.Run(string(status), func(t *testing.T) {
+			store, q := setupStopHookTestStores(t)
+
+			id := "agent-" + string(status)
+			if err := store.Create(&agent.Agent{
+				ID:     id,
+				Status: status,
+				PRURL:  "https://github.com/o/r/pull/99",
+			}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			a, _ := store.Get(id)
+
+			if err := handleAgentStopped(store, q, a); err != nil {
+				t.Fatalf("handleAgentStopped: %v", err)
+			}
+
+			got, _ := store.Get(id)
+			if got.Status != status {
+				t.Errorf("status changed from %s to %s — Stop hook should be a no-op for non-Running agents", status, got.Status)
+			}
+
+			items, _ := q.List()
+			for _, it := range items {
+				if it.AgentID == id {
+					t.Errorf("queue gained item %q for an agent in %s — Stop hook should be a no-op", it.Summary, status)
+				}
 			}
 		})
 	}

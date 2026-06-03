@@ -937,10 +937,11 @@ func ciWaitCmd() *cobra.Command {
 			if err := queueManager.RemoveByAgentAndType(agentID, queue.ItemTypePRReady); err != nil {
 				return err
 			}
-			// The Stop hook can flip a resumed agent (no `gh pr create`) to
-			// StatusReady + an "Agent finished (no PR)" idle item before this
-			// fires. Clear it so the queue accurately reflects "waiting on CI"
-			// for the new push.
+			// Defensive: an older Stop hook path could flip a resumed agent to
+			// StatusReady + "Agent finished (no PR)" before this fires. Clear
+			// it so the queue accurately reflects "waiting on CI" for the new
+			// push. (handleAgentStopped no longer takes that path when PRURL
+			// is set, but old records in the store may still carry one.)
 			if err := queueManager.RemoveByAgentAndType(agentID, queue.ItemTypeIdle); err != nil {
 				return err
 			}
@@ -994,30 +995,63 @@ func agentStoppedCmd() *cobra.Command {
 				return err
 			}
 
-			switch a.Status {
-			case agent.StatusReady:
-				// Agent stopped without a PR but was already marked idle
-			case agent.StatusWaitingReview:
-				// Agent made a PR - it's already in queue, nothing to do
-			case agent.StatusWaitingCI:
-				// Agent is waiting for CI - timer will handle resume, nothing to do
-			case agent.StatusWaitingMergeQueue:
-				// Agent's PR is in the merge queue - polling will detect the
-				// merge and trigger cleanup, nothing to do here
-			case agent.StatusRunning:
-				// Agent stopped without making a PR - add to queue for review
-				agentStore.Update(agentID, func(ag *agent.Agent) {
-					ag.Status = agent.StatusReady
-				})
-				_, err = queueManager.Add(queue.ItemTypeIdle, agentID, "Agent finished (no PR)", "")
-				if err != nil {
-					return err
-				}
-			}
-
-			return nil
+			return handleAgentStopped(agentStore, queueManager, a)
 		},
 	}
+}
+
+// handleAgentStopped applies the Stop-hook status transition for a single
+// agent. Pulled out of agentStoppedCmd for testability.
+//
+// Claude Code's Stop hook fires at the end of every assistant turn, not on
+// process exit. For interactive resumes (CI fix, review reply, merge-conflict
+// fix) that means this runs while the launcher script is still blocked on
+// `claude --continue` — the script's trailing `ccmux ci-wait` never executes,
+// so we have to handle the post-turn transition entirely from here.
+//
+// The PRURL distinguishes the two real cases:
+//   - StatusRunning + no PRURL: a brand-new agent finished its first task
+//     without opening a PR. Genuinely "agent finished (no PR)" — mark idle.
+//   - StatusRunning + PRURL set: a resumed agent finished a turn. Whether it
+//     pushed, retriggered CI (e.g. `gh run rerun`), or did nothing, the right
+//     next state is WaitingCI — hand it back to the CI poller so a follow-up
+//     pass/fail/timeout is detected. If the "fix" didn't fix anything, the
+//     poller's duplicate-failure throttle (see shouldThrottleResume in tui)
+//     flips the agent to "needs manual intervention" after ~3 polls.
+func handleAgentStopped(agentStore *agent.Store, queueManager *queue.Queue, a *agent.Agent) error {
+	switch a.Status {
+	case agent.StatusReady:
+		// Agent stopped without a PR but was already marked idle
+		return nil
+	case agent.StatusWaitingReview:
+		// Agent made a PR - it's already in queue, nothing to do
+		return nil
+	case agent.StatusWaitingCI:
+		// Agent is waiting for CI - timer will handle resume, nothing to do
+		return nil
+	case agent.StatusWaitingMergeQueue:
+		// Agent's PR is in the merge queue - polling will detect the
+		// merge and trigger cleanup, nothing to do here
+		return nil
+	case agent.StatusRunning:
+		if a.PRURL != "" {
+			return agentStore.Update(a.ID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusWaitingCI
+				ag.CIWaitAt = time.Now()
+			})
+		}
+		// No PR yet — genuine "agent finished without making a PR".
+		if err := agentStore.Update(a.ID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusReady
+		}); err != nil {
+			return err
+		}
+		if _, err := queueManager.Add(queue.ItemTypeIdle, a.ID, "Agent finished (no PR)", ""); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func focusCmd() *cobra.Command {
