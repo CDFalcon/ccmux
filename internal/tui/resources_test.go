@@ -538,6 +538,174 @@ func TestEstimateCost_ShouldUseHaikuPricing_GivenHaiku(t *testing.T) {
 	}
 }
 
+// TestEstimateCost_ShouldMatchClaudeInternal_GivenOpus47Sample pins ccmux's
+// cost calculation against Claude's own internal computation, captured from
+// `claude -p "echo" --output-format json` (which returns the same total_cost_usd
+// field Anthropic bills against). Any drift here means our pricing table no
+// longer matches Claude's, and the displayed cost will be misleading.
+//
+// Claude reported total_cost_usd = 0.06278625 for this exact usage block,
+// which the assertion below recomputes from list pricing.
+func TestEstimateCost_ShouldMatchClaudeInternal_GivenOpus47Sample(t *testing.T) {
+	// Setup. Usage block from a real `claude -p` invocation against opus-4-7.
+	usage := claudeUsage{
+		InputTokens:              6,
+		OutputTokens:             11,
+		CacheReadInputTokens:     23800,
+		CacheCreationInputTokens: 8093,
+		CacheCreation: claudeCacheCreation{
+			Ephemeral5mInputTokens: 8093,
+			Ephemeral1hInputTokens: 0,
+		},
+	}
+
+	// Execute.
+	cost := estimateCost("claude-opus-4-7", usage)
+
+	// Assert. Claude's own total_cost_usd for this sample.
+	const claudeReported = 0.06278625
+	if math.Abs(cost-claudeReported) > 1e-9 {
+		t.Errorf("expected %.10f (Claude's own computation), got %.10f", claudeReported, cost)
+	}
+}
+
+// TestEstimateCost_ShouldPrice1hCacheAt2x_GivenEphemeral1hWrite captures the
+// bug that prompted this change: the previous estimator priced ALL cache
+// creation at the 5m rate (1.25x input), undercounting 1h cache writes —
+// which are the default for modern Claude Code — by ~37%.
+func TestEstimateCost_ShouldPrice1hCacheAt2x_GivenEphemeral1hWrite(t *testing.T) {
+	// Setup. 1M tokens written to the 1-hour cache at opus-4-7 ($5/M input).
+	usage := claudeUsage{
+		CacheCreationInputTokens: 1_000_000,
+		CacheCreation: claudeCacheCreation{
+			Ephemeral1hInputTokens: 1_000_000,
+		},
+	}
+
+	// Execute.
+	cost := estimateCost("claude-opus-4-7", usage)
+
+	// Assert. 1M tokens × ($5 × 2.0x) / 1M = $10.00.
+	const expected = 10.0
+	if math.Abs(cost-expected) > 1e-9 {
+		t.Errorf("expected %.4f (1h cache at 2.0x input), got %.4f", expected, cost)
+	}
+}
+
+// TestEstimateCost_ShouldPrice5mCacheAt125x_GivenEphemeral5mWrite confirms
+// the 5m path is unchanged and still uses 1.25x — guards against a future
+// refactor accidentally swapping the two multipliers.
+func TestEstimateCost_ShouldPrice5mCacheAt125x_GivenEphemeral5mWrite(t *testing.T) {
+	// Setup. 1M tokens written to the 5-minute cache at opus-4-7 ($5/M input).
+	usage := claudeUsage{
+		CacheCreationInputTokens: 1_000_000,
+		CacheCreation: claudeCacheCreation{
+			Ephemeral5mInputTokens: 1_000_000,
+		},
+	}
+
+	// Execute.
+	cost := estimateCost("claude-opus-4-7", usage)
+
+	// Assert. 1M × ($5 × 1.25x) / 1M = $6.25.
+	const expected = 6.25
+	if math.Abs(cost-expected) > 1e-9 {
+		t.Errorf("expected %.4f (5m cache at 1.25x input), got %.4f", expected, cost)
+	}
+}
+
+// TestEstimateCost_ShouldFallBackToFlat5m_GivenLegacyUsageWithoutSplit pins
+// the backward-compat path: older JSONL entries (or test fixtures) that only
+// carry the flat `cache_creation_input_tokens` field without the
+// `cache_creation` sub-object should still be priced — at the 5m rate, which
+// matches the pre-fix behaviour and what every prior test was written
+// against.
+func TestEstimateCost_ShouldFallBackToFlat5m_GivenLegacyUsageWithoutSplit(t *testing.T) {
+	// Setup. No `cache_creation` sub-object — only the flat total.
+	usage := claudeUsage{
+		CacheCreationInputTokens: 1_000_000,
+	}
+
+	// Execute.
+	cost := estimateCost("claude-opus-4-7", usage)
+
+	// Assert. Falls back to 5m pricing: 1M × ($5 × 1.25x) / 1M = $6.25.
+	const expected = 6.25
+	if math.Abs(cost-expected) > 1e-9 {
+		t.Errorf("expected %.4f (legacy fallback to 5m), got %.4f", expected, cost)
+	}
+}
+
+// TestGetAgentSessionTokens_ShouldDedupByMessageID_GivenContentBlockSplit
+// guards the canonical fix: a single assistant turn that Claude Code split
+// into multiple JSONL lines (one per content block — thinking, text,
+// tool_use) shares one message.id. We must fold those into ONE billable
+// turn, not three.
+//
+// Without this fix the dedup logic only collapsed *consecutive entries with
+// identical input signatures*, which is correct in most cases but brittle
+// when two genuinely distinct turns happened to share input counts.
+func TestGetAgentSessionTokens_ShouldDedupByMessageID_GivenContentBlockSplit(t *testing.T) {
+	// Setup. Three JSONL entries that share message.id "msg_AAA" — they're
+	// the thinking, text, and tool_use blocks of one assistant turn. Their
+	// output_tokens grows as more of the message is logged (Claude appears
+	// to re-emit the running total).
+	worktreePath := "/tmp/ccmux-test-dedup-byid-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","message":{"id":"msg_AAA","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":80,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+{"type":"assistant","message":{"id":"msg_AAA","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":250,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+{"type":"assistant","message":{"id":"msg_AAA","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":900,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionTokens(worktreePath)
+
+	// Assert. One folded turn: input counted once, output taken as the max.
+	if result.In != 100 {
+		t.Errorf("expected In 100 (one folded turn), got %d", result.In)
+	}
+	if result.Out != 900 {
+		t.Errorf("expected Out 900 (max across content blocks), got %d", result.Out)
+	}
+	if result.CacheRead != 300 {
+		t.Errorf("expected CacheRead 300 (one folded turn), got %d", result.CacheRead)
+	}
+	if result.CacheCreate != 200 {
+		t.Errorf("expected CacheCreate 200 (one folded turn), got %d", result.CacheCreate)
+	}
+}
+
+// TestGetAgentSessionTokens_ShouldNotMergeDistinctTurns_GivenIdenticalSignatures
+// is the contrapositive: two genuinely distinct assistant turns that happen
+// to share input counts (small, common turns with full cache hits) but
+// carry distinct message.ids must NOT be folded together.
+func TestGetAgentSessionTokens_ShouldNotMergeDistinctTurns_GivenIdenticalSignatures(t *testing.T) {
+	// Setup. Two distinct turns, same input/cache numbers, different ids.
+	worktreePath := "/tmp/ccmux-test-distinct-byid-" + t.Name()
+	projectDir := setupSessionDir(t, worktreePath)
+
+	jsonl := `{"type":"assistant","message":{"id":"msg_FIRST","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
+{"type":"assistant","message":{"id":"msg_SECOND","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
+`
+	os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(jsonl), 0o644)
+
+	// Execute.
+	result := getAgentSessionTokens(worktreePath)
+
+	// Assert. Both turns billed.
+	if result.In != 2 {
+		t.Errorf("expected In 2 (two distinct turns), got %d", result.In)
+	}
+	if result.Out != 100 {
+		t.Errorf("expected Out 100 (two distinct turns), got %d", result.Out)
+	}
+	if result.CacheRead != 2000 {
+		t.Errorf("expected CacheRead 2000 (two distinct turns), got %d", result.CacheRead)
+	}
+}
+
 func TestIsNewOpus_ShouldReturnTrue_GivenOpus45Plus(t *testing.T) {
 	// Assert.
 	if !isNewOpus("claude-opus-4-5-20251101") {
@@ -824,4 +992,3 @@ func TestGetAgentSessionDailyCosts_ShouldDedup_GivenDuplicateContentBlocks(t *te
 		t.Errorf("expected %.6f, got %.6f", expectedCost, result["2026-03-25"])
 	}
 }
-
