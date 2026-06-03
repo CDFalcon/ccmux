@@ -191,14 +191,15 @@ type editProjectFormModel struct {
 	startupScriptInput     textinput.Model
 	teardownScriptInput    textinput.Model
 	mergeWhenAcceptedInput textinput.Model
+	useTrunkMergeInput     textinput.Model
 	harnessInput           textinput.Model
 	draftPRsInput          textinput.Model
-	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=harness, 7=draftPRs
+	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=useTrunkMerge, 7=harness, 8=draftPRs
 }
 
 // editProjectFieldCount is the number of focusable fields in the edit-project
 // form; focusIndex cycles modulo this value.
-const editProjectFieldCount = 8
+const editProjectFieldCount = 9
 
 type promptFormModel struct {
 	nameInput    textinput.Model
@@ -357,6 +358,11 @@ func newEditProjectForm() editProjectFormModel {
 	mergeWhenAcceptedInput.Width = 10
 	mergeWhenAcceptedInput.CharLimit = 5
 
+	useTrunkMergeInput := textinput.New()
+	useTrunkMergeInput.Placeholder = "no"
+	useTrunkMergeInput.Width = 10
+	useTrunkMergeInput.CharLimit = 5
+
 	harnessInput := textinput.New()
 	harnessInput.Placeholder = "claude"
 	harnessInput.Width = 20
@@ -374,6 +380,7 @@ func newEditProjectForm() editProjectFormModel {
 		startupScriptInput:     startupScriptInput,
 		teardownScriptInput:    teardownScriptInput,
 		mergeWhenAcceptedInput: mergeWhenAcceptedInput,
+		useTrunkMergeInput:     useTrunkMergeInput,
 		harnessInput:           harnessInput,
 		draftPRsInput:          draftPRsInput,
 		focusIndex:             0,
@@ -387,6 +394,7 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.startupScriptInput.Blur()
 	ef.teardownScriptInput.Blur()
 	ef.mergeWhenAcceptedInput.Blur()
+	ef.useTrunkMergeInput.Blur()
 	ef.harnessInput.Blur()
 	ef.draftPRsInput.Blur()
 }
@@ -407,8 +415,10 @@ func (ef *editProjectFormModel) focusCurrent() {
 	case 5:
 		ef.mergeWhenAcceptedInput.Focus()
 	case 6:
-		ef.harnessInput.Focus()
+		ef.useTrunkMergeInput.Focus()
 	case 7:
+		ef.harnessInput.Focus()
+	case 8:
 		ef.draftPRsInput.Focus()
 	}
 }
@@ -433,6 +443,7 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	ef.startupScriptInput.SetValue(p.StartupScript)
 	ef.teardownScriptInput.SetValue(p.TeardownScript)
 	ef.mergeWhenAcceptedInput.SetValue(yesNo(p.MergeWhenAccepted))
+	ef.useTrunkMergeInput.SetValue(yesNo(p.UseTrunkMerge))
 	ef.harnessInput.SetValue(string(p.EffectiveHarness()))
 	ef.draftPRsInput.SetValue(yesNo(p.EffectiveDraftPRs()))
 	ef.focusIndex = 0
@@ -859,7 +870,7 @@ func (m model) refreshCmd() tea.Cmd {
 			if a.TmuxWindow == "" || deadItemByAgent[a.ID] {
 				continue
 			}
-			if a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusMerged {
+			if a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusMerged || a.Status == agent.StatusWaitingMergeQueue {
 				continue
 			}
 			dead, err := m.tmuxManager.IsPaneDead(a.TmuxWindow)
@@ -1006,7 +1017,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// StatusWaitingReview (because it picked up follow-up work)
 			// keeps getting polled — once it goes idle and CI is still
 			// passing, the next poll re-promotes it to StatusWaitingReview.
-			if (a.Status == agent.StatusWaitingCI || a.Status == agent.StatusWaitingReview || a.Status == agent.StatusReady || a.Status == agent.StatusRunning) && a.PRURL != "" {
+			if (a.Status == agent.StatusWaitingCI || a.Status == agent.StatusWaitingReview || a.Status == agent.StatusWaitingMergeQueue || a.Status == agent.StatusReady || a.Status == agent.StatusRunning) && a.PRURL != "" {
 				activeWaiting[a.ID] = true
 				if !m.ciChecking[a.ID] {
 					lastCheck, checked := m.ciLastChecked[a.ID]
@@ -1127,6 +1138,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				currentAgent = ag
 				break
 			}
+		}
+		// Agents in StatusWaitingMergeQueue are parked until trunk merges (or
+		// rejects) the PR. Until that happens we only care about the
+		// `isMerged` branch above — CI-failed / new-review / merge-conflict
+		// flows belong to the queue, not to ccmux. Bail out so we don't
+		// resume the agent or knock it back to waiting-review.
+		if currentAgent != nil && currentAgent.Status == agent.StatusWaitingMergeQueue {
+			return m, nil
 		}
 		wasWaitingReview := currentAgent != nil && currentAgent.Status == agent.StatusWaitingReview
 
@@ -1380,8 +1399,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 5:
 			m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
 		case 6:
-			m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+			m.editProjectForm.useTrunkMergeInput, cmd = m.editProjectForm.useTrunkMergeInput.Update(msg)
 		case 7:
+			m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+		case 8:
 			m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
 		}
 		if cmd != nil {
@@ -1919,8 +1940,24 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if a, _ := findAgent(); a != nil {
 			m.view = ViewMain
+			// Trunk-merge projects park the agent in WaitingMergeQueue
+			// until trunk actually merges the PR, so we shouldn't show
+			// "cleaning up" — the cleanup only happens after the merge
+			// queue reports MERGED. Everyone else goes straight to
+			// CleaningUp for the legacy direct-merge / accept-without-
+			// merge paths.
+			usesTrunk := false
+			if a.ProjectName != "" {
+				if proj, err := m.projectStore.Get(a.ProjectName); err == nil {
+					usesTrunk = proj.UseTrunkMerge
+				}
+			}
 			m.agentStore.Update(a.ID, func(ag *agent.Agent) {
-				ag.Status = agent.StatusCleaningUp
+				if usesTrunk {
+					ag.Status = agent.StatusWaitingMergeQueue
+				} else {
+					ag.Status = agent.StatusCleaningUp
+				}
 			})
 			return m, m.acceptPRCmd(a)
 		}
@@ -2069,11 +2106,11 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewManageProjects
 		m.selectedProj = nil
 		return m, nil
-	case "tab":
+	case "tab", "down":
 		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + 1) % editProjectFieldCount
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
-	case "shift+tab":
+	case "shift+tab", "up":
 		m.editProjectForm.focusIndex = (m.editProjectForm.focusIndex + editProjectFieldCount - 1) % editProjectFieldCount
 		m.editProjectForm.focusCurrent()
 		return m, textinput.Blink
@@ -2089,6 +2126,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		teardownScript := strings.TrimSpace(m.editProjectForm.teardownScriptInput.Value())
 		mergeStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.mergeWhenAcceptedInput.Value()))
 		mergeWhenAccepted := mergeStr == "yes" || mergeStr == "true" || mergeStr == "y"
+		trunkStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.useTrunkMergeInput.Value()))
+		useTrunkMerge := trunkStr == "yes" || trunkStr == "true" || trunkStr == "y"
 		draftStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.draftPRsInput.Value()))
 		draftPRs := draftStr == "yes" || draftStr == "true" || draftStr == "y"
 		// An unrecognised harness value resolves to "" so EffectiveHarness
@@ -2109,7 +2148,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, harnessStr, draftPRs)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, useTrunkMerge, harnessStr, draftPRs)
 	}
 
 	var cmd tea.Cmd
@@ -2127,8 +2166,10 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 5:
 		m.editProjectForm.mergeWhenAcceptedInput, cmd = m.editProjectForm.mergeWhenAcceptedInput.Update(msg)
 	case 6:
-		m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+		m.editProjectForm.useTrunkMergeInput, cmd = m.editProjectForm.useTrunkMergeInput.Update(msg)
 	case 7:
+		m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
+	case 8:
 		m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
 	}
 	return m, cmd
@@ -2673,6 +2714,8 @@ func (m model) updateWindowNames() {
 			name = "● " + base
 		case agent.StatusWaitingCI:
 			name = "⏳ " + base
+		case agent.StatusWaitingMergeQueue:
+			name = "🚦 " + base
 		default:
 			name = base
 		}
@@ -2744,7 +2787,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted bool, defaultHarness string, draftPRs bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted, useTrunkMerge bool, defaultHarness string, draftPRs bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		// Only run rift init when the user has just opted in (or moved
@@ -2762,6 +2805,7 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 			p.StartupScript = startupScript
 			p.TeardownScript = teardownScript
 			p.MergeWhenAccepted = mergeWhenAccepted
+			p.UseTrunkMerge = useTrunkMerge
 			draft := draftPRs
 			p.DraftPRs = &draft
 			if needsRiftInit {
@@ -2910,10 +2954,29 @@ func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 		m.queueManager.RemoveByAgent(agentID)
 
 		var mergeWhenAccepted bool
+		var useTrunkMerge bool
 		if projectName != "" {
 			if proj, err := m.projectStore.Get(projectName); err == nil {
 				mergeWhenAccepted = proj.MergeWhenAccepted
+				useTrunkMerge = proj.UseTrunkMerge
 			}
+		}
+
+		// Trunk wins when both are set: posting `/trunk merge` is a
+		// reversible comment whereas `gh pr merge` is destructive.
+		if useTrunkMerge && prURL != "" {
+			// Mark the PR ready so trunk doesn't reject a draft, then
+			// hand it to the merge queue. The agent stays parked in
+			// StatusWaitingMergeQueue until CI polling sees the PR
+			// transition to MERGED and triggers cleanup.
+			readyCmd := exec.Command("gh", "pr", "ready", prURL)
+			readyCmd.CombinedOutput()
+
+			commentCmd := exec.Command("gh", "pr", "comment", prURL, "--body", "/trunk merge")
+			if output, err := commentCmd.CombinedOutput(); err != nil {
+				return errMsg{fmt.Errorf("trunk merge comment failed: %s: %w", string(output), err)}
+			}
+			return successMsg{fmt.Sprintf("Queued PR with trunk for agent %s", agentID)}
 		}
 
 		if mergeWhenAccepted && prURL != "" {

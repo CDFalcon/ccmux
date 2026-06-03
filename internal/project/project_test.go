@@ -988,6 +988,46 @@ func TestAdd_ShouldOmitMergeWhenAccepted_GivenFalse(t *testing.T) {
 	}
 }
 
+func TestUpdate_ShouldPersistUseTrunkMerge_GivenTrue(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "trunked", Path: repoDir})
+
+	// Execute.
+	err := store.Update("trunked", func(p *Project) {
+		p.UseTrunkMerge = true
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("trunked")
+	if !retrieved.UseTrunkMerge {
+		t.Error("expected UseTrunkMerge to be true")
+	}
+}
+
+func TestAdd_ShouldOmitUseTrunkMerge_GivenFalse(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Execute.
+	store.Add(&Project{Name: "no-trunk", Path: repoDir})
+
+	// Assert.
+	raw, _ := os.ReadFile(store.filePath)
+	var data map[string]interface{}
+	json.Unmarshal(raw, &data)
+	projects := data["projects"].(map[string]interface{})
+	proj := projects["no-trunk"].(map[string]interface{})
+	if _, exists := proj["use_trunk_merge"]; exists {
+		t.Error("expected use_trunk_merge to be omitted from JSON when false")
+	}
+}
+
 func TestEffectiveDraftPRs_ShouldDefaultToTrue_GivenUnset(t *testing.T) {
 	// Setup.
 	p := &Project{Name: "p", Path: "/repo"}
@@ -1122,6 +1162,36 @@ func TestMigrationV7ToV8_ShouldPreserveProjectsAndDefaultHarnessEmpty(t *testing
 	}
 	if proj.EffectiveHarness() != harness.Default {
 		t.Errorf("expected EffectiveHarness to fall back to default, got %q", proj.EffectiveHarness())
+	}
+}
+
+func TestMigrationV10ToV11_ShouldPreserveProjectsAndLeaveUseTrunkMergeFalse(t *testing.T) {
+	// Setup.
+	v10Data := `{
+		"version": 10,
+		"projects": {
+			"my-proj": {"name": "my-proj", "path": "/home/user/repo"}
+		},
+		"order": ["my-proj"]
+	}`
+
+	// Execute.
+	result, err := migrations.Migrate([]byte(v10Data), 10, 11)
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	var store storeData
+	if err := json.Unmarshal(result, &store); err != nil {
+		t.Fatalf("failed to parse migrated data: %v", err)
+	}
+	proj := store.Projects["my-proj"]
+	if proj == nil {
+		t.Fatal("expected my-proj to survive the migration")
+	}
+	if proj.UseTrunkMerge {
+		t.Error("expected UseTrunkMerge to default to false")
 	}
 }
 

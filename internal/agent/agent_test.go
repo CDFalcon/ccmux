@@ -159,6 +159,16 @@ func TestDisplayName_ShouldReturnFriendlyName_GivenWaitingCIStatus(t *testing.T)
 	}
 }
 
+func TestDisplayName_ShouldReturnFriendlyName_GivenWaitingMergeQueueStatus(t *testing.T) {
+	// Execute.
+	result := StatusWaitingMergeQueue.DisplayName()
+
+	// Assert.
+	if result != "waiting on merge queue" {
+		t.Errorf("expected 'waiting on merge queue', got '%s'", result)
+	}
+}
+
 func TestDisplayName_ShouldReturnFriendlyName_GivenCleaningUpStatus(t *testing.T) {
 	// Execute.
 	result := StatusCleaningUp.DisplayName()
