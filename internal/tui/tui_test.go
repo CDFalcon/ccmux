@@ -1535,6 +1535,84 @@ func TestDuplicateCIFailure_ShouldRecordResume_GivenAgentBelowThrottleThreshold(
 	}
 }
 
+func TestDuplicateCIFailure_ShouldNotInflateHistory_GivenBackToBackPollsMatchingLastSummary(t *testing.T) {
+	// Regression for the c13696a fallout: once the Stop hook started handing
+	// every end-of-turn back to the CI poller, an actively-working agent got
+	// polled every 30s while it was still pushing a fix. Each poll saw the
+	// same failure summary, hit the duplicate branch, and counted as a
+	// "resume" in CIResumeHistory — three of them in ~90s tipped the agent
+	// over the throttle threshold and flipped it to StatusReady (displayed
+	// as "idle") even though CI was still legitimately in progress.
+	//
+	// The fix gates the duplicate-failure recording on isAgentBusy. We can't
+	// drive a real tmux session here, so this test pins down the
+	// not-busy-path semantics that callers rely on: a single duplicate poll
+	// with no tmux activity advances history by exactly one entry (the
+	// original "stuck agent eventually escapes" behavior — preserved), and a
+	// second poll inside the same window stops at two, never silently
+	// double-counting. If a future refactor changes isAgentBusy's nil-tmux
+	// fallback, this test catches it.
+	m := newTestModelWithStoreAndQueue(t)
+	now := time.Now()
+	a := &agent.Agent{
+		ID:                    "agent-1",
+		Status:                agent.StatusWaitingCI,
+		PRURL:                 "https://github.com/owner/repo/pull/1",
+		CILastNotifiedSummary: "CI checks failed: lint",
+		CIResumeHistory:       []time.Time{now.Add(-1 * time.Minute)},
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	// First duplicate poll — agent has no tmux window, so isAgentBusy is
+	// false; record advances history to length 2.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusFailed,
+		summary:   "CI checks failed: lint",
+		prURL:     a.PRURL,
+		completed: 5,
+		total:     5,
+	})
+	_ = updated
+
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected agent to stay in WaitingCI; got %s", reloaded.Status)
+	}
+	if len(reloaded.CIResumeHistory) != 2 {
+		t.Fatalf("expected first duplicate poll to advance history to length 2, got %d", len(reloaded.CIResumeHistory))
+	}
+
+	// Refresh in-memory copy and drive a second duplicate poll. Still below
+	// threshold (3), so history advances to 3 — not skipped, not throttled,
+	// not double-counted.
+	m.agents = []*agent.Agent{reloaded}
+	m.ciChecking["agent-1"] = false
+	updated, _ = m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusFailed,
+		summary:   "CI checks failed: lint",
+		prURL:     a.PRURL,
+		completed: 5,
+		total:     5,
+	})
+	_ = updated
+
+	reloaded, err = m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if len(reloaded.CIResumeHistory) != 3 {
+		t.Errorf("expected second duplicate poll to advance history to length 3, got %d", len(reloaded.CIResumeHistory))
+	}
+}
+
 func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *testing.T) {
 	// Setup. Agent has already burned its 3 resume attempts inside the window.
 	// A further duplicate poll must escape the stuck state by throttling the
