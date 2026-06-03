@@ -72,6 +72,9 @@ var (
 	agentWaitingCIStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(ColorYellow))
 
+	agentWaitingMergeQueueStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color(ColorOrange))
+
 	agentCleaningUpStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(ColorLightBlue))
 

@@ -118,4 +118,10 @@ func init() {
 		store.Version = 10
 		return json.Marshal(store)
 	})
+	migrations.Register(10, func(data []byte) ([]byte, error) {
+		// v10 -> v11: add the optional `use_trunk_merge` field. Existing
+		// projects leave it unset (false), so they keep using the standard
+		// `gh pr merge` path when MergeWhenAccepted is on.
+		return data, nil
+	})
 }

@@ -59,6 +59,11 @@ const (
 	MarqueeTickRate       = 3
 	MarqueeSeparator      = "  \u00b7\u00b7\u00b7  "
 	MaxVisibleBranchItems = 10
+	// MaxVisibleEditFields caps how many edit-project form fields render
+	// at once. The form has 9 fields; on a standard ~24-line terminal
+	// after title/project-name/footer overhead a window of 5 keeps the
+	// focused field on screen without scrolling the help footer off.
+	MaxVisibleEditFields = 5
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
@@ -184,6 +189,12 @@ func renderMainView(m model) string {
 					ciLabel = fmt.Sprintf("waiting on CI - %d/%d checks left", remaining, p.Total)
 				}
 				status := agentWaitingCIStyle.Render(ciLabel)
+				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
+				b.WriteString(line)
+				b.WriteString("\n")
+			} else if a.Status == agent.StatusWaitingMergeQueue {
+				icon := agentWaitingMergeQueueStyle.Render("🚦")
+				status := agentWaitingMergeQueueStyle.Render("waiting on merge queue")
 				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
 				b.WriteString("\n")
@@ -810,17 +821,49 @@ func renderEditProjectView(m model) string {
 		{"Startup script:", m.editProjectForm.startupScriptInput.View()},
 		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 		{"Merge when accepted (yes/no):", m.editProjectForm.mergeWhenAcceptedInput.View()},
+		{"Use Trunk merge queue (yes/no):", m.editProjectForm.useTrunkMergeInput.View()},
 		{"Default harness (claude/codex):", m.editProjectForm.harnessInput.View()},
 		{"Draft PRs (yes/no):", m.editProjectForm.draftPRsInput.View()},
 	}
 
-	for i, f := range fields {
+	// Each field renders as label + bordered input + blank line ≈ 4-5
+	// lines, so 9 of them overflow most terminals. Show a window of
+	// MaxVisibleEditFields anchored on the focused field; tab/shift+tab
+	// (and up/down) scroll the window in lockstep with the focus.
+	totalFields := len(fields)
+	visibleStart := 0
+	visibleEnd := totalFields
+	if totalFields > MaxVisibleEditFields {
+		half := MaxVisibleEditFields / 2
+		visibleStart = m.editProjectForm.focusIndex - half
+		if visibleStart < 0 {
+			visibleStart = 0
+		}
+		visibleEnd = visibleStart + MaxVisibleEditFields
+		if visibleEnd > totalFields {
+			visibleEnd = totalFields
+			visibleStart = visibleEnd - MaxVisibleEditFields
+		}
+	}
+
+	if visibleStart > 0 {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more above", visibleStart)))
+		b.WriteString("\n\n")
+	}
+
+	for i := visibleStart; i < visibleEnd; i++ {
+		f := fields[i]
 		marker := "  "
 		if i == m.editProjectForm.focusIndex {
 			marker = "> "
 		}
 		b.WriteString(fmt.Sprintf("%s%s\n", marker, f.label))
 		b.WriteString(inputStyle.Render(f.input))
+		b.WriteString("\n\n")
+	}
+
+	if visibleEnd < totalFields {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  ↓ %d more below", totalFields-visibleEnd)))
 		b.WriteString("\n\n")
 	}
 
@@ -895,6 +938,8 @@ func getAgentStatusStyle(status agent.Status) lipgloss.Style {
 		return agentWaitingReviewStyle
 	case agent.StatusWaitingCI:
 		return agentWaitingCIStyle
+	case agent.StatusWaitingMergeQueue:
+		return agentWaitingMergeQueueStyle
 	case agent.StatusMerged:
 		return agentMergedStyle
 	case agent.StatusFailed:

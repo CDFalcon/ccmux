@@ -1001,6 +1001,9 @@ func agentStoppedCmd() *cobra.Command {
 				// Agent made a PR - it's already in queue, nothing to do
 			case agent.StatusWaitingCI:
 				// Agent is waiting for CI - timer will handle resume, nothing to do
+			case agent.StatusWaitingMergeQueue:
+				// Agent's PR is in the merge queue - polling will detect the
+				// merge and trigger cleanup, nothing to do here
 			case agent.StatusRunning:
 				// Agent stopped without making a PR - add to queue for review
 				agentStore.Update(agentID, func(ag *agent.Agent) {
@@ -1264,6 +1267,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			scriptPath, err := writeCIWaitPlaceholderScript(a.ID, a.WorktreePath, a.Task)
 			if err != nil {
 				logging.Log("recovery: failed to write CI wait placeholder script for %s: %v", a.ID, err)
+				continue
+			}
+			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
+
+		case a.Status == agent.StatusWaitingMergeQueue && worktreeExists:
+			scriptPath, err := writeMergeQueuePlaceholderScript(a.ID, a.WorktreePath, a.Task)
+			if err != nil {
+				logging.Log("recovery: failed to write merge-queue placeholder script for %s: %v", a.ID, err)
 				continue
 			}
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
@@ -1656,6 +1667,51 @@ echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
 echo ""
 echo -e "${GREEN}⏳ waiting on CI${RESET}"
 echo -e "${DIM}This agent is waiting for CI to complete. The orchestrator will resume it automatically.${RESET}"
+echo ""
+
+while true; do
+  sleep 3600
+done
+`, sq(agentID), sq(worktreePath), sq(task))
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
+func writeMergeQueuePlaceholderScript(agentID, worktreePath, task string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
+
+	sq := shellutil.Quote
+	script := fmt.Sprintf(`#!/bin/bash
+
+AGENT_ID=%s
+WORKTREE_PATH=%s
+TASK=%s
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+ORANGE="\033[38;5;208m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Task:${RESET} $TASK"
+echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
+echo ""
+echo -e "${ORANGE}🚦 waiting on merge queue${RESET}"
+echo -e "${DIM}This agent's PR is in the trunk.io merge queue. ccmux will clean up once it merges.${RESET}"
 echo ""
 
 while true; do
