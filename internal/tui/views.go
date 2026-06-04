@@ -1202,7 +1202,18 @@ func renderAgentInfoView(m model) string {
 	b.WriteString("\n\n")
 	b.WriteString(renderAgentSelector(m, "No agents running"))
 
-	help := helpFooter(ViewAgentInfo)
+	hasPR := m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) && m.agents[m.selectedIndex].PRURL != ""
+	parts := make([]string, 0, len(viewHelpCommands[ViewAgentInfo]))
+	for _, cmd := range viewHelpCommands[ViewAgentInfo] {
+		if cmd.HideFromFooter {
+			continue
+		}
+		if cmd.FooterText == "[b]rowser" && !hasPR {
+			continue
+		}
+		parts = append(parts, cmd.FooterText)
+	}
+	help := withHelpKey(strings.Join(parts, "  "))
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
