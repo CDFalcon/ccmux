@@ -195,6 +195,7 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	ViewAgentInfo: {
 		{FooterText: "[↑/↓/j/k] select", Description: "Navigate the agent list"},
 		{FooterText: "[enter] jump to agent", Description: "Jump to the selected agent's window"},
+		{FooterText: "[b]rowser", Description: "Open the agent's PR in a web browser (only when a PR exists)"},
 		{FooterText: "[esc] back", Description: "Return to main view"},
 	},
 	ViewUpdate: {

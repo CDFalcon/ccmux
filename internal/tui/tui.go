@@ -2624,6 +2624,13 @@ func (m model) handleAgentInfoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = ViewMain
 			return m, m.jumpToAgentCmd(selected)
 		}
+	case "b":
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
+			selected := m.agents[m.selectedIndex]
+			if selected.PRURL != "" {
+				openInBrowser(selected.PRURL)
+			}
+		}
 	}
 	return m, nil
 }
