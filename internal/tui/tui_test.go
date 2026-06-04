@@ -2098,3 +2098,95 @@ func TestCIPassed_ShouldTransitionToWaitingReview_GivenIdleAgent(t *testing.T) {
 		t.Error("expected a PR-ready queue item after CI pass for idle agent")
 	}
 }
+
+func TestMergeQueueWait_ShouldResumeForMergeConflict_GivenConflictingPR(t *testing.T) {
+	// Setup. Agent was accepted into trunk's merge queue and is parked in
+	// StatusWaitingMergeQueue. CI polling reports the PR as CONFLICTING —
+	// trunk dropped it from the queue for a merge conflict. Previously the
+	// poller bailed out for any non-merged result on a queue-waiting agent,
+	// so the agent sat in "waiting on merge queue" forever even though the
+	// queue had given up on it. The fix is to treat hasMergeConflict the
+	// same way the normal CI-wait path does: record a resume attempt, drop
+	// the stale progress indicator, and hand the agent to the merge-conflict
+	// fixup flow.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingMergeQueue,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciCheckProgress["agent-1"] = ciProgress{Completed: 3, Total: 5}
+
+	// Execute. Drive the poll result that reports a merge conflict.
+	updated, cmd := m.Update(ciCheckResultMsg{
+		agentID:          "agent-1",
+		status:           ciStatusPending,
+		prURL:            a.PRURL,
+		hasMergeConflict: true,
+	})
+	_ = updated
+
+	// Assert. recordResume must have advanced history (so a stuck PR that
+	// keeps reporting CONFLICTING eventually trips the throttle), the stale
+	// CI progress indicator must be cleared, and Update must return a cmd
+	// (the merge-conflict resume) instead of nil.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if len(reloaded.CIResumeHistory) != 1 {
+		t.Errorf("expected merge-conflict poll to record a resume (history length 1), got %d", len(reloaded.CIResumeHistory))
+	}
+	if _, exists := m.ciCheckProgress["agent-1"]; exists {
+		t.Error("expected ciCheckProgress cleared when resuming for merge conflict")
+	}
+	if cmd == nil {
+		t.Error("expected Update to return a resume command for merge-queue conflict, got nil")
+	}
+}
+
+func TestMergeQueueWait_ShouldStayParked_GivenNoMergeConflictOrMerged(t *testing.T) {
+	// Setup. Agent is parked in StatusWaitingMergeQueue. CI polling reports
+	// a failure (or new review) — both of which belong to trunk, not ccmux.
+	// The agent must stay parked: status unchanged, no resume recorded.
+	// This guards the inverse of the merge-conflict carve-out — we still
+	// don't want to react to in-queue CI noise.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingMergeQueue,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	// Execute. Drive a CI-failed poll with no merge conflict.
+	updated, cmd := m.Update(ciCheckResultMsg{
+		agentID: "agent-1",
+		status:  ciStatusFailed,
+		summary: "CI checks failed: lint",
+		prURL:   a.PRURL,
+	})
+	_ = updated
+
+	// Assert. Agent untouched, no cmd returned.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingMergeQueue {
+		t.Errorf("expected agent to stay parked in WaitingMergeQueue, got %s", reloaded.Status)
+	}
+	if len(reloaded.CIResumeHistory) != 0 {
+		t.Errorf("expected no resume recorded for in-queue CI noise, got history length %d", len(reloaded.CIResumeHistory))
+	}
+	if cmd != nil {
+		t.Error("expected Update to return nil cmd for in-queue CI failure")
+	}
+}
