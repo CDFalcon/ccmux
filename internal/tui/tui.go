@@ -1142,12 +1142,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		// Agents in StatusWaitingMergeQueue are parked until trunk merges (or
-		// rejects) the PR. Until that happens we only care about the
-		// `isMerged` branch above — CI-failed / new-review / merge-conflict
-		// flows belong to the queue, not to ccmux. Bail out so we don't
-		// resume the agent or knock it back to waiting-review.
+		// Agents in StatusWaitingMergeQueue are parked until trunk either
+		// merges the PR (handled by the `isMerged` branch above) or kicks
+		// it out of the queue. Merge conflicts are the one in-queue signal
+		// we still need to act on — `gh pr view --json mergeable` returns
+		// CONFLICTING as soon as the PR can't fast-forward, and without
+		// this branch the agent would sit in "waiting on merge queue"
+		// forever instead of being resumed to fix the conflict the way
+		// normal CI waiters are. CI-failed / new-review flows still belong
+		// to the queue, not ccmux, so we skip those.
 		if currentAgent != nil && currentAgent.Status == agent.StatusWaitingMergeQueue {
+			if msg.hasMergeConflict {
+				if m.shouldThrottleResume(currentAgent) {
+					m.throttleAgent(msg.agentID)
+					return m, m.refreshCmd()
+				}
+				m.recordResume(msg.agentID)
+				delete(m.ciCheckProgress, msg.agentID)
+				return m, m.resumeAgentForMergeConflictCmd(currentAgent)
+			}
 			return m, nil
 		}
 		wasWaitingReview := currentAgent != nil && currentAgent.Status == agent.StatusWaitingReview
