@@ -2190,3 +2190,132 @@ func TestMergeQueueWait_ShouldStayParked_GivenNoMergeConflictOrMerged(t *testing
 		t.Error("expected Update to return nil cmd for in-queue CI failure")
 	}
 }
+
+// setupConflictTestRepo creates a bare remote with two commits on main and a
+// feature branch that conflicts with the latest main, then clones it into a
+// local worktree positioned on the feature branch. Returns the worktree path.
+func setupConflictTestRepo(t *testing.T, conflict bool) string {
+	t.Helper()
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	local := filepath.Join(root, "local")
+
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if dir != "" {
+			cmd.Dir = dir
+		}
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args[1:], " "), err, out)
+		}
+	}
+
+	run("", "git", "init", "--bare", "-b", "main", remote)
+	run("", "git", "clone", remote, local)
+	run(local, "git", "config", "user.email", "test@test.com")
+	run(local, "git", "config", "user.name", "test")
+
+	conflictFile := filepath.Join(local, "shared.txt")
+	if err := os.WriteFile(conflictFile, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	run(local, "git", "add", "shared.txt")
+	run(local, "git", "commit", "-m", "base")
+	run(local, "git", "push", "origin", "main")
+
+	// Feature branch edits the shared file.
+	run(local, "git", "checkout", "-b", "feature")
+	if err := os.WriteFile(conflictFile, []byte("feature change\n"), 0o644); err != nil {
+		t.Fatalf("write feature: %v", err)
+	}
+	run(local, "git", "commit", "-am", "feature edit")
+
+	// Master moves forward. When `conflict` is true the new master commit
+	// touches the same line; when false it edits an unrelated file.
+	run(local, "git", "checkout", "main")
+	if conflict {
+		if err := os.WriteFile(conflictFile, []byte("main change\n"), 0o644); err != nil {
+			t.Fatalf("write main: %v", err)
+		}
+		run(local, "git", "commit", "-am", "main edit (conflicting)")
+	} else {
+		unrelated := filepath.Join(local, "other.txt")
+		if err := os.WriteFile(unrelated, []byte("unrelated\n"), 0o644); err != nil {
+			t.Fatalf("write unrelated: %v", err)
+		}
+		run(local, "git", "add", "other.txt")
+		run(local, "git", "commit", "-m", "main edit (clean)")
+	}
+	run(local, "git", "push", "origin", "main")
+
+	// Put the worktree back on the feature branch — that's what `git
+	// merge-tree HEAD origin/main` will compare against the latest main.
+	run(local, "git", "checkout", "feature")
+	return local
+}
+
+func TestLocalWorktreeHasMergeConflict_ShouldReturnTrue_GivenConflictingChange(t *testing.T) {
+	// Setup. Feature branch and refreshed master both touch the same line of
+	// shared.txt — a real conflict against `origin/main`.
+	worktree := setupConflictTestRepo(t, true)
+
+	// Execute.
+	result := localWorktreeHasMergeConflict(worktree, "main")
+
+	// Assert.
+	if !result {
+		t.Error("expected local merge-tree to detect a conflict, got false")
+	}
+}
+
+func TestLocalWorktreeHasMergeConflict_ShouldReturnFalse_GivenCleanMaster(t *testing.T) {
+	// Setup. Master moves forward by editing an unrelated file. The feature
+	// branch and origin/main can be merged without conflict.
+	worktree := setupConflictTestRepo(t, false)
+
+	// Execute.
+	result := localWorktreeHasMergeConflict(worktree, "main")
+
+	// Assert.
+	if result {
+		t.Error("expected clean merge to NOT be reported as a conflict")
+	}
+}
+
+func TestLocalWorktreeHasMergeConflict_ShouldReturnFalse_GivenMissingWorktree(t *testing.T) {
+	// Setup. No worktree path means no place to run git; the helper must
+	// short-circuit instead of trying to invoke git from an unknown dir.
+	// Same for an empty base branch.
+	if localWorktreeHasMergeConflict("", "main") {
+		t.Error("expected false for empty worktree path")
+	}
+	if localWorktreeHasMergeConflict("/tmp", "") {
+		t.Error("expected false for empty base branch")
+	}
+	if localWorktreeHasMergeConflict("/tmp", "origin/") {
+		t.Error("expected false when base branch reduces to empty after stripping origin/ prefix")
+	}
+}
+
+func TestLocalWorktreeHasMergeConflict_ShouldStripOriginPrefix_GivenBaseBranchWithRemote(t *testing.T) {
+	// Setup. Many call sites store baseBranch as `origin/main` (mirroring
+	// `git push -u origin <branch>` output). The helper has to strip that
+	// prefix before passing the branch to `git fetch`, otherwise fetch will
+	// fail and we silently return false.
+	worktree := setupConflictTestRepo(t, true)
+
+	// Execute.
+	result := localWorktreeHasMergeConflict(worktree, "origin/main")
+
+	// Assert.
+	if !result {
+		t.Error("expected conflict to be detected even when baseBranch carries an origin/ prefix")
+	}
+}

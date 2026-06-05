@@ -1027,7 +1027,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !checked || time.Since(lastCheck) >= ciPollInterval {
 						m.ciChecking[a.ID] = true
 						m.ciLastChecked[a.ID] = time.Now()
-						cmds = append(cmds, checkPRChecksCmd(a.ID, a.PRURL, a.WorktreePath, a.CIWaitAt))
+						// Use the local `git merge-tree` fallback for queued PRs:
+						// GitHub's `mergeable` field rarely flips to CONFLICTING
+						// while a PR sits in trunk's queue, so without a local
+						// check the agent can sit in WaitingMergeQueue forever
+						// after master moves forward.
+						useLocalConflictCheck := a.Status == agent.StatusWaitingMergeQueue
+						cmds = append(cmds, checkPRChecksCmd(a.ID, a.PRURL, a.WorktreePath, a.BaseBranch, a.CIWaitAt, useLocalConflictCheck))
 					}
 				}
 			}
@@ -3204,6 +3210,60 @@ func prHasMergeConflict(prURL string) bool {
 	return resp.Mergeable == "CONFLICTING"
 }
 
+// localWorktreeHasMergeConflict reports whether the agent's worktree HEAD
+// would hit a merge conflict against the latest origin/<baseBranch>. It
+// fetches the base branch first, then runs `git merge-tree` to perform an
+// in-memory 3-way merge; conflict markers in the output mean the merge
+// can't fast-forward.
+//
+// This is the local-truth backstop for the case where GitHub's `mergeable`
+// field is stale or pegged at UNKNOWN. Most painfully that happens for PRs
+// parked in trunk's merge queue: trunk doesn't push to the PR branch when
+// master moves forward, so nothing nudges GitHub to recompute mergeability
+// and the queued PR can sit at `mergeable: MERGEABLE` long after a real
+// conflict has appeared. Without this fallback the agent stays parked in
+// StatusWaitingMergeQueue forever.
+func localWorktreeHasMergeConflict(worktreePath, baseBranch string) bool {
+	if worktreePath == "" || baseBranch == "" {
+		return false
+	}
+	base := strings.TrimPrefix(baseBranch, "origin/")
+	if base == "" {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "fetch", "--quiet", "origin", base)
+	if err := fetchCmd.Run(); err != nil {
+		return false
+	}
+
+	mbCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-base", "HEAD", "origin/"+base)
+	mbOutput, err := mbCmd.Output()
+	if err != nil {
+		return false
+	}
+	mergeBase := strings.TrimSpace(string(mbOutput))
+	if mergeBase == "" {
+		return false
+	}
+
+	// `git merge-tree <base> <branch1> <branch2>` prints a unified diff whose
+	// hunks contain `<<<<<<<` markers when the merge conflicts; exit code
+	// stays 0 either way. Newer git versions support `--write-tree` and a
+	// different output shape, but the legacy form below is present in every
+	// git we ship against.
+	mtCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-tree", mergeBase, "HEAD", "origin/"+base)
+	mtOutput, err := mtCmd.Output()
+	if err != nil {
+		return false
+	}
+
+	return strings.Contains(string(mtOutput), "<<<<<<<")
+}
+
 func parsePRURL(prURL string) (owner, repo, prNumber string, err error) {
 	parts := strings.Split(prURL, "/")
 	if len(parts) < 2 {
@@ -3307,7 +3367,7 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 	return ciStatusPassed, nil, completed, total
 }
 
-func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) tea.Cmd {
+func checkPRChecksCmd(agentID, prURL, worktreePath, baseBranch string, ciWaitAt time.Time, useLocalConflictCheck bool) tea.Cmd {
 	return func() tea.Msg {
 		owner, repo, prNumber, err := parsePRURL(prURL)
 		if err != nil {
@@ -3334,6 +3394,17 @@ func checkPRChecksCmd(agentID, prURL, worktreePath string, ciWaitAt time.Time) t
 		}
 
 		hasMergeConflict := resp.Mergeable == "CONFLICTING"
+		// `gh pr view --json mergeable` is GitHub's lazily-computed answer.
+		// For PRs parked in trunk's merge queue, nothing pushes to the PR
+		// branch when master moves forward, so GitHub may sit at MERGEABLE
+		// (or UNKNOWN) indefinitely even after a real conflict shows up.
+		// Fall back to a local `git merge-tree` from the worktree so we can
+		// resume the agent to fix the conflict instead of leaving it parked.
+		if !hasMergeConflict && useLocalConflictCheck {
+			if localWorktreeHasMergeConflict(worktreePath, baseBranch) {
+				hasMergeConflict = true
+			}
+		}
 
 		hasNewReview := false
 		if !ciWaitAt.IsZero() {
