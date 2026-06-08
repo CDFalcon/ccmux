@@ -1136,7 +1136,7 @@ func cleanupCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return doCleanup(args[0], "Cleaned up")
+			return doCleanup(args[0], "Cleaned up", false)
 		},
 	}
 }
@@ -1147,12 +1147,12 @@ func killCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return doCleanup(args[0], "Killed")
+			return doCleanup(args[0], "Killed", true)
 		},
 	}
 }
 
-func doCleanup(agentID, action string) error {
+func doCleanup(agentID, action string, closePR bool) error {
 	sessionID := getCurrentSessionID()
 
 	agentStore, err := agent.NewStore(sessionID)
@@ -1171,6 +1171,14 @@ func doCleanup(agentID, action string) error {
 		if len(costs) > 0 {
 			dcStore.AddCosts(costs)
 		}
+	}
+
+	// A kill abandons the agent's work, so close any PR it opened. Other
+	// callers (post-merge / post-reject cleanup) already handled the PR and
+	// must not touch it again — `gh pr close` errors on a merged or
+	// already-closed PR.
+	if closePR && a.PRURL != "" {
+		closeAgentPR(a.PRURL)
 	}
 
 	runTeardownScript(a.ProjectName, a.WorktreePath, agentID)
@@ -1206,6 +1214,22 @@ func doCleanup(agentID, action string) error {
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
+}
+
+// closeAgentPR closes the agent's PR and deletes the remote branch.
+//
+// Best-effort: errors are logged but never fail the kill — the PR might
+// already be closed, the user might lack permission, or `gh` might not be
+// authenticated. None of those should block tearing down the agent's
+// worktree, tmux window, and local branch.
+func closeAgentPR(prURL string) {
+	cmd := exec.Command("gh", "pr", "close", prURL, "--delete-branch")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to close PR %s: %s: %v\n", prURL, strings.TrimSpace(string(output)), err)
+		return
+	}
+	fmt.Printf("Closed PR %s\n", prURL)
 }
 
 func runTeardownScript(projectName, worktreePath, agentID string) {
