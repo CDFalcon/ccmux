@@ -126,6 +126,10 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 				!strings.Contains(content, `ccmux trust-codex-project "$WORKTREE_PATH"`) {
 				t.Errorf("script for %s should include the Codex trust gate", h)
 			}
+			if !strings.Contains(content, "hooks/pre-push") ||
+				!strings.Contains(content, "ccmux git pre-push hook") {
+				t.Errorf("script for %s should include the Codex Git push hook installer", h)
+			}
 			// The Claude hook block is gated behind the harness check; only
 			// Claude should actually install hooks.
 			hasHookInstall := strings.Contains(content, "Installing Claude Code hooks")
@@ -386,6 +390,10 @@ func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 			if !strings.Contains(content, `if [ "$HARNESS" = "codex" ]; then`) ||
 				!strings.Contains(content, `ccmux trust-codex-project "$WORKTREE_PATH"`) {
 				t.Errorf("recovery script for %s should include the Codex trust gate", h)
+			}
+			if !strings.Contains(content, "hooks/pre-push") ||
+				!strings.Contains(content, "ccmux git pre-push hook") {
+				t.Errorf("recovery script for %s should include the Codex Git push hook installer", h)
 			}
 			if !strings.Contains(content, "The original task was:") {
 				t.Errorf("recovery script for %s should embed the original task", h)

@@ -348,6 +348,18 @@ func TestResumeScripts_ShouldProduceValidBash_ForEveryHarness(t *testing.T) {
 				if out, err := exec.Command("bash", "-n", path).CombinedOutput(); err != nil {
 					t.Errorf("%s failed bash syntax check: %v\n%s", path, err, out)
 				}
+				if h == harness.Codex {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read generated script: %v", err)
+					}
+					content := string(data)
+					if !strings.Contains(content, "HARNESS='codex'") ||
+						!strings.Contains(content, "hooks/pre-push") ||
+						!strings.Contains(content, "ccmux git pre-push hook") {
+						t.Errorf("%s should install the Codex Git push hook", path)
+					}
+				}
 			}
 		})
 	}

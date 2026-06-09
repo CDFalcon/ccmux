@@ -15,6 +15,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/harness"
+	"github.com/CDFalcon/ccmux/internal/hookscript"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/project"
@@ -750,6 +751,8 @@ else
   echo ""
 fi
 
+%s
+
 # Claude Code hook installation + directory trust. These are specific to the
 # Claude harness; other harnesses (e.g. Codex) ignore .claude/ entirely.
 if [ "$HARNESS" = "claude" ]; then
@@ -976,7 +979,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
+`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), hookscript.InstallCodexPrePush, sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1698,6 +1701,8 @@ echo ""
 
 cd "$WORKTREE_PATH"
 
+%s
+
 # Reinstall Claude Code hooks (Claude harness only).
 if [ "$HARNESS" = "claude" ]; then
 mkdir -p .claude/hooks
@@ -1859,7 +1864,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), sq(promptsFilePath(agentID)), h.ContinueCommand())
+`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), hookscript.InstallCodexPrePush, sq(promptsFilePath(agentID)), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

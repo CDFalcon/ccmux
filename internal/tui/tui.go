@@ -19,6 +19,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/harness"
+	"github.com/CDFalcon/ccmux/internal/hookscript"
 	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
@@ -3221,8 +3222,11 @@ set -e
 AGENT_ID=%s
 WORKTREE_PATH=%s
 PR_URL=%s
+HARNESS=%s
 
 cd "$WORKTREE_PATH"
+
+%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -3240,7 +3244,7 @@ unset CLAUDECODE
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL), h.ResumeWithPromptPrefix())
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(string(h)), hookscript.InstallCodexPrePush, h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3662,8 +3666,11 @@ AGENT_ID=%s
 WORKTREE_PATH=%s
 PR_URL=%s
 FAILURE_SUMMARY=%s
+HARNESS=%s
 
 cd "$WORKTREE_PATH"
+
+%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -3681,7 +3688,7 @@ unset CLAUDECODE
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary), h.ResumeWithPromptPrefix())
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary), sq(string(h)), hookscript.InstallCodexPrePush, h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3810,8 +3817,11 @@ AGENT_ID=%s
 WORKTREE_PATH=%s
 PR_URL=%s
 BASE_BRANCH=%s
+HARNESS=%s
 
 cd "$WORKTREE_PATH"
+
+%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -3829,7 +3839,7 @@ unset CLAUDECODE
 
 ccmux ci-wait "$PR_URL" || true
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch), h.ResumeWithPromptPrefix())
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch), sq(string(h)), hookscript.InstallCodexPrePush, h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3994,8 +4004,11 @@ AGENT_ID=%s
 WORKTREE_PATH=%s
 TASK=%s
 DRAFT_PRS=%s
+HARNESS=%s
 
 cd "$WORKTREE_PATH"
+
+%s
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -4048,7 +4061,7 @@ fi
 %s
 
 ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
+`, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(string(h)), hookscript.InstallCodexPrePush, sq(baseBranch), sq(promptsFile), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
