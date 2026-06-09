@@ -67,17 +67,100 @@ func (m *Manager) CreateSessionWithCommand(workingDir, command string) error {
 	return nil
 }
 
-// ForwardEnv sets environment variables from the current process into the tmux
-// session so they are available to commands spawned inside it. This is necessary
-// because the tmux server may have been started in a different environment.
+// ForwardEnv synchronises the tmux session environment with the current
+// process environment so commands spawned inside the session see the same
+// variables as the shell that launched ccmux. This is necessary because the
+// tmux server may have been started in a different environment.
+//
+// Copying the current variables in is not enough: the server's global
+// environment (inherited from whichever shell first started the server) and
+// any session environment left over from a previous launch can contain
+// variables that are no longer set in the launching shell. Those are marked
+// for removal so tmux strips them from the environment of new processes,
+// instead of leaking stale values into every pane.
 func (m *Manager) ForwardEnv() {
+	current := make(map[string]string)
 	for _, entry := range os.Environ() {
 		if idx := strings.Index(entry, "="); idx > 0 {
-			key := entry[:idx]
-			val := entry[idx+1:]
-			exec.Command("tmux", "set-environment", "-t", m.sessionName, key, val).Run()
+			current[entry[:idx]] = entry[idx+1:]
 		}
 	}
+	for _, name := range m.staleEnvNames(current) {
+		exec.Command("tmux", "set-environment", "-t", m.sessionName, "-r", name).Run()
+	}
+	for key, val := range current {
+		if tmuxManagedVars[key] {
+			continue
+		}
+		exec.Command("tmux", "set-environment", "-t", m.sessionName, key, val).Run()
+	}
+}
+
+// tmuxManagedVars are set by tmux itself for every pane it spawns. They are
+// never forwarded or marked stale: the launching shell legitimately lacks
+// them (or holds values for a different server/pane).
+var tmuxManagedVars = map[string]bool{
+	"TMUX":      true,
+	"TMUX_PANE": true,
+}
+
+// staleEnvNames returns the variables visible in the tmux server's global
+// environment or in this session's environment that are absent from the
+// current process environment.
+func (m *Manager) staleEnvNames(current map[string]string) []string {
+	seen := make(map[string]bool)
+	var stale []string
+	for _, args := range [][]string{
+		{"show-environment", "-g"},
+		{"show-environment", "-t", m.sessionName},
+	} {
+		output, err := exec.Command("tmux", args...).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			name, ok := parseEnvName(line)
+			if !ok || tmuxManagedVars[name] || seen[name] {
+				continue
+			}
+			if _, isCurrent := current[name]; isCurrent {
+				continue
+			}
+			seen[name] = true
+			stale = append(stale, name)
+		}
+	}
+	return stale
+}
+
+// parseEnvName extracts the variable name from one line of show-environment
+// output: "NAME=value" for set variables, or "-NAME" for variables already
+// marked for removal. Lines that don't look like a variable definition (such
+// as continuation lines of multi-line values) are rejected.
+func parseEnvName(line string) (string, bool) {
+	if rest, ok := strings.CutPrefix(line, "-"); ok && isValidEnvName(rest) {
+		return rest, true
+	}
+	idx := strings.Index(line, "=")
+	if idx <= 0 || !isValidEnvName(line[:idx]) {
+		return "", false
+	}
+	return line[:idx], true
+}
+
+func isValidEnvName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Manager) SourceUserConfig() error {
