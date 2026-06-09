@@ -1879,6 +1879,102 @@ func TestDuplicateCIFailure_ShouldNotInflateHistory_GivenBackToBackPollsMatching
 	}
 }
 
+func TestMergeConflict_ShouldResumeAndRecord_GivenIdleWaitingCIAgent(t *testing.T) {
+	// Regression companion for the merge-conflict busy gate. Since b59f660
+	// added StatusRunning to the CI poll set, an agent that was just resumed
+	// to resolve a merge conflict kept getting polled every 30s while it
+	// worked; GitHub still reported CONFLICTING (the resolution wasn't pushed
+	// yet), and each poll killed the pane and re-prompted the agent mid-fix —
+	// burning through the entire throttle budget (5 resumes) in ~2 minutes
+	// without the agent ever getting a chance to finish.
+	//
+	// The fix gates the merge-conflict (and new-review) resume on
+	// isAgentBusy, mirroring the duplicate-CI-failure gate from a7bb8f8. We
+	// can't drive a real tmux session here, so this test pins the
+	// not-busy-path semantics callers rely on: an idle agent (no tmux
+	// window → isAgentBusy false) must still be resumed exactly as before —
+	// resume recorded, progress cleared, resume cmd returned. If a future
+	// refactor changes isAgentBusy's nil-tmux fallback, this catches it.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciCheckProgress["agent-1"] = ciProgress{Completed: 3, Total: 5}
+
+	// Execute. Drive a poll result reporting a merge conflict.
+	updated, cmd := m.Update(ciCheckResultMsg{
+		agentID:          "agent-1",
+		status:           ciStatusPending,
+		prURL:            a.PRURL,
+		hasMergeConflict: true,
+	})
+	_ = updated
+
+	// Assert.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if len(reloaded.CIResumeHistory) != 1 {
+		t.Errorf("expected merge-conflict poll to record a resume (history length 1), got %d", len(reloaded.CIResumeHistory))
+	}
+	if _, exists := m.ciCheckProgress["agent-1"]; exists {
+		t.Error("expected ciCheckProgress cleared when resuming for merge conflict")
+	}
+	if cmd == nil {
+		t.Error("expected Update to return a resume command for merge conflict, got nil")
+	}
+}
+
+func TestMergeConflict_ShouldThrottle_GivenAgentAtThrottleThreshold(t *testing.T) {
+	// An idle agent whose PR keeps reporting CONFLICTING after exhausting its
+	// resume attempts must be parked for manual intervention, not resumed a
+	// sixth time.
+	m := newTestModelWithStoreAndQueue(t)
+	now := time.Now()
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+		CIResumeHistory: []time.Time{
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
+			now.Add(-1 * time.Minute),
+			now.Add(-30 * time.Second),
+		},
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:          "agent-1",
+		status:           ciStatusPending,
+		prURL:            a.PRURL,
+		hasMergeConflict: true,
+	})
+	_ = updated
+
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected throttled agent to flip to StatusReady, got %s", reloaded.Status)
+	}
+	if len(reloaded.CIResumeHistory) != 5 {
+		t.Errorf("expected throttled poll not to record another resume, got history length %d", len(reloaded.CIResumeHistory))
+	}
+}
+
 func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *testing.T) {
 	// Setup. Agent has already burned its resume attempts inside the 5-minute
 	// throttle window. A further duplicate poll must escape the stuck state by
