@@ -816,8 +816,20 @@ func (m model) refreshCmd() tea.Cmd {
 				isIdle := now.Sub(activity) > idleThreshold
 				_, hasIdleItem := idleItemByAgent[a.ID]
 
-				if isIdle && !hasIdleItem {
+				if isIdle {
 					if isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, procTicks, m.prevCPUTicks, m.clkTck) {
+						continue
+					}
+					if a.PRURL != "" {
+						m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+							ag.Status = agent.StatusWaitingCI
+							ag.CIWaitAt = time.Now()
+						})
+						m.queueManager.RemoveByAgentAndType(a.ID, queue.ItemTypeIdle)
+						changed = true
+						continue
+					}
+					if hasIdleItem {
 						continue
 					}
 					m.agentStore.Update(a.ID, func(ag *agent.Agent) {
@@ -832,6 +844,17 @@ func (m model) refreshCmd() tea.Cmd {
 			} else if a.Status == agent.StatusReady {
 				if prReadyByAgent[a.ID] {
 					continue
+				}
+				if a.PRURL != "" {
+					if idleItem, hasIdleItem := idleItemByAgent[a.ID]; hasIdleItem && idleItem.Summary == "Agent idle - waiting for input" && idleItem.Details == "" {
+						m.agentStore.Update(a.ID, func(ag *agent.Agent) {
+							ag.Status = agent.StatusWaitingCI
+							ag.CIWaitAt = time.Now()
+						})
+						m.queueManager.Remove(idleItem.ID)
+						changed = true
+						continue
+					}
 				}
 				if now.Sub(a.UpdatedAt) < readyGracePeriod {
 					continue

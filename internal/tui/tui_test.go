@@ -15,6 +15,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
+	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -1490,6 +1491,268 @@ func newTestModelWithStoreAndQueue(t *testing.T) model {
 	m.ciChecking = make(map[string]bool)
 	m.ciLastChecked = make(map[string]time.Time)
 	return m
+}
+
+func installFakeTmux(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+if [ "$1" = "display-message" ]; then
+  case "$5" in
+    '#{window_activity}') echo "${FAKE_TMUX_WINDOW_ACTIVITY:-0}" ;;
+    '#{pane_pid}') echo "${FAKE_TMUX_PANE_PID:-999999}" ;;
+    '#{pane_dead}') echo "${FAKE_TMUX_PANE_DEAD:-0}" ;;
+    *) echo "0" ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func newRefreshTestModel(t *testing.T) model {
+	t.Helper()
+
+	m := newTestModelWithStoreAndQueue(t)
+	projectStore, err := project.NewStore()
+	if err != nil {
+		t.Fatalf("failed to create project store: %v", err)
+	}
+	promptStore, err := prompt.NewStore()
+	if err != nil {
+		t.Fatalf("failed to create prompt store: %v", err)
+	}
+	m.projectStore = projectStore
+	m.promptStore = promptStore
+	m.tmuxManager = tmux.NewManager("test-session")
+	return m
+}
+
+func TestRefreshCmd_ShouldHandIdleRunningAgentWithPRToCI(t *testing.T) {
+	// Setup. Codex has no PostToolUse hook, so a Codex-backed agent with a
+	// known PR can sit idle before the launcher script's trailing `ccmux
+	// ci-wait` runs. The refresh loop must hand that state to the CI poller,
+	// not surface a generic idle item.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", "0")
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+
+	m := newRefreshTestModel(t)
+	before := time.Now()
+	a := &agent.Agent{
+		ID:           "agent-1",
+		Status:       agent.StatusRunning,
+		PRURL:        "https://github.com/owner/repo/pull/1",
+		WorktreePath: t.TempDir(),
+		TmuxWindow:   "@1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+
+	// Execute.
+	msg := m.refreshCmd()()
+	if _, ok := msg.(refreshMsg); !ok {
+		t.Fatalf("expected refreshMsg, got %T", msg)
+	}
+
+	// Assert.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected idle running agent with PR to wait on CI, got %s", reloaded.Status)
+	}
+	if reloaded.CIWaitAt.Before(before) {
+		t.Errorf("expected CIWaitAt to be refreshed, got %v before %v", reloaded.CIWaitAt, before)
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	for _, item := range items {
+		if item.AgentID == "agent-1" && item.Type == queue.ItemTypeIdle {
+			t.Fatalf("expected no idle queue item, got %+v", item)
+		}
+	}
+}
+
+func TestRefreshCmd_ShouldRepairReadyAgentWithPRAndPlainIdleItem(t *testing.T) {
+	// Setup. This mirrors the observed stale state: the PR is known and CI is
+	// still live, but the refresh idle detector parked the agent under the
+	// generic idle queue.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+
+	m := newRefreshTestModel(t)
+	before := time.Now()
+	a := &agent.Agent{
+		ID:           "agent-1",
+		Status:       agent.StatusReady,
+		PRURL:        "https://github.com/owner/repo/pull/1",
+		WorktreePath: t.TempDir(),
+		TmuxWindow:   "@1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	if _, err := m.queueManager.Add(queue.ItemTypeIdle, a.ID, "Agent idle - waiting for input", ""); err != nil {
+		t.Fatalf("failed to seed idle queue item: %v", err)
+	}
+
+	// Execute.
+	msg := m.refreshCmd()()
+	if _, ok := msg.(refreshMsg); !ok {
+		t.Fatalf("expected refreshMsg, got %T", msg)
+	}
+
+	// Assert.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected stale ready agent with PR to wait on CI, got %s", reloaded.Status)
+	}
+	if reloaded.CIWaitAt.Before(before) {
+		t.Errorf("expected CIWaitAt to be refreshed, got %v before %v", reloaded.CIWaitAt, before)
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	for _, item := range items {
+		if item.AgentID == "agent-1" && item.Type == queue.ItemTypeIdle {
+			t.Fatalf("expected stale idle queue item removed, got %+v", item)
+		}
+	}
+}
+
+func TestRefreshCmd_ShouldPreserveNearbyIdleStates(t *testing.T) {
+	// Setup. These cases guard the states adjacent to the CI handoff so the
+	// repair path does not turn unrelated idle/manual/review states into CI.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+
+	type seedQueue struct {
+		typ     queue.ItemType
+		summary string
+		details string
+	}
+	cases := []struct {
+		name          string
+		status        agent.Status
+		prURL         string
+		windowActive  bool
+		queues        []seedQueue
+		wantStatus    agent.Status
+		wantIdleCount int
+		wantPRCount   int
+	}{
+		{
+			name:          "idle running agent without PR becomes ordinary idle",
+			status:        agent.StatusRunning,
+			wantStatus:    agent.StatusReady,
+			wantIdleCount: 1,
+		},
+		{
+			name:         "busy running agent with PR is not reclassified",
+			status:       agent.StatusRunning,
+			prURL:        "https://github.com/owner/repo/pull/1",
+			windowActive: true,
+			wantStatus:   agent.StatusRunning,
+		},
+		{
+			name:          "throttled ready PR item stays manual",
+			status:        agent.StatusReady,
+			prURL:         "https://github.com/owner/repo/pull/2",
+			queues:        []seedQueue{{typ: queue.ItemTypeIdle, summary: "Throttled: CI checks failed: lint", details: "https://github.com/owner/repo/pull/2"}},
+			wantStatus:    agent.StatusReady,
+			wantIdleCount: 1,
+		},
+		{
+			name:        "ready PR with PR-ready item is not changed",
+			status:      agent.StatusReady,
+			prURL:       "https://github.com/owner/repo/pull/3",
+			queues:      []seedQueue{{typ: queue.ItemTypePRReady, summary: "PR ready", details: "https://github.com/owner/repo/pull/3"}},
+			wantStatus:  agent.StatusReady,
+			wantPRCount: 1,
+		},
+		{
+			name:          "ready no-PR idle item remains ordinary idle",
+			status:        agent.StatusReady,
+			queues:        []seedQueue{{typ: queue.ItemTypeIdle, summary: "Agent idle - waiting for input"}},
+			wantStatus:    agent.StatusReady,
+			wantIdleCount: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.windowActive {
+				t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", fmt.Sprintf("%d", time.Now().Unix()))
+			} else {
+				t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", "0")
+			}
+
+			m := newRefreshTestModel(t)
+			a := &agent.Agent{
+				ID:           "agent-1",
+				Status:       tc.status,
+				PRURL:        tc.prURL,
+				WorktreePath: t.TempDir(),
+				TmuxWindow:   "@1",
+			}
+			if err := m.agentStore.Create(a); err != nil {
+				t.Fatalf("failed to seed agent: %v", err)
+			}
+			for _, q := range tc.queues {
+				if _, err := m.queueManager.Add(q.typ, a.ID, q.summary, q.details); err != nil {
+					t.Fatalf("failed to seed queue item: %v", err)
+				}
+			}
+
+			msg := m.refreshCmd()()
+			if _, ok := msg.(refreshMsg); !ok {
+				t.Fatalf("expected refreshMsg, got %T", msg)
+			}
+
+			reloaded, err := m.agentStore.Get(a.ID)
+			if err != nil {
+				t.Fatalf("failed to reload agent: %v", err)
+			}
+			if reloaded.Status != tc.wantStatus {
+				t.Fatalf("status = %s, want %s", reloaded.Status, tc.wantStatus)
+			}
+
+			items, err := m.queueManager.List()
+			if err != nil {
+				t.Fatalf("failed to list queue: %v", err)
+			}
+			var idleCount, prReadyCount int
+			for _, item := range items {
+				switch item.Type {
+				case queue.ItemTypeIdle:
+					idleCount++
+				case queue.ItemTypePRReady:
+					prReadyCount++
+				}
+			}
+			if idleCount != tc.wantIdleCount {
+				t.Fatalf("idle queue count = %d, want %d", idleCount, tc.wantIdleCount)
+			}
+			if prReadyCount != tc.wantPRCount {
+				t.Fatalf("PR-ready queue count = %d, want %d", prReadyCount, tc.wantPRCount)
+			}
+		})
+	}
 }
 
 func TestDuplicateCIFailure_ShouldRecordResume_GivenAgentBelowThrottleThreshold(t *testing.T) {
