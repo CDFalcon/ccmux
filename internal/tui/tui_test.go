@@ -1284,15 +1284,17 @@ func TestShouldThrottleResume_ShouldReturnFalse_GivenFewerThanMaxAttempts(t *tes
 }
 
 func TestShouldThrottleResume_ShouldReturnTrue_GivenMaxAttemptsWithinWindow(t *testing.T) {
-	// Setup.
+	// Setup. Five attempts inside the 5-minute throttle window — the threshold.
 	m := newTestModelWithStore(t)
 	now := time.Now()
 	a := &agent.Agent{
 		ID: "agent-1",
 		CIResumeHistory: []time.Time{
-			now.Add(-10 * time.Minute),
-			now.Add(-5 * time.Minute),
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
 			now.Add(-1 * time.Minute),
+			now.Add(-30 * time.Second),
 		},
 	}
 
@@ -1301,7 +1303,7 @@ func TestShouldThrottleResume_ShouldReturnTrue_GivenMaxAttemptsWithinWindow(t *t
 
 	// Assert.
 	if !result {
-		t.Error("expected throttle with 3 attempts within 15 minutes")
+		t.Errorf("expected throttle with %d attempts within %s, got false", ciResumeMaxAttempts, ciResumeWindow)
 	}
 }
 
@@ -1358,11 +1360,12 @@ func TestShouldThrottleResume_ShouldPruneOldEntries_GivenExpiredTimestamps(t *te
 }
 
 func TestRecordResume_ShouldAppendTimestamp_GivenExistingHistory(t *testing.T) {
-	// Setup.
+	// Setup. Seed an entry well inside the 5-minute throttle window so
+	// recordResume's pruning step doesn't drop it before appending the new one.
 	m := newTestModelWithStore(t)
 	stored := &agent.Agent{
 		ID:              "agent-1",
-		CIResumeHistory: []time.Time{time.Now().Add(-5 * time.Minute)},
+		CIResumeHistory: []time.Time{time.Now().Add(-1 * time.Minute)},
 	}
 	if err := m.agentStore.Create(stored); err != nil {
 		t.Fatalf("failed to seed agent: %v", err)
@@ -1614,10 +1617,10 @@ func TestDuplicateCIFailure_ShouldNotInflateHistory_GivenBackToBackPollsMatching
 }
 
 func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *testing.T) {
-	// Setup. Agent has already burned its 3 resume attempts inside the window.
-	// A further duplicate poll must escape the stuck state by throttling the
-	// agent (idle queue item + status flipped to Ready), instead of silently
-	// returning and leaving "0/N checks left" on screen.
+	// Setup. Agent has already burned its resume attempts inside the 5-minute
+	// throttle window. A further duplicate poll must escape the stuck state by
+	// throttling the agent (idle queue item + status flipped to Ready), instead
+	// of silently returning and leaving "0/N checks left" on screen.
 	m := newTestModelWithStoreAndQueue(t)
 	now := time.Now()
 	a := &agent.Agent{
@@ -1626,9 +1629,11 @@ func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *test
 		PRURL:                 "https://github.com/owner/repo/pull/1",
 		CILastNotifiedSummary: "CI checks failed: lint",
 		CIResumeHistory: []time.Time{
-			now.Add(-10 * time.Minute),
-			now.Add(-5 * time.Minute),
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
 			now.Add(-1 * time.Minute),
+			now.Add(-30 * time.Second),
 		},
 	}
 	if err := m.agentStore.Create(a); err != nil {
@@ -1676,15 +1681,19 @@ func TestDuplicateCIFailure_ShouldThrottle_GivenAgentAtThrottleThreshold(t *test
 }
 
 func TestReviewResume_ShouldThrottle_GivenMaxAttemptsWithinWindow(t *testing.T) {
-	// Setup.
+	// Setup. CI resume + review resume share the same history; once the agent
+	// has burned its budget of attempts inside the 5-minute window, additional
+	// review-driven resumes are throttled too.
 	m := newTestModelWithStore(t)
 	now := time.Now()
 	a := &agent.Agent{
 		ID: "agent-1",
 		CIResumeHistory: []time.Time{
-			now.Add(-10 * time.Minute),
-			now.Add(-5 * time.Minute),
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
 			now.Add(-1 * time.Minute),
+			now.Add(-30 * time.Second),
 		},
 	}
 
@@ -1693,19 +1702,23 @@ func TestReviewResume_ShouldThrottle_GivenMaxAttemptsWithinWindow(t *testing.T) 
 
 	// Assert.
 	if !result {
-		t.Error("expected review resume to be throttled after 3 attempts within 15 minutes")
+		t.Errorf("expected review resume to be throttled after %d attempts within %s, got false", ciResumeMaxAttempts, ciResumeWindow)
 	}
 }
 
 func TestReviewResume_ShouldShareThrottleWithCIResume_GivenMixedHistory(t *testing.T) {
-	// Setup.
+	// Setup. Seed the agent one resume short of the throttle threshold, all
+	// inside the 5-minute window; recordResume then pushes it over and the next
+	// shouldThrottleResume call should fire.
 	m := newTestModelWithStore(t)
 	now := time.Now()
 	stored := &agent.Agent{
 		ID: "agent-1",
 		CIResumeHistory: []time.Time{
-			now.Add(-10 * time.Minute),
-			now.Add(-5 * time.Minute),
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
+			now.Add(-1 * time.Minute),
 		},
 	}
 	if err := m.agentStore.Create(stored); err != nil {
@@ -1723,6 +1736,118 @@ func TestReviewResume_ShouldShareThrottleWithCIResume_GivenMixedHistory(t *testi
 	// Assert.
 	if !result {
 		t.Error("expected throttle when CI + review resumes together reach max attempts")
+	}
+}
+
+func TestThrottleAction_ResumeCIFix_ShouldResetThrottleState_GivenThrottledAgent(t *testing.T) {
+	// Setup. Mirror what throttleAgent leaves behind: agent flipped to Ready, an
+	// idle queue item with the PR URL in Details, full CIResumeHistory, and a
+	// CILastNotifiedSummary. The action menu's "r" key should wipe all that
+	// throttle bookkeeping so the next CI poll re-engages on the live state.
+	m := newTestModelWithStoreAndQueue(t)
+	now := time.Now()
+	a := &agent.Agent{
+		ID:                    "agent-1",
+		Status:                agent.StatusReady,
+		PRURL:                 "https://github.com/owner/repo/pull/1",
+		CILastNotifiedSummary: "CI checks failed: lint",
+		CIResumeHistory: []time.Time{
+			now.Add(-4 * time.Minute),
+			now.Add(-3 * time.Minute),
+			now.Add(-2 * time.Minute),
+			now.Add(-1 * time.Minute),
+			now.Add(-30 * time.Second),
+		},
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	item, err := m.queueManager.Add(queue.ItemTypeIdle, a.ID, "Throttled: CI checks failed: lint", a.PRURL)
+	if err != nil {
+		t.Fatalf("failed to seed queue item: %v", err)
+	}
+	m.ciCheckProgress[a.ID] = ciProgress{Completed: 5, Total: 5}
+	m.ciLastChecked[a.ID] = now
+	m.throttleTargetAgent = a
+	m.throttleQueueItem = item
+	m.view = ViewThrottleAction
+
+	// Execute.
+	result, _ := m.handleThrottleActionKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	updated, ok := result.(model)
+	if !ok {
+		t.Fatalf("expected model from handler, got %T", result)
+	}
+
+	// Assert. Status back on the CI poller, history + dedup wiped, idle queue
+	// item gone, transient maps cleared, view returned to Intervene.
+	if updated.view != ViewIntervene {
+		t.Errorf("expected view ViewIntervene, got %v", updated.view)
+	}
+	if updated.throttleTargetAgent != nil || updated.throttleQueueItem != nil {
+		t.Error("expected throttle target cleared after Resume")
+	}
+	reloaded, err := m.agentStore.Get(a.ID)
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected agent flipped to WaitingCI, got %s", reloaded.Status)
+	}
+	if len(reloaded.CIResumeHistory) != 0 {
+		t.Errorf("expected CIResumeHistory cleared, got %d entries", len(reloaded.CIResumeHistory))
+	}
+	if reloaded.CILastNotifiedSummary != "" {
+		t.Errorf("expected CILastNotifiedSummary cleared, got %q", reloaded.CILastNotifiedSummary)
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	for _, it := range items {
+		if it.AgentID == a.ID && it.Type == queue.ItemTypeIdle {
+			t.Errorf("expected throttle idle item removed, still present: %+v", it)
+		}
+	}
+	if _, exists := updated.ciCheckProgress[a.ID]; exists {
+		t.Error("expected ciCheckProgress cleared after Resume")
+	}
+	if _, exists := updated.ciLastChecked[a.ID]; exists {
+		t.Error("expected ciLastChecked cleared after Resume so the next refresh re-polls")
+	}
+}
+
+func TestThrottleAction_Esc_ShouldReturnToIntervene_GivenThrottledAgent(t *testing.T) {
+	// Setup.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{ID: "agent-1", Status: agent.StatusReady}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.throttleTargetAgent = a
+	m.throttleQueueItem = &queue.QueueItem{AgentID: a.ID, Type: queue.ItemTypeIdle, Details: "https://x/y/pull/1"}
+	m.view = ViewThrottleAction
+
+	// Execute.
+	result, _ := m.handleThrottleActionKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, ok := result.(model)
+	if !ok {
+		t.Fatalf("expected model from handler, got %T", result)
+	}
+
+	// Assert. Throttle state cleared, view returned, agent untouched.
+	if updated.view != ViewIntervene {
+		t.Errorf("expected view ViewIntervene, got %v", updated.view)
+	}
+	if updated.throttleTargetAgent != nil || updated.throttleQueueItem != nil {
+		t.Error("expected throttle target cleared after Esc")
+	}
+	reloaded, err := m.agentStore.Get(a.ID)
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected agent status untouched (Ready), got %s", reloaded.Status)
 	}
 }
 

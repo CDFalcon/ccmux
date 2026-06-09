@@ -28,6 +28,7 @@ const (
 	ViewNewTaskWorktreeName
 	ViewIntervene
 	ViewInterveneInput
+	ViewThrottleAction
 	ViewReview
 	ViewConfirmMerge
 	ViewConfirmKill
@@ -528,6 +529,46 @@ func renderInterveneView(m model) string {
 	}
 
 	help := helpFooter(ViewIntervene)
+	b.WriteString(renderFooter(help, m.ctrlCPressed))
+
+	return b.String()
+}
+
+// renderThrottleActionView shows the action menu for a throttled-CI agent the
+// user opened from Intervene. The intent is to surface the *reason* for the
+// throttle (the CI failure summary stored on the queue item) right next to the
+// resume/browser/kill controls, so the user can decide whether to retry, dig
+// in, or tear it down without leaving the screen.
+func renderThrottleActionView(m model) string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("# Throttled Agent"))
+	b.WriteString("\n\n")
+
+	if m.throttleTargetAgent != nil {
+		b.WriteString(fmt.Sprintf("Agent: %s\n", projectStyle.Render(m.throttleTargetAgent.ID)))
+		b.WriteString(fmt.Sprintf("Task: %s\n", dimStyle.Render(truncate(m.throttleTargetAgent.Task, 60))))
+		if m.throttleTargetAgent.PRURL != "" {
+			b.WriteString(fmt.Sprintf("PR: %s\n", dimStyle.Render(m.throttleTargetAgent.PRURL)))
+		}
+	}
+	if m.throttleQueueItem != nil {
+		b.WriteString("\n")
+		b.WriteString(headerStyle.Render("## Reason"))
+		b.WriteString("\n")
+		b.WriteString(m.throttleQueueItem.Summary)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("## Actions"))
+	b.WriteString("\n")
+	b.WriteString("  [r] Resume CI fix  - reset throttle and let the next poll re-resume\n")
+	b.WriteString("  [b] Browser        - open the PR in your browser\n")
+	b.WriteString("  [k] Kill agent     - tear it down and close the PR\n")
+	b.WriteString("  [esc] Back         - return to the agent list\n\n")
+
+	help := helpFooter(ViewThrottleAction)
 	b.WriteString(renderFooter(help, m.ctrlCPressed))
 
 	return b.String()
