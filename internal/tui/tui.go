@@ -81,6 +81,12 @@ type model struct {
 	interveneInput textarea.Model
 	interveneAgent *agent.Agent
 
+	// Throttle-action target: the agent + queue item the user selected on the
+	// Intervene screen when it was a throttled-CI idle item. Captured at enter
+	// time so we don't have to look it up again from the action menu.
+	throttleTargetAgent *agent.Agent
+	throttleQueueItem   *queue.QueueItem
+
 	// Project setup state (per-project import buffers)
 	projSetupBuffers map[string]*projImportBuffer
 	projSetupName    string
@@ -1160,7 +1166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if currentAgent != nil && currentAgent.Status == agent.StatusWaitingMergeQueue {
 			if msg.hasMergeConflict {
 				if m.shouldThrottleResume(currentAgent) {
-					m.throttleAgent(msg.agentID)
+					m.throttleAgent(msg.agentID, "merge-queue conflict keeps recurring")
 					return m, m.refreshCmd()
 				}
 				m.recordResume(msg.agentID)
@@ -1175,7 +1181,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.hasMergeConflict {
 			if currentAgent != nil {
 				if m.shouldThrottleResume(currentAgent) {
-					m.throttleAgent(msg.agentID)
+					m.throttleAgent(msg.agentID, "merge conflict keeps recurring")
 					return m, m.refreshCmd()
 				}
 				m.recordResume(msg.agentID)
@@ -1189,7 +1195,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.hasNewReview {
 			if currentAgent != nil {
 				if m.shouldThrottleResume(currentAgent) {
-					m.throttleAgent(msg.agentID)
+					m.throttleAgent(msg.agentID, "new review comments keep arriving")
 					return m, m.refreshCmd()
 				}
 				m.recordResume(msg.agentID)
@@ -1265,14 +1271,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					if m.shouldThrottleResume(currentAgent) {
-						m.throttleAgent(msg.agentID)
+						m.throttleAgent(msg.agentID, msg.summary)
 						return m, m.refreshCmd()
 					}
 					m.recordResume(msg.agentID)
 					return m, nil
 				}
 				if m.shouldThrottleResume(currentAgent) {
-					m.throttleAgent(msg.agentID)
+					m.throttleAgent(msg.agentID, msg.summary)
 					return m, m.refreshCmd()
 				}
 				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
@@ -1503,6 +1509,8 @@ func (m model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleInterveneKeys(msg)
 	case ViewInterveneInput:
 		return m.handleInterveneInputKeys(msg)
+	case ViewThrottleAction:
+		return m.handleThrottleActionKeys(msg)
 	case ViewReview:
 		return m.handleReviewKeys(msg)
 	case ViewConfirmMerge:
@@ -1935,6 +1943,20 @@ func (m model) handleInterveneKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			selected := items[m.selectedIndex]
 			for _, a := range m.agents {
 				if a.ID == selected.AgentID {
+					// Throttle items carry the PR URL in Details (set by
+					// throttleAgent); the other idle producers leave it empty.
+					// Use that as the signal to route the user to the
+					// resume/browser/kill action menu instead of the generic
+					// "send a message" flow — typing freeform text at a
+					// throttled agent that's already wedged on the same failure
+					// isn't usually what the user wants.
+					if selected.Details != "" {
+						item := selected
+						m.throttleTargetAgent = a
+						m.throttleQueueItem = item
+						m.view = ViewThrottleAction
+						return m, nil
+					}
 					m.interveneAgent = a
 					m.view = ViewInterveneInput
 					m.interveneInput.SetValue("")
@@ -1944,6 +1966,74 @@ func (m model) handleInterveneKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	}
+	return m, nil
+}
+
+// handleThrottleActionKeys drives the action menu shown when the user opens a
+// throttled-CI idle item from Intervene. The throttle deliberately stops the
+// auto-resume loop after too many CI failures land back-to-back; this menu is
+// how the user un-sticks the agent (resume), inspects what's failing (browser),
+// or gives up and tears it down (kill).
+func (m model) handleThrottleActionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a := m.throttleTargetAgent
+	item := m.throttleQueueItem
+
+	switch msg.String() {
+	case "esc":
+		m.throttleTargetAgent = nil
+		m.throttleQueueItem = nil
+		m.view = ViewIntervene
+		return m, nil
+	case "r":
+		if a == nil {
+			m.throttleTargetAgent = nil
+			m.throttleQueueItem = nil
+			m.view = ViewIntervene
+			return m, nil
+		}
+		// Reset throttle bookkeeping and put the agent back on the CI poller.
+		// We deliberately do NOT immediately spawn resumeAgentForCIFixCmd here —
+		// the next 30s poll naturally re-detects the *current* CI state (which
+		// may have shifted since the throttle fired) and resumes the agent
+		// against the current failing checks, instead of replaying the stale
+		// summary that triggered the throttle.
+		agentID := a.ID
+		m.agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusWaitingCI
+			ag.CIResumeHistory = nil
+			ag.CILastNotifiedSummary = ""
+			ag.CIWaitAt = time.Now()
+		})
+		m.queueManager.RemoveByAgentAndType(agentID, queue.ItemTypeIdle)
+		delete(m.ciCheckProgress, agentID)
+		delete(m.ciLastChecked, agentID)
+		delete(m.ciChecking, agentID)
+		m.throttleTargetAgent = nil
+		m.throttleQueueItem = nil
+		m.view = ViewIntervene
+		m.selectedIndex = 0
+		return m, m.refreshCmd()
+	case "b":
+		if item != nil && item.Details != "" {
+			openInBrowser(item.Details)
+		} else if a != nil && a.PRURL != "" {
+			openInBrowser(a.PRURL)
+		}
+		return m, nil
+	case "k":
+		if a == nil {
+			m.throttleTargetAgent = nil
+			m.throttleQueueItem = nil
+			m.view = ViewIntervene
+			return m, nil
+		}
+		target := a
+		m.throttleTargetAgent = nil
+		m.throttleQueueItem = nil
+		m.view = ViewIntervene
+		m.selectedIndex = 0
+		return m, m.killAgentCmd(target)
 	}
 	return m, nil
 }
@@ -3601,8 +3691,8 @@ ccmux agent-stopped "$AGENT_ID"
 }
 
 const (
-	ciResumeMaxAttempts = 3
-	ciResumeWindow      = 15 * time.Minute
+	ciResumeMaxAttempts = 5
+	ciResumeWindow      = 5 * time.Minute
 )
 
 func (m *model) isDuplicateCIFailure(a *agent.Agent, summary string) bool {
@@ -3642,12 +3732,28 @@ func (m *model) recordResume(agentID string) {
 	})
 }
 
-func (m *model) throttleAgent(agentID string) {
+// throttleAgent parks the agent in StatusReady and surfaces it under Intervene
+// when the same CI failure / merge conflict / new review keeps re-firing inside
+// the throttle window. `reason` describes the recurring trigger (the failing
+// check summary, "merge conflict", etc.) and is folded into the queue item so
+// the user sees *why* it was throttled — without this, every throttle showed
+// the same generic "needs manual intervention" string regardless of the actual
+// trigger. The PR URL is stored in the item's Details so the throttle-action
+// menu (resume / browser / kill) can open the PR without re-fetching it.
+func (m *model) throttleAgent(agentID, reason string) {
+	var prURL string
+	if a, err := m.agentStore.Get(agentID); err == nil && a != nil {
+		prURL = a.PRURL
+	}
 	m.agentStore.Update(agentID, func(ag *agent.Agent) {
 		ag.Status = agent.StatusReady
 	})
 	m.queueManager.RemoveByAgent(agentID)
-	m.queueManager.Add(queue.ItemTypeIdle, agentID, "Agent throttled - too many CI failures, needs manual intervention", "")
+	summary := "Agent throttled - needs manual intervention"
+	if reason != "" {
+		summary = fmt.Sprintf("Throttled: %s", reason)
+	}
+	m.queueManager.Add(queue.ItemTypeIdle, agentID, summary, prURL)
 	delete(m.ciCheckProgress, agentID)
 }
 
@@ -3972,6 +4078,8 @@ func (m model) View() string {
 		content = renderInterveneView(m)
 	case ViewInterveneInput:
 		content = renderInterveneInputView(m)
+	case ViewThrottleAction:
+		content = renderThrottleActionView(m)
 	case ViewReview:
 		content = renderReviewView(m)
 	case ViewConfirmMerge:

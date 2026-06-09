@@ -23,6 +23,7 @@ var viewTitles = map[ViewState]string{
 	ViewNewTaskWorktreeName:  "New Task - Branch Name",
 	ViewIntervene:            "Intervene",
 	ViewInterveneInput:       "Send Message",
+	ViewThrottleAction:       "Throttled Agent",
 	ViewReview:               "Review PR",
 	ViewConfirmMerge:         "Confirm Cleanup",
 	ViewConfirmKill:          "Kill Agent",
@@ -93,6 +94,12 @@ var viewHelpCommands = map[ViewState][]helpCommand{
 	},
 	ViewInterveneInput: {
 		{FooterText: "[enter] send", Description: "Send the message to the agent"},
+		{FooterText: "[esc] back", Description: "Return to agent selection"},
+	},
+	ViewThrottleAction: {
+		{FooterText: "[r]esume CI fix", Description: "Reset throttle state and let the next poll re-trigger the CI-fix resume"},
+		{FooterText: "[b]rowser", Description: "Open the PR in a web browser"},
+		{FooterText: "[k]ill", Description: "Tear down the agent and close its PR"},
 		{FooterText: "[esc] back", Description: "Return to agent selection"},
 	},
 	ViewReview: {
