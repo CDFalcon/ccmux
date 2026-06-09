@@ -17,11 +17,11 @@ import (
 	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/otelcollector"
-	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/project"
 	"github.com/CDFalcon/ccmux/internal/prompt"
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/settings"
+	"github.com/CDFalcon/ccmux/internal/shellutil"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -64,6 +64,7 @@ Examples:
 		updateCmd(),
 		spawnCmd(),
 		taskCmd(),
+		trustCodexProjectCmd(),
 		registerAgentCmd(),
 		queueAddCmd(),
 		prReadyCmd(),
@@ -488,6 +489,160 @@ Examples:
 	}
 }
 
+func codexConfigPath() (string, error) {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get home directory: %w", err)
+		}
+		codexHome = filepath.Join(homeDir, ".codex")
+	}
+	return filepath.Join(codexHome, "config.toml"), nil
+}
+
+func tomlBasicString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 {
+				b.WriteString(fmt.Sprintf(`\u%04X`, r))
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func codexProjectTableHeader(projectPath string) string {
+	return "[projects." + tomlBasicString(projectPath) + "]"
+}
+
+func isTomlKey(line, key string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, key) {
+		return false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, key))
+	return strings.HasPrefix(rest, "=")
+}
+
+func upsertCodexProjectTrust(config, projectPath string) string {
+	header := codexProjectTableHeader(projectPath)
+	trustLine := `trust_level = "trusted"`
+	if config == "" {
+		return header + "\n" + trustLine + "\n"
+	}
+
+	lines := strings.Split(config, "\n")
+	sectionStart := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == header {
+			sectionStart = i
+			break
+		}
+	}
+	if sectionStart == -1 {
+		separator := ""
+		if !strings.HasSuffix(config, "\n") {
+			separator = "\n"
+		}
+		if strings.HasSuffix(config, "\n\n") {
+			return config + separator + header + "\n" + trustLine + "\n"
+		}
+		return config + separator + "\n" + header + "\n" + trustLine + "\n"
+	}
+
+	sectionEnd := len(lines)
+	for i := sectionStart + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
+			sectionEnd = i
+			break
+		}
+	}
+	for i := sectionStart + 1; i < sectionEnd; i++ {
+		if isTomlKey(lines[i], "trust_level") {
+			lines[i] = trustLine
+			return strings.Join(lines, "\n")
+		}
+	}
+
+	updated := append([]string{}, lines[:sectionStart+1]...)
+	updated = append(updated, trustLine)
+	updated = append(updated, lines[sectionStart+1:]...)
+	return strings.Join(updated, "\n")
+}
+
+func trustCodexProject(projectPath string) error {
+	if strings.TrimSpace(projectPath) == "" {
+		return fmt.Errorf("project path is required")
+	}
+	if !filepath.IsAbs(projectPath) {
+		absPath, err := filepath.Abs(projectPath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve project path: %w", err)
+		}
+		projectPath = absPath
+	}
+
+	configPath, err := codexConfigPath()
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read Codex config: %w", err)
+	}
+
+	updated := upsertCodexProjectTrust(string(data), projectPath)
+	if string(data) == updated {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return fmt.Errorf("failed to create Codex config directory: %w", err)
+	}
+
+	mode := os.FileMode(0600)
+	if info, statErr := os.Stat(configPath); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(configPath, []byte(updated), mode); err != nil {
+		return fmt.Errorf("failed to write Codex config: %w", err)
+	}
+	return nil
+}
+
+func trustCodexProjectCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "trust-codex-project <path>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return trustCodexProject(args[0])
+		},
+	}
+}
+
 func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -718,6 +873,13 @@ else
 fi
 echo "✓ Directory trusted"
 echo ""
+fi
+
+if [ "$HARNESS" = "codex" ]; then
+  echo "→ Pre-trusting worktree directory in Codex..."
+  ccmux trust-codex-project "$WORKTREE_PATH"
+  echo "✓ Directory trusted"
+  echo ""
 fi
 
 # Register agent
@@ -1643,6 +1805,13 @@ if [ -z "$SETTINGS_TRACKED" ]; then
 else
   git update-index --assume-unchanged .claude/settings.json
 fi
+fi
+
+if [ "$HARNESS" = "codex" ]; then
+  echo "→ Pre-trusting worktree directory in Codex..."
+  ccmux trust-codex-project "$WORKTREE_PATH"
+  echo "✓ Directory trusted"
+  echo ""
 fi
 
 export CCMUX_AGENT_ID="$AGENT_ID"

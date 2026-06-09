@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,85 @@ func assertValidBash(t *testing.T, scriptPath string) {
 	out, err := exec.Command("bash", "-n", scriptPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated script %s failed bash syntax check: %v\n%s", scriptPath, err, out)
+	}
+}
+
+func TestUpsertCodexProjectTrust_ShouldAppendMissingProject(t *testing.T) {
+	projectPath := "/tmp/ccmux-test"
+	got := upsertCodexProjectTrust("model = \"gpt-5.5\"\n", projectPath)
+
+	header := codexProjectTableHeader(projectPath)
+	if !strings.Contains(got, header+"\ntrust_level = \"trusted\"") {
+		t.Fatalf("updated config should append trusted project section, got:\n%s", got)
+	}
+	if strings.Count(got, header) != 1 {
+		t.Fatalf("updated config should contain one project table, got:\n%s", got)
+	}
+}
+
+func TestUpsertCodexProjectTrust_ShouldUpdateExistingTrustLevel(t *testing.T) {
+	projectPath := "/tmp/ccmux-test"
+	header := codexProjectTableHeader(projectPath)
+	config := "model = \"gpt-5.5\"\n\n" + header + "\ntrust_level = \"untrusted\"\nfoo = \"bar\"\n\n[features]\njs_repl = false\n"
+
+	got := upsertCodexProjectTrust(config, projectPath)
+
+	if strings.Contains(got, `trust_level = "untrusted"`) {
+		t.Fatalf("updated config should remove untrusted state, got:\n%s", got)
+	}
+	if !strings.Contains(got, header+"\ntrust_level = \"trusted\"\nfoo = \"bar\"") {
+		t.Fatalf("updated config should preserve project settings while trusting it, got:\n%s", got)
+	}
+	if !strings.Contains(got, "[features]\njs_repl = false") {
+		t.Fatalf("updated config should preserve following sections, got:\n%s", got)
+	}
+}
+
+func TestUpsertCodexProjectTrust_ShouldNotRewriteTrustLevelPrefixKeys(t *testing.T) {
+	projectPath := "/tmp/ccmux-test"
+	header := codexProjectTableHeader(projectPath)
+	config := header + "\ntrust_level_hint = \"keep\"\n"
+
+	got := upsertCodexProjectTrust(config, projectPath)
+
+	if !strings.Contains(got, header+"\ntrust_level = \"trusted\"\ntrust_level_hint = \"keep\"") {
+		t.Fatalf("updated config should insert trust_level without replacing prefix keys, got:\n%s", got)
+	}
+}
+
+func TestUpsertCodexProjectTrust_ShouldEscapeProjectPathInTableHeader(t *testing.T) {
+	projectPath := `/tmp/ccmux-"quoted"\path`
+	got := upsertCodexProjectTrust("", projectPath)
+
+	wantHeader := `[projects."/tmp/ccmux-\"quoted\"\\path"]`
+	if !strings.Contains(got, wantHeader) {
+		t.Fatalf("trusted project header should be TOML-escaped as %q, got:\n%s", wantHeader, got)
+	}
+}
+
+func TestTrustCodexProject_ShouldWriteConfigUnderCodexHome(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	projectPath := filepath.Join(codexHome, "repo")
+
+	if err := trustCodexProject(projectPath); err != nil {
+		t.Fatalf("trustCodexProject: %v", err)
+	}
+	if err := trustCodexProject(projectPath); err != nil {
+		t.Fatalf("trustCodexProject second call: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	content := string(data)
+	header := codexProjectTableHeader(projectPath)
+	if strings.Count(content, header) != 1 {
+		t.Fatalf("config should contain one trusted project table, got:\n%s", content)
+	}
+	if !strings.Contains(content, header+"\ntrust_level = \"trusted\"") {
+		t.Fatalf("config should mark project trusted, got:\n%s", content)
 	}
 }
 
@@ -41,6 +121,10 @@ func TestWriteLauncherScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 
 			if !strings.Contains(content, h.StartCommand()) {
 				t.Errorf("script for %s does not invoke its start command", h)
+			}
+			if !strings.Contains(content, `if [ "$HARNESS" = "codex" ]; then`) ||
+				!strings.Contains(content, `ccmux trust-codex-project "$WORKTREE_PATH"`) {
+				t.Errorf("script for %s should include the Codex trust gate", h)
 			}
 			// The Claude hook block is gated behind the harness check; only
 			// Claude should actually install hooks.
@@ -179,10 +263,10 @@ func TestWriteLauncherScript_ShouldNotWireOTelEnv_GivenCodexHarness(t *testing.T
 
 func TestOptionalArg_ShouldTreatDashAsDefault(t *testing.T) {
 	cases := map[string]string{
-		"-":       "",
-		"":        "",
-		"claude":  "claude",
-		"codex":   "codex",
+		"-":        "",
+		"":         "",
+		"claude":   "claude",
+		"codex":    "codex",
 		"origin/m": "origin/m",
 	}
 	for in, want := range cases {
@@ -298,6 +382,10 @@ func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 
 			if !strings.Contains(content, h.ContinueCommand()) {
 				t.Errorf("recovery script for %s does not invoke its continue command", h)
+			}
+			if !strings.Contains(content, `if [ "$HARNESS" = "codex" ]; then`) ||
+				!strings.Contains(content, `ccmux trust-codex-project "$WORKTREE_PATH"`) {
+				t.Errorf("recovery script for %s should include the Codex trust gate", h)
 			}
 			if !strings.Contains(content, "The original task was:") {
 				t.Errorf("recovery script for %s should embed the original task", h)
