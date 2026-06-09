@@ -1203,6 +1203,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ciCheckProgress[msg.agentID] = ciProgress{Completed: msg.completed, Total: msg.total}
 		if msg.hasMergeConflict {
 			if currentAgent != nil {
+				// Same gate as the duplicate-CI-failure branch below (#195):
+				// since c13696a end-of-turn hands agents back to the CI
+				// poller, and b59f660 added StatusRunning to the poll set, so
+				// an agent that was just resumed to resolve this very
+				// conflict gets re-polled every 30s while it works. GitHub
+				// keeps reporting CONFLICTING until the agent pushes the
+				// resolution, and without this gate each poll kills the pane
+				// and re-prompts the agent mid-fix — a kill/restart loop that
+				// spams merge-conflict resumes until the throttle parks the
+				// agent. Only resume when the pane and process tree are
+				// genuinely quiet.
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+					return m, nil
+				}
 				if m.shouldThrottleResume(currentAgent) {
 					m.throttleAgent(msg.agentID, "merge conflict keeps recurring")
 					return m, m.refreshCmd()
@@ -1217,6 +1231,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.hasNewReview {
 			if currentAgent != nil {
+				// Same busy gate as the merge-conflict branch above: don't
+				// kill and re-prompt an agent that's still mid-turn replying
+				// to the previous batch of review comments.
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+					return m, nil
+				}
 				if m.shouldThrottleResume(currentAgent) {
 					m.throttleAgent(msg.agentID, "new review comments keep arriving")
 					return m, m.refreshCmd()
