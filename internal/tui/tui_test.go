@@ -1544,6 +1544,59 @@ func TestRefreshCmd_ShouldHandIdleRunningAgentWithPRToCI(t *testing.T) {
 	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
 
 	m := newRefreshTestModel(t)
+	// CIWaitAt is the "new review feedback since" cutoff. The idle handoff
+	// must NOT move it forward: review comments that arrived while the agent
+	// was working would fall behind the cutoff and never trigger a resume.
+	ciWaitAt := time.Now().Add(-10 * time.Minute)
+	a := &agent.Agent{
+		ID:           "agent-1",
+		Status:       agent.StatusRunning,
+		PRURL:        "https://github.com/owner/repo/pull/1",
+		WorktreePath: t.TempDir(),
+		TmuxWindow:   "@1",
+		CIWaitAt:     ciWaitAt,
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+
+	// Execute.
+	msg := m.refreshCmd()()
+	if _, ok := msg.(refreshMsg); !ok {
+		t.Fatalf("expected refreshMsg, got %T", msg)
+	}
+
+	// Assert.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected idle running agent with PR to wait on CI, got %s", reloaded.Status)
+	}
+	if !reloaded.CIWaitAt.Equal(ciWaitAt) {
+		t.Errorf("expected CIWaitAt (the new-review cutoff) preserved at %v, got %v", ciWaitAt, reloaded.CIWaitAt)
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	for _, item := range items {
+		if item.AgentID == "agent-1" && item.Type == queue.ItemTypeIdle {
+			t.Fatalf("expected no idle queue item, got %+v", item)
+		}
+	}
+}
+
+func TestRefreshCmd_ShouldInitializeCIWaitAt_GivenIdleRunningAgentWithPRAndZeroCIWaitAt(t *testing.T) {
+	// Setup. An agent whose PR was recorded without a CIWaitAt (e.g. older
+	// store records) must still get a cutoff, otherwise the poller never
+	// checks for new reviews at all.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", "0")
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+
+	m := newRefreshTestModel(t)
 	before := time.Now()
 	a := &agent.Agent{
 		ID:           "agent-1",
@@ -1571,16 +1624,7 @@ func TestRefreshCmd_ShouldHandIdleRunningAgentWithPRToCI(t *testing.T) {
 		t.Errorf("expected idle running agent with PR to wait on CI, got %s", reloaded.Status)
 	}
 	if reloaded.CIWaitAt.Before(before) {
-		t.Errorf("expected CIWaitAt to be refreshed, got %v before %v", reloaded.CIWaitAt, before)
-	}
-	items, err := m.queueManager.List()
-	if err != nil {
-		t.Fatalf("failed to list queue: %v", err)
-	}
-	for _, item := range items {
-		if item.AgentID == "agent-1" && item.Type == queue.ItemTypeIdle {
-			t.Fatalf("expected no idle queue item, got %+v", item)
-		}
+		t.Errorf("expected zero CIWaitAt to be initialized, got %v before %v", reloaded.CIWaitAt, before)
 	}
 }
 
@@ -1592,13 +1636,17 @@ func TestRefreshCmd_ShouldRepairReadyAgentWithPRAndPlainIdleItem(t *testing.T) {
 	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
 
 	m := newRefreshTestModel(t)
-	before := time.Now()
+	// Like the Running handoff, the repair path must keep the new-review
+	// cutoff where it was so feedback that arrived in the meantime still
+	// triggers a resume.
+	ciWaitAt := time.Now().Add(-10 * time.Minute)
 	a := &agent.Agent{
 		ID:           "agent-1",
 		Status:       agent.StatusReady,
 		PRURL:        "https://github.com/owner/repo/pull/1",
 		WorktreePath: t.TempDir(),
 		TmuxWindow:   "@1",
+		CIWaitAt:     ciWaitAt,
 	}
 	if err := m.agentStore.Create(a); err != nil {
 		t.Fatalf("failed to seed agent: %v", err)
@@ -1621,8 +1669,8 @@ func TestRefreshCmd_ShouldRepairReadyAgentWithPRAndPlainIdleItem(t *testing.T) {
 	if reloaded.Status != agent.StatusWaitingCI {
 		t.Errorf("expected stale ready agent with PR to wait on CI, got %s", reloaded.Status)
 	}
-	if reloaded.CIWaitAt.Before(before) {
-		t.Errorf("expected CIWaitAt to be refreshed, got %v before %v", reloaded.CIWaitAt, before)
+	if !reloaded.CIWaitAt.Equal(ciWaitAt) {
+		t.Errorf("expected CIWaitAt (the new-review cutoff) preserved at %v, got %v", ciWaitAt, reloaded.CIWaitAt)
 	}
 	items, err := m.queueManager.List()
 	if err != nil {
@@ -2408,6 +2456,45 @@ func TestHasUnaddressedReview_ShouldDetect_GivenMixOfAddressedAndUnaddressedRevi
 	// Assert.
 	if !result {
 		t.Error("expected unaddressed second review to trigger even when first review was addressed")
+	}
+}
+
+func TestHasUnaddressedReview_ShouldIgnore_GivenOnlySelfAuthoredReviews(t *testing.T) {
+	// Setup. Replying to inline review threads records a COMMENTED review
+	// authored by the PR author (the agent). Now that the new-review cutoff
+	// survives end-of-turn transitions, those self-reviews must not
+	// re-trigger the agent on its own replies.
+	since := time.Now().Add(-1 * time.Hour)
+	reviews := []prReview{
+		{SubmittedAt: time.Now().Add(-1 * time.Minute), State: "COMMENTED", Author: struct {
+			Login string `json:"login"`
+		}{Login: "CDFalcon"}},
+	}
+
+	// Execute.
+	result := hasUnaddressedReview(reviews, nil, nil, "CDFalcon", since)
+
+	// Assert.
+	if result {
+		t.Error("expected agent's own review to be ignored")
+	}
+}
+
+func TestHasUnaddressedReview_ShouldDetect_GivenForeignReviewAfterSince(t *testing.T) {
+	// Setup. A review from someone other than the PR author still triggers.
+	since := time.Now().Add(-1 * time.Hour)
+	reviews := []prReview{
+		{SubmittedAt: time.Now().Add(-1 * time.Minute), State: "COMMENTED", Author: struct {
+			Login string `json:"login"`
+		}{Login: "reviewer"}},
+	}
+
+	// Execute.
+	result := hasUnaddressedReview(reviews, nil, nil, "CDFalcon", since)
+
+	// Assert.
+	if !result {
+		t.Error("expected foreign review to need addressing")
 	}
 }
 

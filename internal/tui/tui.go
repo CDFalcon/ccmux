@@ -823,7 +823,20 @@ func (m model) refreshCmd() tea.Cmd {
 					if a.PRURL != "" {
 						m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 							ag.Status = agent.StatusWaitingCI
-							ag.CIWaitAt = time.Now()
+							// Preserve CIWaitAt: it is the "new review
+							// feedback since" cutoff for checkForNewReviews,
+							// and this transition is just an idle/turn
+							// boundary, not "all feedback up to now has been
+							// handled". Resetting it here would swallow
+							// review comments that arrived while the agent
+							// was busy — the busy gate in the new-review
+							// resume defers exactly until this moment, so a
+							// reset means the deferred resume never fires and
+							// the agent sits in waiting_review until the next
+							// push. Only initialize when it was never set.
+							if ag.CIWaitAt.IsZero() {
+								ag.CIWaitAt = time.Now()
+							}
 						})
 						m.queueManager.RemoveByAgentAndType(a.ID, queue.ItemTypeIdle)
 						changed = true
@@ -849,7 +862,12 @@ func (m model) refreshCmd() tea.Cmd {
 					if idleItem, hasIdleItem := idleItemByAgent[a.ID]; hasIdleItem && idleItem.Summary == "Agent idle - waiting for input" && idleItem.Details == "" {
 						m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 							ag.Status = agent.StatusWaitingCI
-							ag.CIWaitAt = time.Now()
+							// Preserve the new-review cutoff — see the
+							// matching comment in the StatusRunning branch
+							// above.
+							if ag.CIWaitAt.IsZero() {
+								ag.CIWaitAt = time.Now()
+							}
 						})
 						m.queueManager.Remove(idleItem.ID)
 						changed = true
@@ -3604,6 +3622,9 @@ func firstPRURL(output []byte) string {
 type prReview struct {
 	SubmittedAt time.Time `json:"submittedAt"`
 	State       string    `json:"state"`
+	Author      struct {
+		Login string `json:"login"`
+	} `json:"author"`
 }
 
 type prCommit struct {
@@ -3625,8 +3646,9 @@ type prIssueComment struct {
 // already been resumed for.
 //
 // The viewerLogin parameter is the PR author's login as returned by gh; their
-// own conversation comments are ignored so the agent doesn't loop on its own
-// "pushed $sha to address X" status messages.
+// own reviews and conversation comments are ignored so the agent doesn't loop
+// on its own "pushed $sha to address X" status messages or on the COMMENTED
+// review GitHub records when the agent replies to inline review threads.
 func hasUnaddressedReview(reviews []prReview, commits []prCommit, comments []prIssueComment, viewerLogin string, since time.Time) bool {
 	var latestCommit time.Time
 	for _, c := range commits {
@@ -3636,6 +3658,9 @@ func hasUnaddressedReview(reviews []prReview, commits []prCommit, comments []prI
 	}
 	for _, review := range reviews {
 		if !review.SubmittedAt.After(since) {
+			continue
+		}
+		if viewerLogin != "" && review.Author.Login == viewerLogin {
 			continue
 		}
 		if latestCommit.After(review.SubmittedAt) {

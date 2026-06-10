@@ -423,6 +423,53 @@ func TestHandleAgentStopped_ShouldHandOffToCIPoller_WhenAgentHasPR(t *testing.T)
 	// WaitingCI agents) never re-examines the PR.
 
 	store, q := setupStopHookTestStores(t)
+	// CIWaitAt is the "new review feedback since" cutoff for the poller. The
+	// Stop hook fires at every end-of-turn, so bumping it here would swallow
+	// review comments that arrived mid-turn (the poller's busy gate defers
+	// the resume until the turn ends — by which time the bump had moved the
+	// cutoff past the comments, leaving the agent stuck in waiting_review
+	// until the next push). It must be preserved.
+	ciWaitAt := time.Now().Add(-10 * time.Minute)
+
+	if err := store.Create(&agent.Agent{
+		ID:       "agent-with-pr",
+		Status:   agent.StatusRunning,
+		PRURL:    "https://github.com/o/r/pull/42",
+		CIWaitAt: ciWaitAt,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a, _ := store.Get("agent-with-pr")
+
+	if err := handleAgentStopped(store, q, a); err != nil {
+		t.Fatalf("handleAgentStopped: %v", err)
+	}
+
+	got, _ := store.Get("agent-with-pr")
+	if got.Status != agent.StatusWaitingCI {
+		t.Errorf("status = %s, want %s — agent with a PR must go back to the CI poller, not be marked idle", got.Status, agent.StatusWaitingCI)
+	}
+	if !got.CIWaitAt.Equal(ciWaitAt) {
+		t.Errorf("CIWaitAt = %v, want %v preserved — bumping the new-review cutoff at end-of-turn swallows mid-turn review comments", got.CIWaitAt, ciWaitAt)
+	}
+
+	items, err := q.List()
+	if err != nil {
+		t.Fatalf("queue List: %v", err)
+	}
+	for _, it := range items {
+		if it.AgentID == "agent-with-pr" {
+			t.Errorf("queue gained item %q for an agent we handed back to the CI poller — should be empty", it.Summary)
+		}
+	}
+}
+
+func TestHandleAgentStopped_ShouldInitializeCIWaitAt_WhenAgentHasPRButNoCutoff(t *testing.T) {
+	// An agent record without CIWaitAt (older stores, or a PR recorded
+	// through a path that skipped it) still needs a cutoff — the poller only
+	// checks for new reviews when CIWaitAt is set.
+
+	store, q := setupStopHookTestStores(t)
 	before := time.Now()
 
 	if err := store.Create(&agent.Agent{
@@ -440,20 +487,10 @@ func TestHandleAgentStopped_ShouldHandOffToCIPoller_WhenAgentHasPR(t *testing.T)
 
 	got, _ := store.Get("agent-with-pr")
 	if got.Status != agent.StatusWaitingCI {
-		t.Errorf("status = %s, want %s — agent with a PR must go back to the CI poller, not be marked idle", got.Status, agent.StatusWaitingCI)
+		t.Errorf("status = %s, want %s", got.Status, agent.StatusWaitingCI)
 	}
 	if got.CIWaitAt.Before(before) {
-		t.Errorf("CIWaitAt = %v, want >= %v — CIWaitAt should be bumped so the poller treats this as a fresh wait window", got.CIWaitAt, before)
-	}
-
-	items, err := q.List()
-	if err != nil {
-		t.Fatalf("queue List: %v", err)
-	}
-	for _, it := range items {
-		if it.AgentID == "agent-with-pr" {
-			t.Errorf("queue gained item %q for an agent we handed back to the CI poller — should be empty", it.Summary)
-		}
+		t.Errorf("CIWaitAt = %v, want >= %v — zero cutoff should be initialized so review polling works", got.CIWaitAt, before)
 	}
 }
 

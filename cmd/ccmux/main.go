@@ -1249,7 +1249,19 @@ func handleAgentStopped(agentStore *agent.Store, queueManager *queue.Queue, a *a
 		if a.PRURL != "" {
 			return agentStore.Update(a.ID, func(ag *agent.Agent) {
 				ag.Status = agent.StatusWaitingCI
-				ag.CIWaitAt = time.Now()
+				// Preserve CIWaitAt: it doubles as the "new review feedback
+				// since" cutoff for the poller's checkForNewReviews, and the
+				// Stop hook fires at EVERY end-of-turn. Resetting it here
+				// swallowed review comments that arrived mid-turn — the
+				// poller's busy gate defers the new-review resume until the
+				// agent goes idle, but by then this reset had moved the
+				// cutoff past the comments, so the agent settled back into
+				// waiting_review and never picked the feedback up until the
+				// next push. Only initialize when it was never set (the
+				// PostToolUse `ccmux ci-wait` hook normally sets it on push).
+				if ag.CIWaitAt.IsZero() {
+					ag.CIWaitAt = time.Now()
+				}
 			})
 		}
 		// No PR yet — genuine "agent finished without making a PR".
