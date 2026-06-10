@@ -1075,21 +1075,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Codex has no PostToolUse hook, so ccmux never sees `gh pr create`
-		// the way it does for Claude Code. Poll `gh pr list` for Codex
-		// agents that are still working/idle and have no PR recorded, so a
-		// PR they opened still gets picked up for CI monitoring.
-		const prDetectInterval = 20 * time.Second
+		// Poll `gh pr list` for agents that are still working/idle and have
+		// no PR recorded, so a PR they opened still gets picked up for CI
+		// monitoring. Codex has no PostToolUse hook, so polling is its only
+		// detection path and gets a tight interval. Claude Code normally
+		// reports the PR via the PostToolUse hook (`ccmux ci-wait`), but
+		// that hook lives in the worktree's tracked .claude/settings.json
+		// and can be silently wiped (e.g. `git stash`/`git reset --hard`
+		// clobber the assume-unchanged file) — poll as a slower safety net
+		// so the agent isn't stranded without CI monitoring.
+		const codexPRDetectInterval = 20 * time.Second
+		const fallbackPRDetectInterval = 60 * time.Second
 		detectingPR := make(map[string]bool)
 		for _, a := range m.agents {
 			if a.PRURL != "" || a.BranchName == "" || a.WorktreePath == "" {
 				continue
 			}
-			if harness.Parse(a.Harness) != harness.Codex {
-				continue
-			}
 			if a.Status != agent.StatusRunning && a.Status != agent.StatusReady {
 				continue
+			}
+			prDetectInterval := fallbackPRDetectInterval
+			if harness.Parse(a.Harness) == harness.Codex {
+				prDetectInterval = codexPRDetectInterval
 			}
 			detectingPR[a.ID] = true
 			if m.prDetectChecking[a.ID] {
@@ -1101,7 +1108,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.prDetectChecking[a.ID] = true
 			m.prDetectLastChecked[a.ID] = time.Now()
-			cmds = append(cmds, detectCodexPRCmd(a.ID, a.BranchName, a.WorktreePath))
+			cmds = append(cmds, detectPRCmd(a.ID, a.BranchName, a.WorktreePath))
 		}
 		for id := range m.prDetectLastChecked {
 			if !detectingPR[id] {
@@ -3558,11 +3565,14 @@ func checkPRChecksCmd(agentID, prURL, worktreePath, baseBranch string, ciWaitAt 
 	}
 }
 
-// detectCodexPRCmd looks for an open PR whose head is the agent's branch.
-// Claude Code agents report a new PR via the PostToolUse hook (`ccmux
-// ci-wait`); Codex has no such hook, so ccmux discovers the PR by polling
-// `gh pr list` from the agent's worktree.
-func detectCodexPRCmd(agentID, branchName, worktreePath string) tea.Cmd {
+// detectPRCmd looks for an open PR whose head is the agent's branch.
+// Codex has no PostToolUse hook, so polling `gh pr list` from the agent's
+// worktree is its only PR-detection path. Claude Code agents normally
+// report a new PR via the PostToolUse hook (`ccmux ci-wait`), but that
+// hook can be wiped from the worktree's settings.json (e.g. by `git
+// stash`/`git reset --hard`), so polling doubles as a safety net for all
+// harnesses.
+func detectPRCmd(agentID, branchName, worktreePath string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
