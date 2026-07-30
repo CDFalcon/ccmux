@@ -47,6 +47,75 @@ type procInfo struct {
 	rss  int64
 }
 
+// isTerminal reports whether an agent has reached a state it cannot leave.
+// Teardown has run or is running, so nothing about the agent will change again,
+// and doCleanup has already folded its cost into the persistent daily-cost
+// store — re-deriving it from the session JSONL would double-count.
+func isTerminal(s agent.Status) bool {
+	switch s {
+	case agent.StatusMerged, agent.StatusFailed, agent.StatusCleaningUp, agent.StatusKilling:
+		return true
+	}
+	return false
+}
+
+// hasLiveCostData reports whether an agent's session JSONL should still be
+// parsed for tokens and cost.
+//
+// This is a weaker gate than isPollable on purpose. The JSONL lives under
+// ~/.claude/projects/<mangled worktree path>/, not inside the worktree, so it
+// remains readable and meaningful after the worktree directory is gone — and it
+// is in-process file I/O, not a subprocess, so it was never part of the
+// process-explosion. Only genuinely terminal agents are excluded, because their
+// cost has already been rolled into the daily-cost store at teardown.
+func hasLiveCostData(a *agent.Agent) bool {
+	return a != nil && a.WorktreePath != "" && !isTerminal(a.Status)
+}
+
+// isPollable reports whether an agent should still be charged the per-refresh
+// *subprocess* work — the disk measurement and the tmux/process-tree queries.
+// It is the liveness half of the overload fix: diskProbe bounds how much work a
+// single worktree can cause, and this bounds *which* worktrees cause any at
+// all.
+//
+// Without it, cost scaled with the number of agents ever registered rather
+// than the number running — 25 worktree snapshots on disk, only 8 belonging to
+// a live agent, and every one of the other 17 still being measured every 2s
+// because the registry entry (and therefore WorktreePath) outlived the agent.
+//
+// liveWindows is the set of tmux window IDs that currently exist. A nil map
+// means "could not enumerate" — we then fail open and poll, because blanking
+// the whole display on a transient tmux hiccup is worse than a wasted probe.
+func isPollable(a *agent.Agent, liveWindows map[string]bool) bool {
+	if a == nil || a.WorktreePath == "" {
+		return false
+	}
+
+	// StatusMerged matters most among the terminal states: it is where an entry
+	// gets parked when the post-merge `ccmux cleanup` fails to finish, and such
+	// an entry is never revisited by any other poller (the CI poll list
+	// excludes it). That is precisely the stale entry whose directory
+	// accumulated 552 concurrent `git diff` processes.
+	if isTerminal(a.Status) {
+		return false
+	}
+
+	// A registry entry whose tmux window no longer exists is a leftover: the
+	// agent is not running, so its disk and token figures are frozen.
+	if liveWindows != nil && a.TmuxWindow != "" && !liveWindows[a.TmuxWindow] {
+		return false
+	}
+
+	// A worktree that is gone from disk cannot be measured. Cheap to check
+	// (no fork) and it stops us from paying for a failing subprocess every
+	// backoff period.
+	if info, err := os.Stat(a.WorktreePath); err != nil || !info.IsDir() {
+		return false
+	}
+
+	return true
+}
+
 func queryAllAgentResources(
 	agents []*agent.Agent,
 	tmuxMgr *tmux.Manager,
@@ -55,19 +124,29 @@ func queryAllAgentResources(
 	prevCPUTicks map[int]int64,
 	fastWTProjects map[string]bool,
 	collector *otelcollector.Collector,
+	probe *diskProbe,
+	liveWindows map[string]bool,
 ) (map[string]*AgentResources, map[int]int64, map[string]float64) {
 	procs := listAllProcesses()
 	procTicks := readAllProcTicks()
 	resources := make(map[string]*AgentResources)
 	numCPU := float64(runtime.NumCPU())
 
-	type diskResult struct {
-		agentID   string
-		bytes     int64
-		reflinked bool
+	// Decide once who is worth polling, so the disk, token and process-tree
+	// passes below all agree and a stale entry costs nothing anywhere.
+	pollable := make(map[string]bool, len(agents))
+	keepPaths := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		if isPollable(a, liveWindows) {
+			pollable[a.ID] = true
+			keepPaths[a.WorktreePath] = true
+		}
 	}
+	// Forget probe state for worktrees we no longer poll, so a long session
+	// does not accumulate one entry per agent ever run.
+	probe.Retain(keepPaths)
+
 	var wg sync.WaitGroup
-	diskCh := make(chan diskResult, len(agents))
 	type tokenResult struct {
 		agentID string
 		tokens  tokenBreakdown
@@ -79,18 +158,22 @@ func queryAllAgentResources(
 	}
 	dailyCostCh := make(chan dailyCostResult, len(agents))
 
+	// Disk is read straight from the probe rather than in a goroutine, because
+	// Sample never blocks on a subprocess: it returns the last known figure and
+	// starts at most one background measurement per worktree. That is what
+	// keeps a slow repo from delaying this refresh and stacking up with the
+	// next tick's.
+	diskMap := make(map[string]int64)
+	diskReflinked := make(map[string]bool)
+
 	for _, a := range agents {
-		if a.WorktreePath != "" {
-			wg.Add(1)
+		if pollable[a.ID] {
 			isFastWT := fastWTProjects[a.ProjectName]
-			go func(id, path string, fastWT bool) {
-				defer wg.Done()
-				if fastWT {
-					diskCh <- diskResult{id, getDiskUsageIncremental(path), true}
-				} else {
-					diskCh <- diskResult{id, getDiskUsage(path), false}
-				}
-			}(a.ID, a.WorktreePath, isFastWT)
+			diskMap[a.ID], _ = probe.Sample(a.WorktreePath, isFastWT)
+			diskReflinked[a.ID] = isFastWT
+		}
+
+		if hasLiveCostData(a) {
 			wg.Add(1)
 			go func(id, path string) {
 				defer wg.Done()
@@ -106,17 +189,9 @@ func queryAllAgentResources(
 
 	go func() {
 		wg.Wait()
-		close(diskCh)
 		close(tokenCh)
 		close(dailyCostCh)
 	}()
-
-	diskMap := make(map[string]int64)
-	diskReflinked := make(map[string]bool)
-	for r := range diskCh {
-		diskMap[r.agentID] = r.bytes
-		diskReflinked[r.agentID] = r.reflinked
-	}
 
 	tokenMap := make(map[string]tokenBreakdown)
 	for r := range tokenCh {
@@ -140,7 +215,12 @@ func queryAllAgentResources(
 	for _, a := range agents {
 		res := &AgentResources{}
 
-		if a.TmuxWindow != "" {
+		// Weaker gate than isPollable on purpose: a spawning agent has a
+		// window but no worktree yet, and we still want its CPU/memory. All we
+		// require is that the window actually exists, so we don't fork a
+		// doomed `tmux display-message` per stale entry per refresh.
+		windowLive := a.TmuxWindow != "" && (liveWindows == nil || liveWindows[a.TmuxWindow])
+		if windowLive {
 			panePID, err := tmuxMgr.GetPanePID(a.TmuxWindow)
 			if err == nil && panePID > 0 {
 				descendants := findDescendants(panePID, procs)
@@ -352,37 +432,11 @@ func isProcessTreeActiveFromPID(
 	return cpuSeconds > cpuActiveThreshold
 }
 
-func getDiskUsageIncremental(path string) int64 {
-	cmd := exec.Command("git", "-C", path, "diff", "--name-only", "HEAD")
-	modifiedOut, err := cmd.Output()
-	if err != nil {
-		return getDiskUsage(path)
-	}
-
-	cmd2 := exec.Command("git", "-C", path, "ls-files", "--others", "--exclude-standard")
-	untrackedOut, err := cmd2.Output()
-	if err != nil {
-		return getDiskUsage(path)
-	}
-
-	var totalBytes int64
-	seen := make(map[string]bool)
-	for _, output := range [][]byte{modifiedOut, untrackedOut} {
-		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || seen[line] {
-				continue
-			}
-			seen[line] = true
-			fullPath := filepath.Join(path, line)
-			info, err := os.Stat(fullPath)
-			if err == nil {
-				totalBytes += info.Size()
-			}
-		}
-	}
-	return totalBytes
-}
+// Note: the unbounded getDiskUsageIncremental / getDiskUsage pair that used to
+// live here is now measureIncrementalDiskUsage / measureDuDiskUsage in
+// diskprobe.go, reachable only through diskProbe.Sample so that every
+// invocation carries a timeout, process-group reaping, single-flight and
+// backoff. Nothing should shell out per worktree from this file again.
 
 func getClockTicks() int64 {
 	cmd := exec.Command("getconf", "CLK_TCK")

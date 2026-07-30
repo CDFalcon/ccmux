@@ -71,19 +71,18 @@ func readProcTicks(pid int) int64 {
 	return utime + stime
 }
 
-func getDiskUsage(path string) int64 {
-	cmd := exec.Command("du", "-sb", path)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	fields := strings.Fields(strings.TrimSpace(string(output)))
-	if len(fields) < 1 {
-		return 0
-	}
-	size, _ := strconv.ParseInt(fields[0], 10, 64)
-	return size
+// duArgs is the argv for measuring a directory's disk usage on this platform.
+// GNU du supports -b (apparent bytes), so the output is already in bytes.
+//
+// The command is run by measureDuDiskUsage (diskprobe.go) rather than directly,
+// so it inherits the timeout, process-group reaping and single-flight bound
+// that keeps a slow du from piling up once per refresh tick.
+func duArgs(path string) []string {
+	return []string{"du", "-sb", path}
 }
+
+// duUnitBytes converts one unit of duArgs' output into bytes.
+const duUnitBytes int64 = 1
 
 func getTotalMemoryKB() int64 {
 	data, err := os.ReadFile("/proc/meminfo")

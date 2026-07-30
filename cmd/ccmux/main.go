@@ -15,6 +15,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/agent"
 	"github.com/CDFalcon/ccmux/internal/dailycost"
 	"github.com/CDFalcon/ccmux/internal/harness"
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 	"github.com/CDFalcon/ccmux/internal/logging"
 	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/project"
@@ -65,7 +66,9 @@ Examples:
 		spawnCmd(),
 		taskCmd(),
 		trustCodexProjectCmd(),
+		trustClaudeProjectCmd(),
 		registerAgentCmd(),
+		agentFailedCmd(),
 		queueAddCmd(),
 		prReadyCmd(),
 		ciWaitCmd(),
@@ -74,6 +77,8 @@ Examples:
 		cleanupCmd(),
 		killCmd(),
 		killSessionCmd(),
+		pruneCmd(),
+		agentRmCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -608,28 +613,35 @@ func trustCodexProject(projectPath string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read Codex config: %w", err)
-	}
+	// Same hazard as the Claude pretrust: concurrent spawns each did an unlocked
+	// read-modify-write of one shared config, so the last writer dropped the
+	// others' trust entries — and os.WriteFile truncates before writing, so a
+	// crash mid-write could leave the file empty. Hold the lock across the whole
+	// sequence and replace atomically.
+	return lockfile.WithLock(configPath, lockfile.DefaultTimeout, func() error {
+		data, err := os.ReadFile(configPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read Codex config: %w", err)
+		}
 
-	updated := upsertCodexProjectTrust(string(data), projectPath)
-	if string(data) == updated {
+		updated := upsertCodexProjectTrust(string(data), projectPath)
+		if string(data) == updated {
+			return nil
+		}
+
+		if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+			return fmt.Errorf("failed to create Codex config directory: %w", err)
+		}
+
+		mode := os.FileMode(0600)
+		if info, statErr := os.Stat(configPath); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := lockfile.WriteFileAtomic(configPath, []byte(updated), mode); err != nil {
+			return fmt.Errorf("failed to write Codex config: %w", err)
+		}
 		return nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
-		return fmt.Errorf("failed to create Codex config directory: %w", err)
-	}
-
-	mode := os.FileMode(0600)
-	if info, statErr := os.Stat(configPath); statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := os.WriteFile(configPath, []byte(updated), mode); err != nil {
-		return fmt.Errorf("failed to write Codex config: %w", err)
-	}
-	return nil
+	})
 }
 
 func trustCodexProjectCmd() *cobra.Command {
@@ -684,6 +696,23 @@ USE_FAST_WT=%s
 WT_SUFFIX=%s
 HARNESS=%s
 DRAFT_PRS=%s
+
+# Setup runs under "set -e", so any failure below aborts this script and the
+# pane dies mid-setup. Without this trap the agent record was simply left in
+# status spawning with an empty branch_name forever - indistinguishable from a
+# slow spawn, so nothing watching could tell it had died. Mark it failed instead.
+#
+# Cleared once "ccmux register-agent" succeeds; after that the agent's own
+# lifecycle owns its status.
+CCMUX_REGISTERED=0
+ccmux_on_exit() {
+  ccmux_exit=$?
+  if [ "$ccmux_exit" -ne 0 ] && [ "$CCMUX_REGISTERED" -eq 0 ]; then
+    ccmux agent-failed "$AGENT_ID" \
+      --reason="spawn failed during setup (exit $ccmux_exit)" || true
+  fi
+}
+trap ccmux_on_exit EXIT
 
 BLUE="\033[38;5;63m"
 WHITE="\033[1;97m"
@@ -863,14 +892,15 @@ fi
 echo "✓ Hooks installed"
 echo ""
 
-# Pre-trust worktree directory in Claude Code
+# Pre-trust worktree directory in Claude Code.
+#
+# This is a locked, atomic read-modify-write in Go rather than the jq/mv
+# one-liner it replaces: concurrent spawns all used the same
+# $HOME/.claude.json.tmp scratch path, so one spawn's mv renamed the file away
+# and a sibling died with "mv: rename ... No such file or directory" — under
+# set -e, before register-agent ever ran.
 echo "→ Pre-trusting worktree directory..."
-CLAUDE_JSON="$HOME/.claude.json"
-if [ -f "$CLAUDE_JSON" ]; then
-  jq --arg path "$WORKTREE_PATH" '.projects[$path].hasTrustDialogAccepted = true' "$CLAUDE_JSON" > "${CLAUDE_JSON}.tmp" && mv "${CLAUDE_JSON}.tmp" "$CLAUDE_JSON"
-else
-  echo '{}' | jq --arg path "$WORKTREE_PATH" '.projects[$path].hasTrustDialogAccepted = true' > "$CLAUDE_JSON"
-fi
+ccmux trust-claude-project "$WORKTREE_PATH"
 echo "✓ Directory trusted"
 echo ""
 fi
@@ -886,6 +916,7 @@ fi
 echo "→ Registering agent..."
 WINDOW_ID=$(tmux display-message -p '#{window_id}')
 ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH" --branch="$BRANCH_NAME" --base="$BASE_BRANCH" --window="$WINDOW_ID"
+CCMUX_REGISTERED=1
 echo "✓ Agent registered"
 echo ""
 
@@ -973,10 +1004,8 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-%s
-
-ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
+`+harness.ExitCapturePrologue+`%s
+`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -1188,6 +1217,74 @@ func getPRTitle(prURL string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// agentFailedCmd records that an agent could not start or died abnormally.
+//
+// Before this existed, agent.StatusFailed was declared, given a display name and
+// given a colour — and never assigned anywhere in the codebase. A spawn that
+// died during setup (the ~/.claude.json race being the reported case) left its
+// record in StatusSpawning with an empty branch_name permanently, animating a
+// spinner with no way out; a harness that exited non-zero immediately
+// ("Resuming agent... No conversation found to continue", exit 1) left the record
+// in StatusRunning behind a dead pane. Neither was distinguishable from healthy
+// progress by anything watching, which is exactly how a dead agent went unnoticed
+// for seven hours.
+//
+// The launcher and recovery scripts call this from an EXIT trap, so any failure
+// before the agent is registered becomes a visible, reasoned StatusFailed.
+func agentFailedCmd() *cobra.Command {
+	var reason string
+
+	cmd := &cobra.Command{
+		Use:    "agent-failed <agent-id>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			agentID := args[0]
+			agentStore, err := agent.NewStore(getCurrentSessionID())
+			if err != nil {
+				return err
+			}
+
+			a, err := agentStore.Get(agentID)
+			if err != nil {
+				// Nothing to mark — the record was already cleaned up. Not an
+				// error: this runs from a trap and must never fail the teardown
+				// it is reporting on.
+				return nil
+			}
+			// Never overwrite a teardown already in progress; those states are
+			// their own truth and are about to remove the record anyway.
+			switch a.Status {
+			case agent.StatusMerged, agent.StatusCleaningUp, agent.StatusKilling:
+				return nil
+			}
+
+			if reason == "" {
+				reason = "agent failed"
+			}
+			if err := agentStore.Update(agentID, func(ag *agent.Agent) {
+				ag.Status = agent.StatusFailed
+				ag.FailureReason = reason
+			}); err != nil {
+				return err
+			}
+
+			// Surface it in the queue too, so the TUI's review list shows it
+			// rather than requiring someone to notice a status column.
+			if queueManager, err := queue.NewQueue(getCurrentSessionID()); err == nil {
+				queueManager.RemoveByAgentAndType(agentID, queue.ItemTypeIdle)
+				queueManager.Add(queue.ItemTypeDead, agentID, "Agent failed - kill or restart", reason)
+			}
+
+			fmt.Printf("Marked agent %s failed: %s\n", agentID, reason)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&reason, "reason", "", "why the agent failed")
+	return cmd
+}
+
 func agentStoppedCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "agent-stopped <agent-id>",
@@ -1366,15 +1463,7 @@ func doCleanup(agentID, action string, closePR bool) error {
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
 
-	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-	if err == nil {
-		wtManager := worktree.NewManager(repoRoot)
-		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-		if err := wtManager.Remove(a.WorktreePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
-		}
-		wtManager.DeleteBranch(a.BranchName)
-	}
+	removeErr := removeAgentWorktree(a)
 
 	homeDir, _ := os.UserHomeDir()
 	if homeDir != "" {
@@ -1389,10 +1478,107 @@ func doCleanup(agentID, action string, closePR bool) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
 	}
 
+	// Only forget the agent once its worktree is actually gone.
+	//
+	// This used to be an unconditional Delete while removal failures were a
+	// stderr warning — and the TUI runs `ccmux cleanup` detached, discarding
+	// output, so nobody ever saw it. Worse, a GetRepoRoot error skipped removal
+	// entirely. Either way the directory survived on disk with no registry entry
+	// pointing at it: invisible to every later cleanup path, permanently.
+	//
+	// Keeping the record, parked in StatusFailed with the reason attached, means
+	// the leftover stays visible in the TUI and `ccmux prune` can finish the job.
+	// StatusFailed is excluded from resource polling (see isPollable), so a
+	// parked entry costs nothing while it waits.
+	if removeErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree %s: %v\n", a.WorktreePath, removeErr)
+		fmt.Fprintf(os.Stderr, "Keeping agent %s registered so the leftover stays visible; run `ccmux prune` to finish.\n", agentID)
+		agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusFailed
+			ag.FailureReason = fmt.Sprintf("teardown incomplete: %v", removeErr)
+		})
+		return fmt.Errorf("failed to remove worktree %s: %w", a.WorktreePath, removeErr)
+	}
+
 	agentStore.Delete(agentID)
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
+}
+
+// removeAgentWorktree deletes an agent's worktree directory and local branch.
+// It returns nil when the directory is gone by the time it finishes — including
+// when it was already gone before the call, which is the common case for an
+// agent whose teardown is being retried.
+func removeAgentWorktree(a *agent.Agent) error {
+	if a.WorktreePath == "" {
+		return nil
+	}
+	if !dirExists(a.WorktreePath) {
+		return nil
+	}
+
+	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+	if err != nil {
+		// Previously this returned early and skipped removal altogether, which
+		// is how directories were orphaned. Fall back to the project record's
+		// repo path so a detached or damaged worktree can still be cleaned up.
+		repoRoot = projectRepoRoot(a.ProjectName)
+	}
+
+	wtManager := worktree.NewManager(repoRoot)
+	os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+	removeErr := wtManager.Remove(a.WorktreePath)
+	if removeErr == nil || !dirExists(a.WorktreePath) {
+		wtManager.DeleteBranch(a.BranchName)
+		return nil
+	}
+
+	// `git worktree remove` / `rift remove` can fail for reasons a plain
+	// directory delete handles fine: the worktree was never registered, the
+	// admin files are damaged, or rift is not on PATH any more. Since the caller
+	// has already decided this agent is finished, fall back to removing the
+	// directory outright rather than leaking it.
+	if fallbackErr := os.RemoveAll(a.WorktreePath); fallbackErr != nil {
+		return fmt.Errorf("%v (and direct removal failed: %v)", removeErr, fallbackErr)
+	}
+	if dirExists(a.WorktreePath) {
+		return removeErr
+	}
+	// Tidy the now-dangling `git worktree` administrative entry, if any.
+	pruneGitWorktrees(repoRoot)
+	wtManager.DeleteBranch(a.BranchName)
+	return nil
+}
+
+// projectRepoRoot resolves a project name to its repo path, returning "" when
+// the project is unknown.
+func projectRepoRoot(projectName string) string {
+	if projectName == "" {
+		return ""
+	}
+	projectStore, err := project.NewStore()
+	if err != nil {
+		return ""
+	}
+	proj, err := projectStore.Get(projectName)
+	if err != nil {
+		return ""
+	}
+	return proj.EffectivePath()
+}
+
+// pruneGitWorktrees drops administrative entries for worktree directories that
+// no longer exist. Nothing in ccmux called `git worktree prune` before, so a
+// removal that bypassed `git worktree remove` left git believing the worktree
+// was still checked out — which then blocks reusing the branch.
+func pruneGitWorktrees(repoRoot string) {
+	if repoRoot == "" {
+		return
+	}
+	cmd := exec.Command("git", "worktree", "prune")
+	cmd.Dir = repoRoot
+	cmd.Run()
 }
 
 // closeAgentPR closes the agent's PR and deletes the remote branch.
@@ -1519,7 +1705,9 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 
 	var toRecover []recoverable
 	var toCleanup []*agent.Agent
-	var toRemove []string
+	// toRemove holds whole agents rather than IDs so their worktrees can be
+	// removed too, not just their registry entries.
+	var toRemove []*agent.Agent
 	// Agents whose waiting_review status was withdrawn for want of a PR URL;
 	// their stale pr_ready queue items are dropped alongside.
 	var demoted []string
@@ -1582,18 +1770,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
 
 		default:
-			toRemove = append(toRemove, a.ID)
+			toRemove = append(toRemove, a)
 		}
 	}
 
 	for _, a := range toCleanup {
 		logging.Log("recovery: cleaning up stale agent %s", a.ID)
-		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-		if err == nil {
-			wtManager := worktree.NewManager(repoRoot)
-			os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-			wtManager.Remove(a.WorktreePath)
-			wtManager.DeleteBranch(a.BranchName)
+		if err := removeAgentWorktree(a); err != nil {
+			logging.Log("recovery: failed to remove worktree for %s: %v", a.ID, err)
 		}
 		os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
@@ -1606,8 +1790,30 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		agentStore.Delete(a.ID)
 	}
 
-	for _, id := range toRemove {
+	for _, a := range toRemove {
+		id := a.ID
 		logging.Log("recovery: removing orphaned agent record %s", id)
+
+		// Remove the worktree before forgetting the record.
+		//
+		// This branch catches StatusMerged, StatusFailed and any status whose
+		// worktree no longer exists — and it used to delete only the registry
+		// entry. An agent whose post-merge cleanup died mid-flight was therefore
+		// erased from the registry on the next cold start while its directory
+		// stayed on disk forever, with nothing left that knew about it. That is
+		// half of how 25 worktrees accumulated for 8 live agents.
+		//
+		// A worktree holding unpushed work is left alone and reported: recovery
+		// runs unattended at startup, so it must never be the thing that
+		// destroys an agent's only copy of its work.
+		if unsaved := worktree.Inspect(a.WorktreePath); !unsaved.IsClean() {
+			logging.Log("recovery: keeping worktree %s for agent %s (%s)", a.WorktreePath, id, unsaved.Summary())
+			fmt.Fprintf(os.Stderr, "Note: keeping worktree %s (%s); run `ccmux prune` to review.\n",
+				a.WorktreePath, unsaved.Summary())
+		} else if err := removeAgentWorktree(a); err != nil {
+			logging.Log("recovery: failed to remove worktree for %s: %v", id, err)
+		}
+
 		os.Remove(filepath.Join(launcherDir, id+".sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
@@ -1894,10 +2100,8 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-%s
-
-ccmux agent-stopped "$AGENT_ID"
-`, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), sq(promptsFilePath(agentID)), h.ContinueCommand())
+`+harness.ExitCapturePrologue+`%s
+`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), sq(promptsFilePath(agentID)), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err

@@ -127,6 +127,44 @@ func (t Type) ResumeWithPromptPrefix() string {
 	}
 }
 
+// ExitCapturePrologue and ExitCaptureEpilogue bracket the harness invocation in
+// every generated agent script.
+//
+// All those scripts run under `set -e`, and the harness invocation was the last
+// unguarded command before `ccmux agent-stopped`. A harness that exited non-zero
+// therefore aborted the script *before* the status transition — the reported case
+// being `claude --continue` printing "No conversation found to continue" and
+// exiting 1, which stranded the agent in StatusRunning behind a dead pane with
+// nothing to indicate it had stopped. Since tmux keeps the pane on
+// remain-on-exit, the only signal was a status column that still said "running".
+//
+// Bracketing the call means the status is always updated: a clean exit takes the
+// normal Stop-hook path, and a non-zero one is recorded as StatusFailed carrying
+// the exit code, which the TUI surfaces in the review queue.
+//
+// Usage is three parts, in order: ExitCapturePrologue, the harness invocation,
+// ExitCaptureCapture, then any post-run commands, then ExitCaptureReport. The
+// capture must come immediately after the harness call — anything in between
+// would clobber $? — which is why it is separate from the report.
+//
+// All three are safe to embed in a fmt.Sprintf format string; they contain no
+// percent verbs. Scripts using them must define AGENT_ID.
+const (
+	ExitCapturePrologue = "set +e\n"
+
+	ExitCaptureCapture = `CCMUX_HARNESS_EXIT=$?
+set -e
+`
+
+	ExitCaptureReport = `
+if [ "${CCMUX_HARNESS_EXIT:-0}" -ne 0 ]; then
+  ccmux agent-failed "$AGENT_ID" --reason="harness exited ${CCMUX_HARNESS_EXIT}" || true
+else
+  ccmux agent-stopped "$AGENT_ID"
+fi
+`
+)
+
 // InstallsClaudeHooks reports whether ccmux should install the Claude Code
 // Stop/PostToolUse hooks (and the .claude/settings.json wiring) into the
 // worktree for this harness. Only Claude Code consumes those hooks.
