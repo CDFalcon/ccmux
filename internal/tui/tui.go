@@ -3349,11 +3349,11 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-` + harness.ExitCapturePrologue + `%s \
+`+harness.ExitCapturePrologue+`%s \
   "The GitHub PR at $PR_URL has received comments. Please review ALL comments — both conversation-level comments (gh pr view $PR_URL --comments) AND inline review comments (gh api repos/{owner}/{repo}/pulls/{number}/comments). Make sure to check both types so you don't miss any feedback. Address all the feedback, then commit and push your changes. If your changes meaningfully alter the PR's scope, behavior, or approach, also update the PR description with 'gh pr edit $PR_URL --body ...' so it reflects the current state."
-` + harness.ExitCaptureCapture + `
+`+harness.ExitCaptureCapture+`
 ccmux ci-wait "$PR_URL" || true
-` + harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), h.ResumeWithPromptPrefix())
+`+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3799,11 +3799,11 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-` + harness.ExitCapturePrologue + `%s \
+`+harness.ExitCapturePrologue+`%s \
   "CI checks have FAILED for the PR at $PR_URL. Failures: $FAILURE_SUMMARY -- Investigate the failures using: gh pr checks $PR_URL -- Fix the issues, then commit and push your changes."
-` + harness.ExitCaptureCapture + `
+`+harness.ExitCaptureCapture+`
 ccmux ci-wait "$PR_URL" || true
-` + harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary), h.ResumeWithPromptPrefix())
+`+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), sq(failureSummary), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -3946,11 +3946,11 @@ echo ""
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-` + harness.ExitCapturePrologue + `%s \
+`+harness.ExitCapturePrologue+`%s \
   "The PR at $PR_URL has merge conflicts with the base branch ($BASE_BRANCH). Resolve the merge conflicts and push your changes."
-` + harness.ExitCaptureCapture + `
+`+harness.ExitCaptureCapture+`
 ccmux ci-wait "$PR_URL" || true
-` + harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch), h.ResumeWithPromptPrefix())
+`+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(prURL), sq(baseBranch), h.ResumeWithPromptPrefix())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
@@ -4166,8 +4166,8 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
-` + harness.ExitCapturePrologue + `%s
-` + harness.ExitCaptureCapture + harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
+`+harness.ExitCapturePrologue+`%s
+`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
