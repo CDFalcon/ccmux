@@ -402,7 +402,10 @@ func TestGetDiskUsageIncremental_ShouldReturnZero_GivenCleanRepo(t *testing.T) {
 	exec.Command("git", "-C", tmpDir, "commit", "--allow-empty", "-m", "init").Run()
 
 	// Execute.
-	result := getDiskUsageIncremental(tmpDir)
+	result, err := measureIncrementalDiskUsage(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("measureIncrementalDiskUsage: %v", err)
+	}
 
 	// Assert.
 	if result != 0 {
@@ -423,7 +426,10 @@ func TestGetDiskUsageIncremental_ShouldCountModifiedFiles_GivenChanges(t *testin
 	os.WriteFile(testFile, []byte("modified content here"), 0o644)
 
 	// Execute.
-	result := getDiskUsageIncremental(tmpDir)
+	result, err := measureIncrementalDiskUsage(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("measureIncrementalDiskUsage: %v", err)
+	}
 
 	// Assert.
 	info, _ := os.Stat(testFile)
@@ -443,7 +449,10 @@ func TestGetDiskUsageIncremental_ShouldCountUntrackedFiles_GivenNewFiles(t *test
 	os.WriteFile(newFile, []byte("new content"), 0o644)
 
 	// Execute.
-	result := getDiskUsageIncremental(tmpDir)
+	result, err := measureIncrementalDiskUsage(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("measureIncrementalDiskUsage: %v", err)
+	}
 
 	// Assert.
 	info, _ := os.Stat(newFile)
@@ -756,7 +765,7 @@ func TestQueryAllAgentResources_ShouldPreferCollectorCost_GivenCollectorHasData(
 	}}
 
 	// Execute.
-	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c)
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c, newDiskProbe(), nil)
 
 	// Assert.
 	res, ok := resources["agent-with-otel"]
@@ -803,7 +812,7 @@ func TestQueryAllAgentResources_ShouldFallBackToJSONL_GivenCollectorEmpty(t *tes
 	}}
 
 	// Execute.
-	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c)
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c, newDiskProbe(), nil)
 
 	// Assert. The JSONL estimate is 1000 input + 500 output at Sonnet
 	// pricing → $0.003 + $0.0075 = $0.0105.

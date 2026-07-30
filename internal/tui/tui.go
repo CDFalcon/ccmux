@@ -134,6 +134,13 @@ type model struct {
 	hostMemPercent  float64
 	prevCPUTicks    map[int]int64
 
+	// diskProbe bounds the per-worktree disk measurement subprocesses. Held by
+	// pointer so the single-flight state survives bubbletea copying the model
+	// by value on every Update.
+	diskProbe *diskProbe
+	// refreshInFlight admits one refreshCmd at a time; see refreshCmd.
+	refreshInFlight *atomic.Bool
+
 	// Download progress
 	downloadProgress *int64
 	restartRequested bool
@@ -597,6 +604,12 @@ type refreshMsg struct {
 	hostDiskAvailGB float64
 	hostMemPercent  float64
 }
+
+// refreshSkippedMsg is returned when a refresh was dropped because another was
+// already running. It carries no state: the model keeps what it has and the
+// next tick issues a fresh refresh.
+type refreshSkippedMsg struct{}
+
 type errMsg struct{ err error }
 type successMsg struct{ msg string }
 type mergeConflictOnAcceptMsg struct {
@@ -721,6 +734,8 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		totalMemKB:          getTotalMemoryKB(),
 		clkTck:              getClockTicks(),
 		prevCPUTicks:        make(map[int]int64),
+		diskProbe:           newDiskProbe(),
+		refreshInFlight:     &atomic.Bool{},
 		downloadProgress:    progress,
 		projSetupBuffers:    make(map[string]*projImportBuffer),
 		agentStore:          agentStore,
@@ -776,8 +791,34 @@ const ciIdleThreshold = 10 * time.Second
 
 func (m model) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
+		// Admit one refresh at a time.
+		//
+		// The 2s tick re-arms itself unconditionally (see the tickMsg case in
+		// Update: tea.Batch(tickCmd(), m.refreshCmd())), so it does not wait
+		// for the previous refresh to finish. Without this latch, a refresh
+		// slower than the tick interval gets another started on top of it, and
+		// the overlap compounds — every in-flight refresh takes its own
+		// process-table and tmux snapshots and fans out its own per-agent
+		// work. That is the multiplier that turned slow per-worktree git calls
+		// into load average ~1000 with `uptime` itself taking over a minute.
+		//
+		// Dropping the extra refresh is safe: it carries no state of its own,
+		// and the next tick issues a fresh one 2s later.
+		if m.refreshInFlight != nil && !m.refreshInFlight.CompareAndSwap(false, true) {
+			return refreshSkippedMsg{}
+		}
+		if m.refreshInFlight != nil {
+			defer m.refreshInFlight.Store(false)
+		}
+
 		agents, _ := m.agentStore.List()
 		projects, _ := m.projectStore.List()
+
+		// One tmux call for the whole live-window set, used to skip agents
+		// whose window is gone instead of forking a doomed tmux query (and a
+		// disk measurement) per stale entry. On error this stays nil, and the
+		// consumers fail open.
+		liveWindows, _ := m.tmuxManager.LiveWindowIDs()
 
 		now := time.Now()
 		const idleThreshold = ciIdleThreshold
@@ -947,6 +988,7 @@ func (m model) refreshCmd() tea.Cmd {
 		}
 		resources, newCPUTicks, liveDailyCosts := queryAllAgentResources(
 			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects, m.otelCollector,
+			m.diskProbe, liveWindows,
 		)
 
 		prompts, _ := m.promptStore.List()
@@ -1022,6 +1064,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		return m, tea.Batch(tickCmd(), m.refreshCmd())
+
+	case refreshSkippedMsg:
+		// A refresh was already in flight; nothing to apply.
+		return m, nil
 
 	case spinnerTickMsg:
 		shouldAnimate := m.updateChecking || m.updateDownloading || m.changelogLoading

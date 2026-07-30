@@ -135,21 +135,19 @@ func parsePsTimeToTicks(s string) int64 {
 	return totalSeconds*100 + centis
 }
 
-func getDiskUsage(path string) int64 {
-	// BSD du does not support -b (apparent bytes). -sk reports allocated KiB,
-	// which is the disk usage users care about anyway.
-	cmd := exec.Command("du", "-sk", path)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	fields := strings.Fields(strings.TrimSpace(string(output)))
-	if len(fields) < 1 {
-		return 0
-	}
-	kb, _ := strconv.ParseInt(fields[0], 10, 64)
-	return kb * 1024
+// duArgs is the argv for measuring a directory's disk usage on this platform.
+// BSD du does not support -b (apparent bytes); -sk reports allocated KiB,
+// which is the disk usage users care about anyway.
+//
+// The command is run by measureDuDiskUsage (diskprobe.go) rather than directly,
+// so it inherits the timeout, process-group reaping and single-flight bound
+// that keeps a slow du from piling up once per refresh tick.
+func duArgs(path string) []string {
+	return []string{"du", "-sk", path}
 }
+
+// duUnitBytes converts one unit of duArgs' output into bytes.
+const duUnitBytes int64 = 1024
 
 func getTotalMemoryKB() int64 {
 	cmd := exec.Command("sysctl", "-n", "hw.memsize")

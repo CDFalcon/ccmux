@@ -285,6 +285,31 @@ func (m *Manager) GetPanePID(windowID string) (int, error) {
 	return pid, nil
 }
 
+// LiveWindowIDs returns the set of window IDs (e.g. "@7") that currently exist
+// in this session, in a single tmux call.
+//
+// Callers use it to avoid per-agent tmux/git work for registry entries whose
+// window is already gone. One fork here replaces N doomed
+// `tmux display-message -t <dead-window>` forks per refresh.
+//
+// A nil map (with a nil error) is never returned: an error means "could not
+// determine", and callers are expected to fail open rather than treat every
+// agent as dead.
+func (m *Manager) LiveWindowIDs() (map[string]bool, error) {
+	cmd := exec.Command("tmux", "list-windows", "-t", m.sessionName, "-F", "#{window_id}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list windows: %w", err)
+	}
+	live := make(map[string]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		if id := strings.TrimSpace(line); id != "" {
+			live[id] = true
+		}
+	}
+	return live, nil
+}
+
 func (m *Manager) RenameWindow(windowID, name string) error {
 	cmd := exec.Command("tmux", "rename-window", "-t", windowID, name)
 	cmd.Run()
