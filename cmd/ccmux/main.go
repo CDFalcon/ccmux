@@ -1127,8 +1127,13 @@ func prReadyCmd() *cobra.Command {
 				return err
 			}
 
+			// Record the URL alongside the status. Without it the agent is
+			// marked "waiting for review" while nothing in ccmux knows which PR
+			// to show, poll or merge — the exact PR-that-does-not-exist state
+			// recovery now has to defend against.
 			return agentStore.Update(agentID, func(a *agent.Agent) {
 				a.Status = agent.StatusWaitingReview
+				a.PRURL = prURL
 			})
 		},
 	}
@@ -1700,7 +1705,12 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 
 	var toRecover []recoverable
 	var toCleanup []*agent.Agent
+	// toRemove holds whole agents rather than IDs so their worktrees can be
+	// removed too, not just their registry entries.
 	var toRemove []*agent.Agent
+	// Agents whose waiting_review status was withdrawn for want of a PR URL;
+	// their stale pr_ready queue items are dropped alongside.
+	var demoted []string
 	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
 
 	// projectStore lets recovery honour each agent's project-level
@@ -1724,7 +1734,19 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "resume"})
 
 		case (a.Status == agent.StatusReady || a.Status == agent.StatusWaitingReview) && worktreeExists:
-			scriptPath, err := writePlaceholderScript(a.ID, a.WorktreePath, a.Task)
+			// A waiting_review record with no PR URL is a stale claim: park it
+			// (and re-record it) as idle so neither the pane banner nor the
+			// quick-action queue advertises a PR that does not exist.
+			parkedStatus := placeholderStatusFor(a)
+			if parkedStatus != a.Status {
+				logging.Log("recovery: agent %s was %s with no PR recorded — parking it as %s", a.ID, a.Status, parkedStatus)
+				agentStore.Update(a.ID, func(ag *agent.Agent) {
+					ag.Status = parkedStatus
+				})
+				a.Status = parkedStatus
+				demoted = append(demoted, a.ID)
+			}
+			scriptPath, err := writePlaceholderScript(a.ID, a.WorktreePath, a.Task, a.PRURL, parkedStatus)
 			if err != nil {
 				logging.Log("recovery: failed to write placeholder script for %s: %v", a.ID, err)
 				continue
@@ -1848,6 +1870,12 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			if !activeAgents[item.AgentID] {
 				queueManager.Remove(item.ID)
 			}
+		}
+		// A "PR ready" entry for an agent we just demoted points at a PR that
+		// was never recorded — leaving it would keep offering the operator a
+		// review that cannot be opened.
+		for _, id := range demoted {
+			queueManager.RemoveByAgentAndType(id, queue.ItemTypePRReady)
 		}
 	}
 
@@ -2082,7 +2110,32 @@ fi
 	return scriptPath, nil
 }
 
-func writePlaceholderScript(agentID, worktreePath, task string) (string, error) {
+// placeholderStatusFor resolves the status a recovered agent should actually be
+// parked under.
+//
+// StatusWaitingReview is a claim about the outside world — "this agent has a PR
+// open and a human needs to look at it". An agent carrying that status with no
+// PR URL recorded cannot back the claim up: nothing in ccmux can show, poll, or
+// merge a PR it has no URL for, so the operator is sent to review a PR that
+// does not exist. Demote it to StatusReady (idle) instead, which is what an
+// agent with no PR is.
+func placeholderStatusFor(a *agent.Agent) agent.Status {
+	if a.Status == agent.StatusWaitingReview && a.PRURL == "" {
+		return agent.StatusReady
+	}
+	return a.Status
+}
+
+// writePlaceholderScript parks a recovered agent's window with a banner
+// describing the state it was recovered in.
+//
+// The banner must follow the status. Recovery routes both StatusReady and
+// StatusWaitingReview agents here, and this script used to hardcode "● waiting
+// for PR review / This agent has a PR up for review" for both — so after every
+// ccmux restart, every idle agent's pane claimed a PR that had never been
+// opened, and the operator had no way to tell a genuinely review-ready agent
+// from one that had simply finished its turn.
+func writePlaceholderScript(agentID, worktreePath, task, prURL string, status agent.Status) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -2095,11 +2148,24 @@ func writePlaceholderScript(agentID, worktreePath, task string) (string, error) 
 
 	scriptPath := filepath.Join(launcherDir, agentID+"-placeholder.sh")
 
+	// Only a StatusWaitingReview agent has a PR waiting on a human. Everything
+	// else routed here is idle — including an agent that holds a PR URL but was
+	// flipped back to StatusReady for manual intervention (a throttled CI-fix
+	// loop, say), which is emphatically not "ready for review".
+	stateLines := `echo -e "${GREEN}● idle - waiting for input${RESET}"
+echo -e "${DIM}This agent finished its turn without opening a PR. Use the TUI to send it more work.${RESET}"`
+	if status == agent.StatusWaitingReview {
+		stateLines = `echo -e "${GREEN}● waiting for PR review${RESET}"
+echo -e "${DIM}PR:${RESET} $PR_URL"
+echo -e "${DIM}This agent has a PR up for review. Use the TUI to accept, comment, or reject.${RESET}"`
+	}
+
 	sq := shellutil.Quote
 	script := fmt.Sprintf(`#!/bin/bash
 
 AGENT_ID=%s
 WORKTREE_PATH=%s
+PR_URL=%s
 TASK=%s
 
 BLUE="\033[38;5;63m"
@@ -2111,14 +2177,13 @@ echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
 echo -e "${DIM}Task:${RESET} $TASK"
 echo -e "${DIM}Worktree:${RESET} $WORKTREE_PATH"
 echo ""
-echo -e "${GREEN}● waiting for PR review${RESET}"
-echo -e "${DIM}This agent has a PR up for review. Use the TUI to accept, comment, or reject.${RESET}"
+%s
 echo ""
 
 while true; do
   sleep 3600
 done
-`, sq(agentID), sq(worktreePath), sq(task))
+`, sq(agentID), sq(worktreePath), sq(prURL), sq(task), stateLines)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
