@@ -62,8 +62,13 @@ type Agent struct {
 	CILastNotifiedSummary string      `json:"ci_last_notified_summary,omitempty"`
 	CIResumeHistory       []time.Time `json:"ci_resume_history,omitempty"`
 	Status                Status      `json:"status"`
-	CreatedAt             time.Time   `json:"created_at"`
-	UpdatedAt             time.Time   `json:"updated_at"`
+	// FailureReason explains why the agent is in StatusFailed: a spawn that
+	// died before it could register, or a teardown whose worktree removal
+	// failed. It exists so a failure is visible and diagnosable in the TUI and
+	// in `ccmux prune` instead of being a discarded stderr warning.
+	FailureReason string    `json:"failure_reason,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type storeData struct {

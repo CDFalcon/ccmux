@@ -74,6 +74,8 @@ Examples:
 		cleanupCmd(),
 		killCmd(),
 		killSessionCmd(),
+		pruneCmd(),
+		agentRmCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -1361,15 +1363,7 @@ func doCleanup(agentID, action string, closePR bool) error {
 	tmuxManager := tmux.NewManager(tmuxSessionName)
 	tmuxManager.KillWindow(a.TmuxWindow)
 
-	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-	if err == nil {
-		wtManager := worktree.NewManager(repoRoot)
-		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-		if err := wtManager.Remove(a.WorktreePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
-		}
-		wtManager.DeleteBranch(a.BranchName)
-	}
+	removeErr := removeAgentWorktree(a)
 
 	homeDir, _ := os.UserHomeDir()
 	if homeDir != "" {
@@ -1384,10 +1378,107 @@ func doCleanup(agentID, action string, closePR bool) error {
 		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
 	}
 
+	// Only forget the agent once its worktree is actually gone.
+	//
+	// This used to be an unconditional Delete while removal failures were a
+	// stderr warning — and the TUI runs `ccmux cleanup` detached, discarding
+	// output, so nobody ever saw it. Worse, a GetRepoRoot error skipped removal
+	// entirely. Either way the directory survived on disk with no registry entry
+	// pointing at it: invisible to every later cleanup path, permanently.
+	//
+	// Keeping the record, parked in StatusFailed with the reason attached, means
+	// the leftover stays visible in the TUI and `ccmux prune` can finish the job.
+	// StatusFailed is excluded from resource polling (see isPollable), so a
+	// parked entry costs nothing while it waits.
+	if removeErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree %s: %v\n", a.WorktreePath, removeErr)
+		fmt.Fprintf(os.Stderr, "Keeping agent %s registered so the leftover stays visible; run `ccmux prune` to finish.\n", agentID)
+		agentStore.Update(agentID, func(ag *agent.Agent) {
+			ag.Status = agent.StatusFailed
+			ag.FailureReason = fmt.Sprintf("teardown incomplete: %v", removeErr)
+		})
+		return fmt.Errorf("failed to remove worktree %s: %w", a.WorktreePath, removeErr)
+	}
+
 	agentStore.Delete(agentID)
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
+}
+
+// removeAgentWorktree deletes an agent's worktree directory and local branch.
+// It returns nil when the directory is gone by the time it finishes — including
+// when it was already gone before the call, which is the common case for an
+// agent whose teardown is being retried.
+func removeAgentWorktree(a *agent.Agent) error {
+	if a.WorktreePath == "" {
+		return nil
+	}
+	if !dirExists(a.WorktreePath) {
+		return nil
+	}
+
+	repoRoot, err := project.GetRepoRoot(a.WorktreePath)
+	if err != nil {
+		// Previously this returned early and skipped removal altogether, which
+		// is how directories were orphaned. Fall back to the project record's
+		// repo path so a detached or damaged worktree can still be cleaned up.
+		repoRoot = projectRepoRoot(a.ProjectName)
+	}
+
+	wtManager := worktree.NewManager(repoRoot)
+	os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+	removeErr := wtManager.Remove(a.WorktreePath)
+	if removeErr == nil || !dirExists(a.WorktreePath) {
+		wtManager.DeleteBranch(a.BranchName)
+		return nil
+	}
+
+	// `git worktree remove` / `rift remove` can fail for reasons a plain
+	// directory delete handles fine: the worktree was never registered, the
+	// admin files are damaged, or rift is not on PATH any more. Since the caller
+	// has already decided this agent is finished, fall back to removing the
+	// directory outright rather than leaking it.
+	if fallbackErr := os.RemoveAll(a.WorktreePath); fallbackErr != nil {
+		return fmt.Errorf("%v (and direct removal failed: %v)", removeErr, fallbackErr)
+	}
+	if dirExists(a.WorktreePath) {
+		return removeErr
+	}
+	// Tidy the now-dangling `git worktree` administrative entry, if any.
+	pruneGitWorktrees(repoRoot)
+	wtManager.DeleteBranch(a.BranchName)
+	return nil
+}
+
+// projectRepoRoot resolves a project name to its repo path, returning "" when
+// the project is unknown.
+func projectRepoRoot(projectName string) string {
+	if projectName == "" {
+		return ""
+	}
+	projectStore, err := project.NewStore()
+	if err != nil {
+		return ""
+	}
+	proj, err := projectStore.Get(projectName)
+	if err != nil {
+		return ""
+	}
+	return proj.EffectivePath()
+}
+
+// pruneGitWorktrees drops administrative entries for worktree directories that
+// no longer exist. Nothing in ccmux called `git worktree prune` before, so a
+// removal that bypassed `git worktree remove` left git believing the worktree
+// was still checked out — which then blocks reusing the branch.
+func pruneGitWorktrees(repoRoot string) {
+	if repoRoot == "" {
+		return
+	}
+	cmd := exec.Command("git", "worktree", "prune")
+	cmd.Dir = repoRoot
+	cmd.Run()
 }
 
 // closeAgentPR closes the agent's PR and deletes the remote branch.
@@ -1514,7 +1605,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 
 	var toRecover []recoverable
 	var toCleanup []*agent.Agent
-	var toRemove []string
+	var toRemove []*agent.Agent
 	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
 
 	// projectStore lets recovery honour each agent's project-level
@@ -1562,18 +1653,14 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			toRecover = append(toRecover, recoverable{agent: a, scriptPath: scriptPath, kind: "placeholder"})
 
 		default:
-			toRemove = append(toRemove, a.ID)
+			toRemove = append(toRemove, a)
 		}
 	}
 
 	for _, a := range toCleanup {
 		logging.Log("recovery: cleaning up stale agent %s", a.ID)
-		repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-		if err == nil {
-			wtManager := worktree.NewManager(repoRoot)
-			os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-			wtManager.Remove(a.WorktreePath)
-			wtManager.DeleteBranch(a.BranchName)
+		if err := removeAgentWorktree(a); err != nil {
+			logging.Log("recovery: failed to remove worktree for %s: %v", a.ID, err)
 		}
 		os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
 		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
@@ -1586,8 +1673,30 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		agentStore.Delete(a.ID)
 	}
 
-	for _, id := range toRemove {
+	for _, a := range toRemove {
+		id := a.ID
 		logging.Log("recovery: removing orphaned agent record %s", id)
+
+		// Remove the worktree before forgetting the record.
+		//
+		// This branch catches StatusMerged, StatusFailed and any status whose
+		// worktree no longer exists — and it used to delete only the registry
+		// entry. An agent whose post-merge cleanup died mid-flight was therefore
+		// erased from the registry on the next cold start while its directory
+		// stayed on disk forever, with nothing left that knew about it. That is
+		// half of how 25 worktrees accumulated for 8 live agents.
+		//
+		// A worktree holding unpushed work is left alone and reported: recovery
+		// runs unattended at startup, so it must never be the thing that
+		// destroys an agent's only copy of its work.
+		if unsaved := worktree.Inspect(a.WorktreePath); !unsaved.IsClean() {
+			logging.Log("recovery: keeping worktree %s for agent %s (%s)", a.WorktreePath, id, unsaved.Summary())
+			fmt.Fprintf(os.Stderr, "Note: keeping worktree %s (%s); run `ccmux prune` to review.\n",
+				a.WorktreePath, unsaved.Summary())
+		} else if err := removeAgentWorktree(a); err != nil {
+			logging.Log("recovery: failed to remove worktree for %s: %v", id, err)
+		}
+
 		os.Remove(filepath.Join(launcherDir, id+".sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
 		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
