@@ -394,6 +394,101 @@ func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.
 	}
 }
 
+// runPlaceholderBanner writes a placeholder script for the given state and
+// returns the banner it prints. The banner is the only thing an operator sees
+// in a parked pane, so it is worth asserting on what actually reaches the
+// terminal rather than on the generated source.
+func runPlaceholderBanner(t *testing.T, a *agent.Agent) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+
+	path, err := writePlaceholderScript(a.ID, "/tmp/repo/wt", "the original task", a.PRURL, placeholderStatusFor(a))
+	if err != nil {
+		t.Fatalf("writePlaceholderScript: %v", err)
+	}
+	assertValidBash(t, path)
+
+	// The script parks on `while true; sleep 3600` after printing, so run only
+	// the part before the loop rather than waiting on the process.
+	out, err := exec.Command("bash", "-c", "awk '/^while true; do/{exit} {print}' "+path+" | bash").CombinedOutput()
+	if err != nil {
+		t.Fatalf("running placeholder banner: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func TestWritePlaceholderScript_ShouldNotClaimAPR_GivenIdleAgent(t *testing.T) {
+	// Recovery parks StatusReady and StatusWaitingReview agents through the
+	// same script. It used to hardcode the review banner for both, so after
+	// every ccmux restart each idle agent's pane announced "This agent has a PR
+	// up for review" — several agents at once, none of which had opened a PR.
+
+	banner := runPlaceholderBanner(t, &agent.Agent{ID: "idle-agent", Status: agent.StatusReady})
+
+	if strings.Contains(banner, "PR up for review") || strings.Contains(banner, "waiting for PR review") {
+		t.Errorf("idle agent's pane claims a PR is up for review:\n%s", banner)
+	}
+	if !strings.Contains(banner, "idle - waiting for input") {
+		t.Errorf("idle agent's pane should say it is idle, got:\n%s", banner)
+	}
+}
+
+func TestWritePlaceholderScript_ShouldShowPR_GivenAgentWaitingOnReview(t *testing.T) {
+	banner := runPlaceholderBanner(t, &agent.Agent{
+		ID:     "review-agent",
+		Status: agent.StatusWaitingReview,
+		PRURL:  "https://github.com/o/r/pull/42",
+	})
+
+	if !strings.Contains(banner, "waiting for PR review") {
+		t.Errorf("review-ready agent's pane should say so, got:\n%s", banner)
+	}
+	// The URL is what makes the claim checkable — an operator seeing "there's a
+	// PR" with no link cannot tell a real one from a stale record.
+	if !strings.Contains(banner, "https://github.com/o/r/pull/42") {
+		t.Errorf("review banner should name the PR, got:\n%s", banner)
+	}
+}
+
+func TestWritePlaceholderScript_ShouldNotClaimReview_GivenReadyAgentHoldingPR(t *testing.T) {
+	// StatusReady + a PR URL is a real state: a throttled CI-fix loop parks the
+	// agent for manual intervention while its PR stays open. That is not
+	// "ready for review", and the pane must not say it is.
+
+	banner := runPlaceholderBanner(t, &agent.Agent{
+		ID:     "throttled-agent",
+		Status: agent.StatusReady,
+		PRURL:  "https://github.com/o/r/pull/42",
+	})
+
+	if strings.Contains(banner, "waiting for PR review") {
+		t.Errorf("agent parked for manual intervention should not be shown as review-ready:\n%s", banner)
+	}
+}
+
+func TestPlaceholderStatusFor_ShouldDemoteWaitingReview_GivenNoPRURL(t *testing.T) {
+	// Nothing in ccmux can show, poll or merge a PR it has no URL for, so this
+	// record cannot mean what it says. `ccmux pr-ready` used to produce exactly
+	// this state by setting the status without recording the URL.
+
+	got := placeholderStatusFor(&agent.Agent{ID: "no-pr", Status: agent.StatusWaitingReview})
+
+	if got != agent.StatusReady {
+		t.Errorf("status = %s, want %s — waiting_review with no PR URL is an unbacked claim", got, agent.StatusReady)
+	}
+}
+
+func TestPlaceholderStatusFor_ShouldPreserveStatus_GivenPRURL(t *testing.T) {
+	for _, status := range []agent.Status{agent.StatusWaitingReview, agent.StatusReady} {
+		t.Run(string(status), func(t *testing.T) {
+			got := placeholderStatusFor(&agent.Agent{ID: "has-pr", Status: status, PRURL: "https://github.com/o/r/pull/42"})
+			if got != status {
+				t.Errorf("status = %s, want %s preserved", got, status)
+			}
+		})
+	}
+}
+
 // setupStopHookTestStores points HOME at a tmpdir and returns a fresh
 // agent.Store + queue.Queue rooted there. Used by the handleAgentStopped
 // tests so they can exercise the real on-disk paths without touching the
