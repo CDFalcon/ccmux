@@ -118,6 +118,11 @@ type model struct {
 	ciLastChecked   map[string]time.Time
 	ciChecking      map[string]bool
 	ciCheckProgress map[string]ciProgress
+	// ciNoChecksSince records when each agent's status-check rollup was first
+	// seen empty, cleared as soon as any check shows up. It measures how long
+	// "this project reports no checks" has held, which is what distinguishes a
+	// project with no CI from one whose checks have not registered yet.
+	ciNoChecksSince map[string]time.Time
 
 	// Codex PR detection. Claude Code agents announce a freshly opened PR
 	// through the PostToolUse hook; Codex has no equivalent hook, so ccmux
@@ -656,7 +661,34 @@ const (
 	ciStatusPending ciStatus = iota
 	ciStatusPassed
 	ciStatusFailed
+	// ciStatusNoChecks means the PR's status-check rollup came back empty:
+	// GitHub is reporting no check runs and no commit statuses at all. That
+	// is ambiguous on its own — it's what a project with no CI configured
+	// looks like, but it's also what any project looks like for the first few
+	// seconds after a push, before GitHub has created the check runs. The
+	// Update handler disambiguates by how long the rollup has stayed empty
+	// (see noChecksGracePeriod / resolveNoChecksStatus), so this value is
+	// resolved to passed or pending before reaching the status switch.
+	ciStatusNoChecks
 )
+
+// noChecksGracePeriod is how long an empty status-check rollup must persist
+// before we conclude the project genuinely has no CI, rather than CI that
+// hasn't registered yet.
+//
+// GitHub creates check runs when a workflow is *queued*, not when a runner
+// picks it up, so the checks a push will produce normally appear within
+// seconds. Cases that look like slow CI actually still populate the rollup:
+// a workflow waiting on an offline self-hosted runner shows up QUEUED, and
+// a fork PR awaiting maintainer approval shows up ACTION_REQUIRED. So the
+// only thing this window really absorbs is GitHub API latency, and two
+// minutes (four poll cycles) is a wide margin on that.
+//
+// The asymmetry matters: waiting too long merely delays a no-CI project's
+// PR from being announced as ready, while concluding "no CI" too early on a
+// project that does have CI announces the PR for review before its checks
+// have even started.
+const noChecksGracePeriod = 2 * time.Minute
 
 type ciProgress struct {
 	Completed int
@@ -728,6 +760,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		ciLastChecked:       make(map[string]time.Time),
 		ciChecking:          make(map[string]bool),
 		ciCheckProgress:     make(map[string]ciProgress),
+		ciNoChecksSince:     make(map[string]time.Time),
 		prDetectLastChecked: make(map[string]time.Time),
 		prDetectChecking:    make(map[string]bool),
 		prevWindowNames:     make(map[string]string),
@@ -1136,6 +1169,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.ciLastChecked, id)
 				delete(m.ciChecking, id)
 				delete(m.ciCheckProgress, id)
+				delete(m.ciNoChecksSince, id)
 			}
 		}
 
@@ -1320,6 +1354,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.resumeAgentForNewReviewCmd(currentAgent, msg.prURL)
 			}
 		}
+		// An empty status-check rollup means GitHub reports no checks at all,
+		// which is both what a project with no CI looks like and what any
+		// project looks like in the seconds after a push. Time it: track when
+		// the empty run started and only call it "no CI" once it has held for
+		// noChecksGracePeriod. Treating it as pending outright is what parked
+		// agents on CI-less projects in waiting_ci forever, since pending is
+		// waited on indefinitely and no check would ever arrive to end it.
+		if msg.status == ciStatusNoChecks {
+			if m.ciNoChecksSince == nil {
+				m.ciNoChecksSince = make(map[string]time.Time)
+			}
+			firstEmptyAt, seen := m.ciNoChecksSince[msg.agentID]
+			if !seen {
+				firstEmptyAt = time.Now()
+				m.ciNoChecksSince[msg.agentID] = firstEmptyAt
+			}
+			msg.status = resolveNoChecksStatus(firstEmptyAt, time.Now())
+		} else {
+			// Checks exist for this poll, so any earlier empty run is over.
+			// Clearing here means a later empty rollup (a force-push resetting
+			// the checks, say) is timed afresh instead of inheriting a stale
+			// start that would resolve it instantly.
+			delete(m.ciNoChecksSince, msg.agentID)
+		}
+
 		switch msg.status {
 		case ciStatusPending:
 			// Do NOT clear CILastNotifiedSummary here. CI runs always pass
@@ -3538,7 +3597,12 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 	checks = deduplicateChecks(checks)
 	total = len(checks)
 	if total == 0 {
-		return ciStatusPending, nil, 0, 0
+		// No check runs and no commit statuses. Report this distinctly rather
+		// than as "pending": pending means "checks exist and haven't finished",
+		// which the poller waits on indefinitely. An empty rollup on a project
+		// with no CI would never resolve, parking the agent in waiting_ci
+		// forever. See resolveNoChecksStatus for the disambiguation.
+		return ciStatusNoChecks, nil, 0, 0
 	}
 
 	hasPending := false
@@ -3568,6 +3632,36 @@ func evaluateCIChecks(checks []prCheckResult) (status ciStatus, failedNames []st
 		return ciStatusPending, nil, completed, total
 	}
 	return ciStatusPassed, nil, completed, total
+}
+
+// resolveNoChecksStatus turns the ambiguous ciStatusNoChecks into a decision.
+//
+// firstEmptyAt is when this agent's rollup was FIRST observed empty in an
+// unbroken run of empty observations — not when the agent started waiting on
+// CI. That distinction matters: CIWaitAt looks like the natural anchor but is
+// really the "review feedback since" cutoff, and it goes stale. It is stamped
+// once at PR detection for harnesses with no PostToolUse hook (Codex), is not
+// bumped by CI-fix or merge-conflict resumes, and survives restarts. Anchoring
+// on it would mean an hours-old CIWaitAt puts every empty rollup instantly
+// past the grace period — exactly during the post-push window the grace period
+// exists to cover.
+//
+// Once the rollup has stayed empty for noChecksGracePeriod, this project has
+// no CI for this PR, so the PR is as ready as it will ever be: report passed
+// and let the agent move on to waiting_review.
+//
+// A zero firstEmptyAt means the caller has no record of when the empty run
+// began. Report passed rather than pending: "keep waiting" with no anchor is
+// the permanent hang this function exists to prevent, because no later poll
+// would resolve it either.
+func resolveNoChecksStatus(firstEmptyAt time.Time, now time.Time) ciStatus {
+	if firstEmptyAt.IsZero() {
+		return ciStatusPassed
+	}
+	if now.Sub(firstEmptyAt) >= noChecksGracePeriod {
+		return ciStatusPassed
+	}
+	return ciStatusPending
 }
 
 func checkPRChecksCmd(agentID, prURL, worktreePath, baseBranch string, ciWaitAt time.Time, useLocalConflictCheck bool) tea.Cmd {
@@ -3614,10 +3708,13 @@ func checkPRChecksCmd(agentID, prURL, worktreePath, baseBranch string, ciWaitAt 
 			hasNewReview = checkForNewReviews(ctx, owner, repo, prNumber, ciWaitAt)
 		}
 
-		if resp.StatusCheckRollup == nil {
-			return ciCheckResultMsg{agentID: agentID, status: ciStatusPassed, prURL: prURL, hasMergeConflict: hasMergeConflict, hasNewReview: hasNewReview}
-		}
-
+		// Note there is deliberately no `resp.StatusCheckRollup == nil` fast
+		// path here. A project with no CI makes gh emit
+		// `"statusCheckRollup": []`, which unmarshals to an empty-but-non-nil
+		// slice, so a nil test never fires for the case it was written for
+		// (0fd09ce). evaluateCIChecks reports both nil and empty as
+		// ciStatusNoChecks, which the Update handler then resolves — it owns
+		// the "how long has this rollup been empty" bookkeeping.
 		status, failedNames, completed, total := evaluateCIChecks(resp.StatusCheckRollup)
 		var summary string
 		if status == ciStatusFailed {

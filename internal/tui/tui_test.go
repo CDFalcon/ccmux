@@ -892,7 +892,11 @@ func TestEvaluateCIChecks_ShouldReturnPending_GivenAnyPendingAndNoFailures(t *te
 	}
 }
 
-func TestEvaluateCIChecks_ShouldReturnPending_GivenNoChecks(t *testing.T) {
+// An empty rollup must NOT be reported as pending. `gh pr view --json
+// statusCheckRollup` emits `[]` for a project with no CI configured, and the
+// poller waits on pending forever, so conflating the two parked those agents
+// in waiting_ci permanently.
+func TestEvaluateCIChecks_ShouldReturnNoChecks_GivenEmptyRollup(t *testing.T) {
 	// Setup.
 	checks := []prCheckResult{}
 
@@ -900,8 +904,88 @@ func TestEvaluateCIChecks_ShouldReturnPending_GivenNoChecks(t *testing.T) {
 	status, _, _, _ := evaluateCIChecks(checks)
 
 	// Assert.
+	if status != ciStatusNoChecks {
+		t.Errorf("expected ciStatusNoChecks, got %d", status)
+	}
+}
+
+// gh emits `[]` rather than `null`, so the empty case above is the one that
+// matters in practice — but a nil rollup must not be reported as pending
+// either, since it would hang the same way.
+func TestEvaluateCIChecks_ShouldReturnNoChecks_GivenNilRollup(t *testing.T) {
+	// Setup.
+	var checks []prCheckResult
+
+	// Execute.
+	status, _, _, _ := evaluateCIChecks(checks)
+
+	// Assert.
+	if status != ciStatusNoChecks {
+		t.Errorf("expected ciStatusNoChecks, got %d", status)
+	}
+}
+
+func TestResolveNoChecksStatus_ShouldReturnPassed_GivenGracePeriodElapsed(t *testing.T) {
+	// Setup. The rollup has been empty for longer than any plausible delay in
+	// GitHub creating check runs, so this project has no CI.
+	now := time.Now()
+	firstEmptyAt := now.Add(-noChecksGracePeriod - time.Second)
+
+	// Execute.
+	status := resolveNoChecksStatus(firstEmptyAt, now)
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed for a project with no CI, got %d", status)
+	}
+}
+
+// The grace period is what keeps a project that DOES have CI from being
+// announced as ready-for-review in the seconds between a push and GitHub
+// creating the check runs.
+func TestResolveNoChecksStatus_ShouldReturnPending_GivenGracePeriodNotElapsed(t *testing.T) {
+	// Setup.
+	now := time.Now()
+	firstEmptyAt := now.Add(-noChecksGracePeriod / 2)
+
+	// Execute.
+	status := resolveNoChecksStatus(firstEmptyAt, now)
+
+	// Assert.
 	if status != ciStatusPending {
-		t.Errorf("expected ciStatusPending, got %d", status)
+		t.Errorf("expected ciStatusPending while checks may still register, got %d", status)
+	}
+}
+
+// A zero anchor means the caller has no record of when the empty run began, so
+// no later poll could resolve it either — holding the agent back would be the
+// original permanent hang. Fail toward letting the agent move on.
+func TestResolveNoChecksStatus_ShouldReturnPassed_GivenZeroFirstEmptyAt(t *testing.T) {
+	// Setup.
+	var firstEmptyAt time.Time
+
+	// Execute.
+	status := resolveNoChecksStatus(firstEmptyAt, time.Now())
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed, got %d", status)
+	}
+}
+
+// Guards the boundary so a refactor can't turn >= into > and reintroduce a
+// one-poll-late hang.
+func TestResolveNoChecksStatus_ShouldReturnPassed_GivenGracePeriodExactlyElapsed(t *testing.T) {
+	// Setup.
+	now := time.Now()
+	firstEmptyAt := now.Add(-noChecksGracePeriod)
+
+	// Execute.
+	status := resolveNoChecksStatus(firstEmptyAt, now)
+
+	// Assert.
+	if status != ciStatusPassed {
+		t.Errorf("expected ciStatusPassed at exactly the grace boundary, got %d", status)
 	}
 }
 
@@ -2667,6 +2751,132 @@ func TestCIPassed_ShouldTransitionToWaitingReview_GivenIdleAgent(t *testing.T) {
 	}
 	if !foundPRReady {
 		t.Error("expected a PR-ready queue item after CI pass for idle agent")
+	}
+}
+
+// The regression test for the reported bug: a project with no GitHub Actions
+// checks must not sit in waiting_ci forever. gh reports `statusCheckRollup: []`
+// for such a project, which used to be read as "pending" — a state the poller
+// waits on indefinitely even though no check would ever arrive to end it.
+func TestCINoChecks_ShouldTransitionToWaitingReview_GivenEmptyRollupPastGracePeriod(t *testing.T) {
+	// Setup. The rollup has already been empty for longer than the grace
+	// period, so the project genuinely has no CI.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciNoChecksSince = map[string]time.Time{
+		"agent-1": time.Now().Add(-noChecksGracePeriod - time.Second),
+	}
+
+	// Execute.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID: "agent-1",
+		status:  ciStatusNoChecks,
+		prURL:   a.PRURL,
+	})
+	_ = updated
+
+	// Assert. Promoted off the CI wait, with the PR announced for review.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingReview {
+		t.Errorf("expected a project with no CI to move to WaitingReview, got %s", reloaded.Status)
+	}
+	items, err := m.queueManager.List()
+	if err != nil {
+		t.Fatalf("failed to list queue: %v", err)
+	}
+	foundPRReady := false
+	for _, it := range items {
+		if it.AgentID == "agent-1" && it.Type == queue.ItemTypePRReady {
+			foundPRReady = true
+			break
+		}
+	}
+	if !foundPRReady {
+		t.Error("expected a PR-ready queue item once the project is known to have no CI")
+	}
+}
+
+// The other side of the grace period: on a project that DOES have CI, the
+// rollup is empty for the first seconds after a push. The agent must keep
+// waiting rather than being announced as ready before its checks even start.
+func TestCINoChecks_ShouldKeepWaiting_GivenEmptyRollupWithinGracePeriod(t *testing.T) {
+	// Setup. First ever poll for this agent, so no empty run is recorded yet
+	// and the handler anchors the run at now.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciNoChecksSince = make(map[string]time.Time)
+
+	// Execute.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID: "agent-1",
+		status:  ciStatusNoChecks,
+		prURL:   a.PRURL,
+	})
+	_ = updated
+
+	// Assert. Still waiting, and the empty run is now anchored so a later poll
+	// can time it out.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingCI {
+		t.Errorf("expected agent to stay in WaitingCI while checks may still register, got %s", reloaded.Status)
+	}
+	if _, recorded := m.ciNoChecksSince["agent-1"]; !recorded {
+		t.Error("expected the first empty rollup to anchor the no-checks run")
+	}
+}
+
+// Once real checks appear the empty run is over. If the anchor were left
+// behind, a later empty rollup (a force-push resetting the checks, say) would
+// inherit a stale start and resolve to "no CI" immediately.
+func TestCICheckResult_ShouldClearNoChecksAnchor_GivenChecksAppear(t *testing.T) {
+	// Setup. An empty run is in progress when a pending check shows up.
+	m := newTestModelWithStoreAndQueue(t)
+	a := &agent.Agent{
+		ID:     "agent-1",
+		Status: agent.StatusWaitingCI,
+		PRURL:  "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.ciNoChecksSince = map[string]time.Time{"agent-1": time.Now().Add(-time.Minute)}
+
+	// Execute.
+	updated, _ := m.Update(ciCheckResultMsg{
+		agentID:   "agent-1",
+		status:    ciStatusPending,
+		prURL:     a.PRURL,
+		completed: 0,
+		total:     2,
+	})
+	_ = updated
+
+	// Assert.
+	if _, recorded := m.ciNoChecksSince["agent-1"]; recorded {
+		t.Error("expected the no-checks anchor to be cleared once checks exist")
 	}
 }
 
