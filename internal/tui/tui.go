@@ -25,6 +25,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/settings"
 	"github.com/CDFalcon/ccmux/internal/shellutil"
+	"github.com/CDFalcon/ccmux/internal/sysprompt"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/updater"
 	"github.com/CDFalcon/ccmux/internal/version"
@@ -3308,6 +3309,13 @@ func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 }
 
 func killAgentPane(tm *tmux.Manager, paneID, windowID string) {
+	// Kill the agent's shared output pane (ccmux pane) along with the agent
+	// pane, so resumes don't leave it orphaned in the old window.
+	if windowID != "" {
+		if sharePane, err := tm.GetWindowOption(windowID, "@ccmux_share_pane"); err == nil && sharePane != "" {
+			tm.KillPane(sharePane)
+		}
+	}
 	if paneID != "" {
 		tm.KillPane(paneID)
 		return
@@ -4148,7 +4156,9 @@ $TASK
 
 When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-${PR_DRAFT_NOTE}"
+${PR_DRAFT_NOTE}
+
+`+sysprompt.SharePaneDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

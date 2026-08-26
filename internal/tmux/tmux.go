@@ -202,6 +202,103 @@ func (m *Manager) KillWindow(windowID string) error {
 	return nil
 }
 
+// SplitPaneBelow creates a new pane below targetPane (vertical stack) taking
+// roughly 30% of the window height. If command is empty the pane runs the
+// default shell. Returns the new pane's ID. The pane is created without
+// changing focus.
+func (m *Manager) SplitPaneBelow(targetPane, workingDir, command string) (string, error) {
+	args := []string{"split-window", "-v", "-d", "-t", targetPane, "-l", "30%", "-P", "-F", "#{pane_id}"}
+	if workingDir != "" {
+		args = append(args, "-c", workingDir)
+	}
+	if command != "" {
+		args = append(args, command)
+	}
+	cmd := exec.Command("tmux", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to split pane: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// PaneExists reports whether the pane with the given ID still exists.
+func (m *Manager) PaneExists(paneID string) bool {
+	cmd := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_id}")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == paneID
+}
+
+// GetPaneWindowID returns the window ID containing the given pane.
+func (m *Manager) GetPaneWindowID(paneID string) (string, error) {
+	cmd := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{window_id}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get window for pane: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// GetPaneStartCommand returns the command the pane was spawned with, or ""
+// for a pane running the default shell.
+func (m *Manager) GetPaneStartCommand(paneID string) (string, error) {
+	cmd := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_start_command}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get pane start command: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// RespawnPaneCmd kills whatever is running in target and respawns it with
+// command, or with the default shell if command is empty.
+func (m *Manager) RespawnPaneCmd(target, command string) error {
+	args := []string{"respawn-pane", "-k", "-t", target}
+	if command != "" {
+		args = append(args, command)
+	}
+	cmd := exec.Command("tmux", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to respawn pane: %s: %w", string(output), err)
+	}
+	return nil
+}
+
+// SetWindowOption sets a window option on the window containing target.
+func (m *Manager) SetWindowOption(target, name, value string) error {
+	cmd := exec.Command("tmux", "set-option", "-w", "-t", target, name, value)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to set window option: %s: %w", string(output), err)
+	}
+	return nil
+}
+
+// GetWindowOption returns the value of a window option on the window
+// containing target, or "" if unset.
+func (m *Manager) GetWindowOption(target, name string) (string, error) {
+	cmd := exec.Command("tmux", "show-options", "-w", "-t", target, "-qv", name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get window option: %s: %w", string(output), err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// UnsetWindowOption removes a window option from the window containing target.
+func (m *Manager) UnsetWindowOption(target, name string) error {
+	cmd := exec.Command("tmux", "set-option", "-w", "-t", target, "-u", name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to unset window option: %s: %w", string(output), err)
+	}
+	return nil
+}
+
 func (m *Manager) KillPane(paneID string) error {
 	cmd := exec.Command("tmux", "kill-pane", "-t", paneID)
 	output, err := cmd.CombinedOutput()
@@ -343,7 +440,11 @@ func (m *Manager) SetPaneRemainOnExit(windowID string) {
 func (m *Manager) SetupPaneHooks() {
 	// tmux expands #{window_id} and #{pane_id} before passing the shell command
 	// to run-shell, so the script receives the concrete IDs as arguments.
-	hookCmd := `run-shell 'wdir=$(tmux show-options -w -t "#{window_id}" -qv @ccmux_worktree 2>/dev/null); [ -n "$wdir" ] && tmux send-keys -t "#{pane_id}" "cd $wdir" Enter'`
+	// ##{pane_start_command} is escaped so it is expanded later, by
+	// display-message, for the new pane: panes spawned with an explicit command
+	// (e.g. `ccmux pane open <command>`) must not have "cd ..." typed into the
+	// running program, so the cd is only sent to plain shell panes.
+	hookCmd := `run-shell 'wdir=$(tmux show-options -w -t "#{window_id}" -qv @ccmux_worktree 2>/dev/null); startcmd=$(tmux display-message -p -t "#{pane_id}" "##{pane_start_command}"); if [ -n "$wdir" ] && [ -z "$startcmd" ]; then tmux send-keys -t "#{pane_id}" "cd $wdir" Enter; fi'`
 	exec.Command("tmux", "set-hook", "-t", m.sessionName, "after-split-window", hookCmd).Run()
 }
 
