@@ -23,6 +23,7 @@ import (
 	"github.com/CDFalcon/ccmux/internal/queue"
 	"github.com/CDFalcon/ccmux/internal/settings"
 	"github.com/CDFalcon/ccmux/internal/shellutil"
+	"github.com/CDFalcon/ccmux/internal/sysprompt"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 	"github.com/CDFalcon/ccmux/internal/tui"
 	"github.com/CDFalcon/ccmux/internal/updater"
@@ -73,6 +74,7 @@ Examples:
 		prReadyCmd(),
 		ciWaitCmd(),
 		agentStoppedCmd(),
+		paneCmd(),
 		focusCmd(),
 		cleanupCmd(),
 		killCmd(),
@@ -986,7 +988,9 @@ SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Envi
 
 When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-${PR_DRAFT_NOTE}"
+${PR_DRAFT_NOTE}
+
+`+sysprompt.SharePaneDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1378,6 +1382,198 @@ func handleAgentStopped(agentStore *agent.Store, queueManager *queue.Queue, a *a
 	}
 
 	return nil
+}
+
+// sharePaneOption is the window option that records the agent's shared
+// output pane, so `ccmux pane` invocations can find it again and resume /
+// cleanup paths can kill it.
+const sharePaneOption = "@ccmux_share_pane"
+
+// sharePaneContext locates the calling agent's own tmux pane and window.
+// `ccmux pane` runs inside the agent's pane (as a child of the harness
+// process), so TMUX_PANE identifies the pane directly — this stays correct
+// across resumes, which give the agent a fresh window.
+type sharePaneContext struct {
+	tm        *tmux.Manager
+	agentPane string
+	windowID  string
+	workDir   string
+}
+
+func getSharePaneContext() (*sharePaneContext, error) {
+	if os.Getenv("CCMUX_AGENT_ID") == "" {
+		return nil, fmt.Errorf("CCMUX_AGENT_ID environment variable not set — 'ccmux pane' is only available inside a ccmux agent")
+	}
+	agentPane := os.Getenv("TMUX_PANE")
+	if agentPane == "" {
+		return nil, fmt.Errorf("TMUX_PANE environment variable not set — not running inside tmux")
+	}
+
+	sessionID := getCurrentSessionID()
+	tm := tmux.NewManager(fmt.Sprintf("ccmux-%s", sessionID))
+
+	windowID, err := tm.GetPaneWindowID(agentPane)
+	if err != nil {
+		return nil, err
+	}
+
+	workDir, _ := os.Getwd()
+
+	return &sharePaneContext{tm: tm, agentPane: agentPane, windowID: windowID, workDir: workDir}, nil
+}
+
+// currentSharePane returns the recorded share pane ID if it still exists,
+// or "" if none is open.
+func (c *sharePaneContext) currentSharePane() string {
+	paneID, err := c.tm.GetWindowOption(c.windowID, sharePaneOption)
+	if err != nil || paneID == "" {
+		return ""
+	}
+	if !c.tm.PaneExists(paneID) {
+		return ""
+	}
+	return paneID
+}
+
+func paneCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "pane",
+		Short:  "Manage the agent's shared output pane (agent-facing)",
+		Hidden: true,
+	}
+	cmd.AddCommand(paneOpenCmd(), paneRunCmd(), paneCloseCmd())
+	return cmd
+}
+
+func paneOpenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "open [command...]",
+		Short:        "Open the shared pane below the agent pane, optionally running a command",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			command := strings.Join(args, " ")
+
+			ctx, err := getSharePaneContext()
+			if err != nil {
+				return err
+			}
+
+			if paneID := ctx.currentSharePane(); paneID != "" {
+				if command == "" {
+					if dead, _ := ctx.tm.IsPaneDead(paneID); dead {
+						if err := ctx.tm.RespawnPaneCmd(paneID, ""); err != nil {
+							return err
+						}
+					}
+					fmt.Printf("Shared pane %s already open\n", paneID)
+					return nil
+				}
+				if err := ctx.tm.RespawnPaneCmd(paneID, command); err != nil {
+					return err
+				}
+				fmt.Printf("Shared pane %s now running: %s\n", paneID, command)
+				return nil
+			}
+
+			paneID, err := ctx.tm.SplitPaneBelow(ctx.agentPane, ctx.workDir, command)
+			if err != nil {
+				return err
+			}
+			// Keep output visible to the user after the command exits; the
+			// pane is cleaned up by `ccmux pane close` or agent teardown.
+			ctx.tm.SetPaneRemainOnExit(paneID)
+			if err := ctx.tm.SetWindowOption(ctx.windowID, sharePaneOption, paneID); err != nil {
+				return err
+			}
+			if command != "" {
+				fmt.Printf("Opened shared pane %s running: %s\n", paneID, command)
+			} else {
+				fmt.Printf("Opened shared pane %s with an interactive shell\n", paneID)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().SetInterspersed(false)
+	return cmd
+}
+
+func paneRunCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "run <command...>",
+		Short:        "Run a shell command in the shared pane, opening it if needed",
+		Args:         cobra.MinimumNArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			command := strings.Join(args, " ")
+
+			ctx, err := getSharePaneContext()
+			if err != nil {
+				return err
+			}
+
+			paneID := ctx.currentSharePane()
+			if paneID == "" {
+				paneID, err = ctx.tm.SplitPaneBelow(ctx.agentPane, ctx.workDir, "")
+				if err != nil {
+					return err
+				}
+				ctx.tm.SetPaneRemainOnExit(paneID)
+				if err := ctx.tm.SetWindowOption(ctx.windowID, sharePaneOption, paneID); err != nil {
+					return err
+				}
+			} else if dead, _ := ctx.tm.IsPaneDead(paneID); dead {
+				// The previous program exited; restart the pane with this
+				// command directly.
+				if err := ctx.tm.RespawnPaneCmd(paneID, command); err != nil {
+					return err
+				}
+				fmt.Printf("Running in shared pane %s: %s\n", paneID, command)
+				return nil
+			} else if startCmd, _ := ctx.tm.GetPaneStartCommand(paneID); startCmd != "" {
+				// The pane is running a program, not a shell — typing into it
+				// would go to the program's stdin. (tmux may wrap the start
+				// command in quotes; strip them for the error message.)
+				return fmt.Errorf("shared pane %s is running %q; use 'ccmux pane open <command>' to replace it, or 'ccmux pane close' first", paneID, strings.Trim(startCmd, `"`))
+			}
+
+			if err := ctx.tm.SendKeys(paneID, command); err != nil {
+				return err
+			}
+			fmt.Printf("Running in shared pane %s: %s\n", paneID, command)
+			return nil
+		},
+	}
+	cmd.Flags().SetInterspersed(false)
+	return cmd
+}
+
+func paneCloseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:          "close",
+		Short:        "Close the shared pane",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, err := getSharePaneContext()
+			if err != nil {
+				return err
+			}
+
+			paneID := ctx.currentSharePane()
+			if paneID == "" {
+				ctx.tm.UnsetWindowOption(ctx.windowID, sharePaneOption)
+				fmt.Println("No shared pane open")
+				return nil
+			}
+
+			if err := ctx.tm.KillPane(paneID); err != nil {
+				return err
+			}
+			ctx.tm.UnsetWindowOption(ctx.windowID, sharePaneOption)
+			fmt.Printf("Closed shared pane %s\n", paneID)
+			return nil
+		},
+	}
 }
 
 func focusCmd() *cobra.Command {
@@ -2082,7 +2278,9 @@ $TASK
 
 When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
-${PR_DRAFT_NOTE}"
+${PR_DRAFT_NOTE}
+
+`+sysprompt.SharePaneDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

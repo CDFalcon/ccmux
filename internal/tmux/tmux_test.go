@@ -349,6 +349,182 @@ func TestParseEnvName(t *testing.T) {
 	}
 }
 
+func TestSplitPaneBelow_ShouldCreatePaneInSameWindow_GivenAgentPane(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-split-below")
+	windowID, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute.
+	paneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "sleep 60")
+	if err != nil {
+		t.Fatalf("failed to split pane below: %v", err)
+	}
+
+	// Assert.
+	if !strings.HasPrefix(paneID, "%") {
+		t.Errorf("expected pane ID to start with %%, got: %q", paneID)
+	}
+	gotWindow, err := mgr.GetPaneWindowID(paneID)
+	if err != nil {
+		t.Fatalf("failed to get window for new pane: %v", err)
+	}
+	if gotWindow != windowID {
+		t.Errorf("expected new pane in window %s, got %s", windowID, gotWindow)
+	}
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_at_bottom}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to query pane_at_bottom: %s: %v", string(out), err)
+	}
+	if strings.TrimSpace(string(out)) != "1" {
+		t.Errorf("expected new pane at the bottom of the window, got pane_at_bottom=%q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestSplitPaneBelow_ShouldOpenShell_GivenNoCommand(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-split-shell")
+	_, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute.
+	paneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "")
+	if err != nil {
+		t.Fatalf("failed to split pane below: %v", err)
+	}
+
+	// Assert: a shell pane has an empty start command.
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_start_command}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to query pane_start_command: %s: %v", string(out), err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("expected empty start command for shell pane, got: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestPaneExists_ShouldReportLifecycle_GivenPaneKilled(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-pane-exists")
+	_, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	paneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "sleep 60")
+	if err != nil {
+		t.Fatalf("failed to split pane below: %v", err)
+	}
+
+	// Assert alive.
+	if !mgr.PaneExists(paneID) {
+		t.Errorf("expected pane %s to exist", paneID)
+	}
+
+	// Execute.
+	if err := mgr.KillPane(paneID); err != nil {
+		t.Fatalf("failed to kill pane: %v", err)
+	}
+
+	// Assert gone.
+	if mgr.PaneExists(paneID) {
+		t.Errorf("expected pane %s to no longer exist", paneID)
+	}
+}
+
+func TestWindowOptions_ShouldRoundTrip_GivenSetGetUnset(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-win-opts")
+	windowID, _, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute + assert set/get.
+	if err := mgr.SetWindowOption(windowID, "@ccmux_share_pane", "%99"); err != nil {
+		t.Fatalf("failed to set window option: %v", err)
+	}
+	val, err := mgr.GetWindowOption(windowID, "@ccmux_share_pane")
+	if err != nil {
+		t.Fatalf("failed to get window option: %v", err)
+	}
+	if val != "%99" {
+		t.Errorf("expected option value %%99, got: %q", val)
+	}
+
+	// Execute + assert unset.
+	if err := mgr.UnsetWindowOption(windowID, "@ccmux_share_pane"); err != nil {
+		t.Fatalf("failed to unset window option: %v", err)
+	}
+	val, err = mgr.GetWindowOption(windowID, "@ccmux_share_pane")
+	if err != nil {
+		t.Fatalf("failed to get window option after unset: %v", err)
+	}
+	if val != "" {
+		t.Errorf("expected empty option after unset, got: %q", val)
+	}
+}
+
+func TestRespawnPaneCmd_ShouldRestartPane_GivenNewCommand(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-respawn-cmd")
+	_, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	paneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "sleep 60")
+	if err != nil {
+		t.Fatalf("failed to split pane below: %v", err)
+	}
+
+	// Execute.
+	if err := mgr.RespawnPaneCmd(paneID, "sleep 30"); err != nil {
+		t.Fatalf("failed to respawn pane with command: %v", err)
+	}
+
+	// Assert.
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_start_command}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to query pane_start_command: %s: %v", string(out), err)
+	}
+	if !strings.Contains(string(out), "sleep 30") {
+		t.Errorf("expected respawned pane running 'sleep 30', got: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestSetupPaneHooks_ShouldGuardOnStartCommand_GivenHookInstalled(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-hook-guard")
+
+	// Execute.
+	mgr.SetupPaneHooks()
+
+	// Assert: the hook must only send `cd` into plain shell panes, so panes
+	// spawned with an explicit command don't get keys typed into the program.
+	hook := getHook(t, mgr.SessionName(), "after-split-window")
+	if hook == "" {
+		t.Fatal("expected after-split-window hook to be installed")
+	}
+	if !strings.Contains(hook, "pane_start_command") {
+		t.Errorf("expected hook to guard on pane_start_command, got: %s", hook)
+	}
+}
+
 func TestKillPane_ShouldPreserveOtherPanes_GivenWindowWithSplitPanes(t *testing.T) {
 	skipIfNoTmux(t)
 
