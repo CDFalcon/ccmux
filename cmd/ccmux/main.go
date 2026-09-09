@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
@@ -75,6 +76,7 @@ Examples:
 		ciWaitCmd(),
 		agentStoppedCmd(),
 		paneCmd(),
+		agentsCmd(),
 		focusCmd(),
 		cleanupCmd(),
 		killCmd(),
@@ -990,7 +992,9 @@ When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 ${PR_DRAFT_NOTE}
 
-`+sysprompt.SharePaneDoc+`"
+`+sysprompt.SharePaneDoc+`
+
+`+sysprompt.PeerAgentsDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1574,6 +1578,208 @@ func paneCloseCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// agentsCmd exposes the session's agent registry to the agents themselves so
+// they can find and message one another. Like `ccmux pane`, it only makes
+// sense from inside an agent (CCMUX_AGENT_ID identifies the caller).
+func agentsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "agents",
+		Short:  "List and message the other agents in this session (agent-facing)",
+		Hidden: true,
+	}
+	cmd.AddCommand(agentsListCmd(), agentsSendCmd())
+	return cmd
+}
+
+// peerMessagePrefix is prepended to every agent-to-agent message so the
+// recipient knows who sent it and how to reply.
+func peerMessagePrefix(senderID string) string {
+	return fmt.Sprintf("[message from ccmux agent %s] ", senderID)
+}
+
+// taskPreviewRunes bounds the task column of `ccmux agents list`. Task briefs
+// can run to several paragraphs; the opening sentence is what an agent needs
+// to pick a peer, and the full text is one --full away.
+const taskPreviewRunes = 160
+
+// formatAgentRows renders the registry as one line per agent for `ccmux
+// agents list`: id, status, project, branch, PR, and the task (truncated to a
+// preview unless full is set). The caller's own row is marked so it can tell
+// itself apart from its peers.
+func formatAgentRows(agents []*agent.Agent, selfID string, full bool) string {
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATUS\tPROJECT\tBRANCH\tPR\tTASK")
+	for _, a := range agents {
+		id := a.ID
+		if a.ID == selfID {
+			id += " (you)"
+		}
+		pr := a.PRURL
+		if pr == "" {
+			pr = "-"
+		}
+		task := strings.Join(strings.Fields(a.Task), " ")
+		if r := []rune(task); !full && len(r) > taskPreviewRunes {
+			task = string(r[:taskPreviewRunes]) + "…"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, a.Status.DisplayName(), orDash(a.ProjectName), orDash(a.BranchName), pr, task)
+	}
+	w.Flush()
+	return b.String()
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// peerUndeliverableReason explains why a message cannot be typed into the
+// target agent's pane right now, or returns "" if delivery is fine. paneAlive
+// reports whether the agent's pane exists with a live process, and
+// paneStartCmd is what that pane was spawned with — a recovered agent parked
+// in a placeholder banner has no harness reading its input, so a message
+// typed there would vanish into a sleeping bash script.
+func peerUndeliverableReason(a *agent.Agent, paneAlive bool, paneStartCmd string) string {
+	switch a.Status {
+	case agent.StatusSpawning:
+		return "it is still spawning; try again shortly"
+	case agent.StatusCleaningUp, agent.StatusKilling, agent.StatusMerged, agent.StatusFailed:
+		return fmt.Sprintf("it is %s and no longer running", a.Status.DisplayName())
+	case agent.StatusWaitingCI, agent.StatusWaitingMergeQueue:
+		return fmt.Sprintf("it is %s and not running a harness", a.Status.DisplayName())
+	}
+	if !paneAlive {
+		return "its tmux pane is gone or dead"
+	}
+	if strings.Contains(paneStartCmd, "-placeholder.sh") {
+		return fmt.Sprintf("it is parked after a session recovery (%s); its harness is not running until the user resumes it from the TUI", a.Status.DisplayName())
+	}
+	return ""
+}
+
+// agentPaneTarget returns the tmux target for an agent's own pane: the
+// recorded pane ID when present, else the window (whose active pane may be
+// the agent's shared output pane, so the pane ID is preferred).
+func agentPaneTarget(a *agent.Agent) string {
+	if a.TmuxPane != "" {
+		return a.TmuxPane
+	}
+	return a.TmuxWindow
+}
+
+func requireAgentID() (string, error) {
+	id := os.Getenv("CCMUX_AGENT_ID")
+	if id == "" {
+		return "", fmt.Errorf("CCMUX_AGENT_ID environment variable not set — 'ccmux agents' is only available inside a ccmux agent")
+	}
+	return id, nil
+}
+
+func agentsListCmd() *cobra.Command {
+	var full bool
+	cmd := &cobra.Command{
+		Use:          "list",
+		Short:        "List the agents in this session",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			selfID, err := requireAgentID()
+			if err != nil {
+				return err
+			}
+			agentStore, err := agent.NewStore(getCurrentSessionID())
+			if err != nil {
+				return err
+			}
+			agents, err := agentStore.List()
+			if err != nil {
+				return err
+			}
+			if len(agents) == 0 {
+				fmt.Println("No agents in this session")
+				return nil
+			}
+			fmt.Print(formatAgentRows(agents, selfID, full))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&full, "full", false, "Show each agent's complete task instead of a preview")
+	return cmd
+}
+
+func agentsSendCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "send <agent-id> <message...>",
+		Short:        "Deliver a message to another agent's prompt",
+		Args:         cobra.MinimumNArgs(2),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			selfID, err := requireAgentID()
+			if err != nil {
+				return err
+			}
+			targetID := args[0]
+			message := strings.TrimSpace(strings.Join(args[1:], " "))
+			if message == "" {
+				return fmt.Errorf("message is empty")
+			}
+			if targetID == selfID {
+				return fmt.Errorf("agent %s is you; pick another agent from 'ccmux agents list'", targetID)
+			}
+
+			sessionID := getCurrentSessionID()
+			agentStore, err := agent.NewStore(sessionID)
+			if err != nil {
+				return err
+			}
+			target, err := agentStore.Get(targetID)
+			if err != nil {
+				return fmt.Errorf("no agent %s in this session (see 'ccmux agents list'): %w", targetID, err)
+			}
+
+			tm := tmux.NewManager(fmt.Sprintf("ccmux-%s", sessionID))
+			paneTarget := agentPaneTarget(target)
+			paneAlive := paneTarget != "" && tm.PaneExists(paneTarget)
+			if paneAlive {
+				if dead, _ := tm.IsPaneDead(paneTarget); dead {
+					paneAlive = false
+				}
+			}
+			startCmd := ""
+			if paneAlive {
+				startCmd, _ = tm.GetPaneStartCommand(paneTarget)
+			}
+			if reason := peerUndeliverableReason(target, paneAlive, startCmd); reason != "" {
+				return fmt.Errorf("cannot message agent %s: %s", targetID, reason)
+			}
+
+			if err := tm.SendText(paneTarget, peerMessagePrefix(selfID)+message); err != nil {
+				return err
+			}
+
+			// Mirror what the TUI does when the user messages an idle agent:
+			// it has new input now, so it is running again and no longer
+			// needs attention in the queue.
+			if target.Status == agent.StatusReady {
+				agentStore.Update(targetID, func(ag *agent.Agent) {
+					ag.Status = agent.StatusRunning
+				})
+				if q, err := queue.NewQueue(sessionID); err == nil {
+					q.RemoveByAgent(targetID)
+				}
+			}
+
+			fmt.Printf("Sent message to agent %s\n", targetID)
+			return nil
+		},
+	}
+	cmd.Flags().SetInterspersed(false)
+	return cmd
 }
 
 func focusCmd() *cobra.Command {
@@ -2280,7 +2486,9 @@ When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 ${PR_DRAFT_NOTE}
 
-`+sysprompt.SharePaneDoc+`"
+`+sysprompt.SharePaneDoc+`
+
+`+sysprompt.PeerAgentsDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

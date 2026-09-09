@@ -125,3 +125,31 @@ ccmux task myproject "Write docs" - - docs-update
 Each invocation creates its own worktree, branch, and tmux window — exactly
 like spawning from the TUI — so a running agent can delegate or parallelise
 work by shelling out to `ccmux task`.
+
+## Talking to other agents
+
+Agents in the same session can discover and message each other with the
+`ccmux agents` commands (available inside an agent, where `CCMUX_AGENT_ID`
+is set):
+
+```
+ccmux agents list [--full]                 # id, status, project, branch, PR, task — your own row is marked (you)
+ccmux agents send <agent-id> <message...>  # deliver a message to another agent's prompt
+```
+
+A message is typed into the recipient's harness exactly as if you had sent it
+from the TUI, prefixed so the recipient knows who is talking and how to reply:
+
+```
+[message from ccmux agent e19f78a4] I'm touching internal/tmux/tmux.go too — can you hold off on SendKeys until my PR lands?
+```
+
+Messaging an idle agent wakes it (its status flips back to running and it
+leaves the attention queue). Agents that cannot receive input — still
+spawning, waiting on CI or the merge queue, merged, failed, or parked in a
+placeholder banner after a session recovery — are refused with a reason
+rather than having text typed into a pane nobody is reading.
+
+Every agent's system prompt documents both commands, so spawned agents can
+coordinate on shared files, avoid duplicate work, or hand off results without
+going through you.

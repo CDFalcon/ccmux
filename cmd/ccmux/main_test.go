@@ -678,3 +678,113 @@ func TestHandleAgentStopped_ShouldNotDisturb_NonRunningStatuses(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatAgentRows_ShouldMarkSelfAndFlattenTask(t *testing.T) {
+	agents := []*agent.Agent{
+		{ID: "aaaa1111", Status: agent.StatusRunning, ProjectName: "proj", BranchName: "ccmux/aaaa1111", Task: "fix the\nlogin  bug"},
+		{ID: "bbbb2222", Status: agent.StatusReady, Task: "write docs", PRURL: "https://github.com/x/y/pull/1"},
+	}
+
+	out := formatAgentRows(agents, "bbbb2222", false)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected header + 2 rows, got %d lines:\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[1], "fix the login bug") {
+		t.Errorf("expected task whitespace flattened onto one row, got: %q", lines[1])
+	}
+	if strings.Contains(lines[1], "(you)") {
+		t.Errorf("expected peer row not to be marked as self: %q", lines[1])
+	}
+	if !strings.HasPrefix(lines[2], "bbbb2222 (you)") {
+		t.Errorf("expected self row to be marked (you): %q", lines[2])
+	}
+	if !strings.Contains(lines[2], "idle") || !strings.Contains(lines[2], "https://github.com/x/y/pull/1") {
+		t.Errorf("expected display status and PR URL in self row: %q", lines[2])
+	}
+	if !strings.Contains(lines[1], " -  ") {
+		t.Errorf("expected missing PR rendered as '-': %q", lines[1])
+	}
+}
+
+func TestFormatAgentRows_ShouldPreviewLongTask_UnlessFull(t *testing.T) {
+	long := strings.Repeat("word ", 100) // 500 chars
+	agents := []*agent.Agent{{ID: "aaaa1111", Status: agent.StatusRunning, Task: long}}
+
+	preview := formatAgentRows(agents, "self", false)
+	full := formatAgentRows(agents, "self", true)
+
+	if !strings.Contains(preview, "…") || strings.Contains(preview, strings.TrimSpace(long)) {
+		t.Errorf("expected the long task truncated with an ellipsis, got:\n%s", preview)
+	}
+	if !strings.Contains(full, strings.TrimSpace(long)) {
+		t.Errorf("expected --full to keep the whole task, got:\n%s", full)
+	}
+}
+
+func TestPeerUndeliverableReason_ShouldAllowOnlyLiveHarnessPanes(t *testing.T) {
+	cases := []struct {
+		name      string
+		agent     *agent.Agent
+		paneAlive bool
+		startCmd  string
+		wantOK    bool
+	}{
+		{"running agent with live pane", &agent.Agent{Status: agent.StatusRunning}, true, "bash /home/u/.ccmux/launchers/abc.sh", true},
+		{"idle agent with live pane", &agent.Agent{Status: agent.StatusReady}, true, "", true},
+		{"waiting review with live pane", &agent.Agent{Status: agent.StatusWaitingReview}, true, "", true},
+		{"spawning", &agent.Agent{Status: agent.StatusSpawning}, true, "", false},
+		{"merged", &agent.Agent{Status: agent.StatusMerged}, true, "", false},
+		{"failed", &agent.Agent{Status: agent.StatusFailed}, true, "", false},
+		{"waiting on CI", &agent.Agent{Status: agent.StatusWaitingCI}, true, "", false},
+		{"dead pane", &agent.Agent{Status: agent.StatusRunning}, false, "", false},
+		{"parked placeholder", &agent.Agent{Status: agent.StatusReady}, true, "bash /home/u/.ccmux/launchers/abc-placeholder.sh", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := peerUndeliverableReason(tc.agent, tc.paneAlive, tc.startCmd)
+			if tc.wantOK && reason != "" {
+				t.Errorf("expected deliverable, got reason %q", reason)
+			}
+			if !tc.wantOK && reason == "" {
+				t.Errorf("expected an undeliverable reason")
+			}
+		})
+	}
+}
+
+func TestPeerMessagePrefix_ShouldNameSender(t *testing.T) {
+	if got := peerMessagePrefix("e19f78a4") + "hello"; got != "[message from ccmux agent e19f78a4] hello" {
+		t.Errorf("unexpected message text: %q", got)
+	}
+}
+
+// TestAgentScripts_ShouldTeachPeerMessaging pins the peer-agent tooling into
+// every system prompt an agent can start from: an agent that does not know
+// `ccmux agents` exists cannot use it, and a resumed agent must not forget.
+func TestAgentScripts_ShouldTeachPeerMessaging(t *testing.T) {
+	launcher, err := writeLauncherScript("peer-launch", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Claude, true)
+	if err != nil {
+		t.Fatalf("writeLauncherScript failed: %v", err)
+	}
+	defer os.Remove(launcher)
+	recovery, err := writeRecoveryScript("peer-recover", "/tmp/wt", "origin/main", "sess", "task", harness.Claude, true)
+	if err != nil {
+		t.Fatalf("writeRecoveryScript failed: %v", err)
+	}
+	defer os.Remove(recovery)
+
+	for _, path := range []string{launcher, recovery} {
+		assertValidBash(t, path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s: system prompt should mention %q", filepath.Base(path), want)
+			}
+		}
+	}
+}

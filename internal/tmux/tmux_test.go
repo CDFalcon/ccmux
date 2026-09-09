@@ -4,6 +4,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func skipIfNoTmux(t *testing.T) {
@@ -555,5 +556,71 @@ func TestKillPane_ShouldPreserveOtherPanes_GivenWindowWithSplitPanes(t *testing.
 	}
 	if strings.TrimSpace(string(checkOut)) != userPaneID {
 		t.Errorf("expected user pane %s to still exist, got: %q", userPaneID, string(checkOut))
+	}
+}
+
+// waitForPaneText polls capture-pane until the pane shows want, or fails.
+func waitForPaneText(t *testing.T, paneID, want string) string {
+	t.Helper()
+	var last string
+	for i := 0; i < 50; i++ {
+		out, _ := exec.Command("tmux", "capture-pane", "-p", "-t", paneID).CombinedOutput()
+		last = string(out)
+		if strings.Contains(last, want) {
+			return last
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("pane never showed %q; last capture:\n%s", want, last)
+	return last
+}
+
+func TestSendText_ShouldTypeLiterally_GivenKeyNameAsMessage(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup: `cat` echoes each submitted line, so the capture shows the typed
+	// text once (the echo) plus once more when cat prints it back.
+	mgr := createTestSession(t, "ccmux-test-sendtext-literal")
+	_, paneID, err := mgr.CreateWindow("/tmp", "cat", "cat")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute: "Enter" is a tmux key name; SendText must type the word, not
+	// press the key.
+	if err := mgr.SendText(paneID, "Enter"); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+
+	// Assert.
+	out := waitForPaneText(t, paneID, "Enter")
+	if strings.Count(out, "Enter") < 2 {
+		t.Errorf("expected cat to echo the literal word back; capture:\n%s", out)
+	}
+}
+
+func TestSendText_ShouldDeliverEveryLine_GivenMultilineMessage(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup.
+	mgr := createTestSession(t, "ccmux-test-sendtext-multiline")
+	_, paneID, err := mgr.CreateWindow("/tmp", "cat", "cat")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+
+	// Execute.
+	if err := mgr.SendText(paneID, "first line\nsecond line"); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+
+	// Assert: cat has no bracketed-paste mode, so it receives the raw text and
+	// echoes both lines after the final Enter.
+	out := waitForPaneText(t, paneID, "second line")
+	if !strings.Contains(out, "first line") {
+		t.Errorf("expected first line in capture:\n%s", out)
+	}
+	if buffers, _ := exec.Command("tmux", "list-buffers").CombinedOutput(); strings.Contains(string(buffers), "ccmux-msg-") {
+		t.Errorf("expected the paste buffer to be deleted after use; buffers:\n%s", string(buffers))
 	}
 }
