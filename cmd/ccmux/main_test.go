@@ -788,3 +788,197 @@ func TestAgentScripts_ShouldTeachPeerMessaging(t *testing.T) {
 		}
 	}
 }
+
+// --- ci-wait: refusing a subagent's PR -------------------------------------
+
+func setupCIWaitTest(t *testing.T, a *agent.Agent) (*agent.Store, *queue.Queue) {
+	t.Helper()
+	store, q := setupStopHookTestStores(t)
+	if err := store.Create(a); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return store, q
+}
+
+func TestRecordPRForCIWait_ShouldRecordPR_WhenHeadBranchIsAgentsOwn(t *testing.T) {
+	store, q := setupCIWaitTest(t, &agent.Agent{ID: "a1", Status: agent.StatusRunning, BranchName: "ccmux/a1"})
+
+	lookup := func(string) (string, error) { return "ccmux/a1", nil }
+	if err := recordPRForCIWait(store, q, "a1", "https://github.com/o/r/pull/7", lookup); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+
+	got, _ := store.Get("a1")
+	if got.Status != agent.StatusWaitingCI || got.PRURL != "https://github.com/o/r/pull/7" {
+		t.Errorf("got status=%s pr=%q, want waiting_ci + the PR recorded", got.Status, got.PRURL)
+	}
+}
+
+func TestRecordPRForCIWait_ShouldIgnorePR_WhenHeadBranchBelongsToSomeoneElse(t *testing.T) {
+	// A Claude subagent running under <worktree>/.claude/worktrees/<x> shares
+	// the parent's hooks and CCMUX_AGENT_ID. Its `gh pr create` opens a PR on
+	// its own branch; recording that against the parent flipped the parent to
+	// waiting_ci for a PR that isn't its work.
+	store, q := setupCIWaitTest(t, &agent.Agent{ID: "parent", Status: agent.StatusRunning, BranchName: "ccmux/parent"})
+
+	lookup := func(string) (string, error) { return "worktree-subagent-abc", nil }
+	if err := recordPRForCIWait(store, q, "parent", "https://github.com/o/r/pull/8", lookup); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+
+	got, _ := store.Get("parent")
+	if got.Status != agent.StatusRunning {
+		t.Errorf("status = %s, want %s untouched — a subagent's PR must not move the parent", got.Status, agent.StatusRunning)
+	}
+	if got.PRURL != "" {
+		t.Errorf("PRURL = %q, want empty — the subagent's PR must not be recorded as the parent's", got.PRURL)
+	}
+}
+
+func TestRecordPRForCIWait_ShouldFailOpen_WhenHeadLookupErrors(t *testing.T) {
+	// Offline / gh unauthenticated must not lose a genuine PR: keep the
+	// pre-existing behaviour rather than dropping it on the floor.
+	store, q := setupCIWaitTest(t, &agent.Agent{ID: "a1", Status: agent.StatusRunning, BranchName: "ccmux/a1"})
+
+	lookup := func(string) (string, error) { return "", os.ErrDeadlineExceeded }
+	if err := recordPRForCIWait(store, q, "a1", "https://github.com/o/r/pull/9", lookup); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+
+	got, _ := store.Get("a1")
+	if got.Status != agent.StatusWaitingCI || got.PRURL != "https://github.com/o/r/pull/9" {
+		t.Errorf("got status=%s pr=%q, want the PR recorded despite the lookup failure", got.Status, got.PRURL)
+	}
+}
+
+func TestRecordPRForCIWait_ShouldSkipLookup_WhenURLIsAlreadyTheAgentsPR(t *testing.T) {
+	store, q := setupCIWaitTest(t, &agent.Agent{
+		ID: "a1", Status: agent.StatusWaitingReview, BranchName: "ccmux/a1", PRURL: "https://github.com/o/r/pull/7",
+	})
+
+	called := false
+	lookup := func(string) (string, error) { called = true; return "", nil }
+	if err := recordPRForCIWait(store, q, "a1", "https://github.com/o/r/pull/7", lookup); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+	if called {
+		t.Errorf("head lookup ran for a URL the agent already owns — a network round-trip per re-push is wasted")
+	}
+	got, _ := store.Get("a1")
+	if got.Status != agent.StatusWaitingCI {
+		t.Errorf("status = %s, want %s", got.Status, agent.StatusWaitingCI)
+	}
+}
+
+func TestRecordPRForCIWait_ShouldUseStoredPR_WhenNoURLGiven(t *testing.T) {
+	store, q := setupCIWaitTest(t, &agent.Agent{
+		ID: "a1", Status: agent.StatusWaitingReview, BranchName: "ccmux/a1", PRURL: "https://github.com/o/r/pull/7",
+	})
+
+	lookup := func(string) (string, error) { t.Fatal("lookup must not run on the git-push path"); return "", nil }
+	if err := recordPRForCIWait(store, q, "a1", "", lookup); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+	got, _ := store.Get("a1")
+	if got.Status != agent.StatusWaitingCI || got.PRURL != "https://github.com/o/r/pull/7" {
+		t.Errorf("got status=%s pr=%q, want waiting_ci on the stored PR", got.Status, got.PRURL)
+	}
+}
+
+func TestRecordPRForCIWait_ShouldNoOp_WhenNoURLAndNoStoredPR(t *testing.T) {
+	store, q := setupCIWaitTest(t, &agent.Agent{ID: "a1", Status: agent.StatusRunning, BranchName: "ccmux/a1"})
+
+	if err := recordPRForCIWait(store, q, "a1", "", nil); err != nil {
+		t.Fatalf("recordPRForCIWait: %v", err)
+	}
+	got, _ := store.Get("a1")
+	if got.Status != agent.StatusRunning || got.PRURL != "" {
+		t.Errorf("got status=%s pr=%q, want untouched — pushing a branch before any PR exists is not a CI wait", got.Status, got.PRURL)
+	}
+}
+
+// --- post_tool_use hook: which tool calls reach ccmux ci-wait --------------
+
+// runPostToolUseHook executes the installed hook script against one
+// PostToolUse payload with a stub `ccmux` on PATH, and returns the argv the
+// stub was invoked with ("" if the hook never called ccmux).
+func runPostToolUseHook(t *testing.T, payload string) string {
+	t.Helper()
+	for _, bin := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not available", bin)
+		}
+	}
+
+	dir := t.TempDir()
+	hook := filepath.Join(dir, "post_tool_use.sh")
+	if err := os.WriteFile(hook, []byte(postToolUseHookScript), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+	log := filepath.Join(dir, "ccmux.log")
+	stub := "#!/bin/bash\necho \"$*\" >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "ccmux"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	cmd := exec.Command(hook)
+	cmd.Stdin = strings.NewReader(payload)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "CCMUX_AGENT_ID=parent")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("hook exited non-zero: %v\n%s", err, out)
+	}
+
+	// The hook nohups ci-wait and returns without waiting; give the stub a
+	// moment to land before concluding it was never called.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if data, err := os.ReadFile(log); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func prCreatePayload(cwd, command string) string {
+	return `{"tool_name":"Bash","cwd":"` + cwd + `","tool_input":{"command":"` + command + `"},"tool_response":{"stdout":"https://github.com/o/r/pull/12\n"}}`
+}
+
+func TestPostToolUseHook_ShouldStartCIWait_GivenPRCreateFromAgentWorktree(t *testing.T) {
+	got := runPostToolUseHook(t, prCreatePayload("/Users/x/Code/ccmux-abc", "gh pr create --draft --base master --title t --body b"))
+	if got != "ci-wait https://github.com/o/r/pull/12" {
+		t.Errorf("ccmux argv = %q, want ci-wait with the PR URL", got)
+	}
+}
+
+func TestPostToolUseHook_ShouldStartCIWait_GivenGitPush(t *testing.T) {
+	got := runPostToolUseHook(t, `{"tool_name":"Bash","cwd":"/Users/x/Code/ccmux-abc","tool_input":{"command":"git push -u origin HEAD"},"tool_response":{"stdout":""}}`)
+	if got != "ci-wait" {
+		t.Errorf("ccmux argv = %q, want a bare ci-wait so the stored PR is re-polled", got)
+	}
+}
+
+func TestPostToolUseHook_ShouldIgnorePRCreate_GivenSubagentWorktreeCwd(t *testing.T) {
+	// Claude's worktree-isolated subagents live under
+	// <worktree>/.claude/worktrees/<name> and inherit the parent's hooks.
+	got := runPostToolUseHook(t, prCreatePayload("/Users/x/Code/ccmux-abc/.claude/worktrees/agent-1", "gh pr create --base master --title t --body b"))
+	if got != "" {
+		t.Errorf("ccmux argv = %q, want no call — a subagent's PR is not the parent's", got)
+	}
+}
+
+func TestPostToolUseHook_ShouldIgnorePRCreate_GivenCommandEntersSubagentWorktree(t *testing.T) {
+	got := runPostToolUseHook(t, prCreatePayload("/Users/x/Code/ccmux-abc", "cd /Users/x/Code/ccmux-abc/.claude/worktrees/agent-1 && gh pr create --base master --title t --body b"))
+	if got != "" {
+		t.Errorf("ccmux argv = %q, want no call — the command cd's into a subagent worktree", got)
+	}
+}
+
+func TestPostToolUseHook_ShouldIgnoreGitPush_GivenSubagentWorktreeCwd(t *testing.T) {
+	got := runPostToolUseHook(t, `{"tool_name":"Bash","cwd":"/Users/x/Code/ccmux-abc/.claude/worktrees/agent-1","tool_input":{"command":"git push -u origin HEAD"},"tool_response":{"stdout":""}}`)
+	if got != "" {
+		t.Errorf("ccmux argv = %q, want no call — a subagent's push must not re-arm the parent's CI wait", got)
+	}
+}
