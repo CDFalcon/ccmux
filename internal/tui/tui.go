@@ -4158,7 +4158,9 @@ When done with your task, commit your work and create a PR with:
     gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
 ${PR_DRAFT_NOTE}
 
-`+sysprompt.SharePaneDoc+`"
+`+sysprompt.SharePaneDoc+`
+
+`+sysprompt.PeerAgentsDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

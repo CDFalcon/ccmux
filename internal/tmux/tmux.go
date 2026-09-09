@@ -330,6 +330,37 @@ func (m *Manager) SendKeys(target, keys string) error {
 	return nil
 }
 
+// SendText types text into target as input and submits it with Enter. A
+// single-line message is sent as literal keys (no tmux key-name lookup, so a
+// message that happens to be "Enter" or "C-c" is typed, not interpreted). A
+// multi-line message goes through a tmux paste buffer with bracketed paste,
+// so applications that support it (the agent harnesses do) receive the
+// newlines as part of the text instead of as early submits.
+func (m *Manager) SendText(target, text string) error {
+	if strings.Contains(text, "\n") {
+		bufName := fmt.Sprintf("ccmux-msg-%d", time.Now().UnixNano())
+		load := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
+		load.Stdin = strings.NewReader(text)
+		if output, err := load.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to load paste buffer: %s: %w", string(output), err)
+		}
+		paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", bufName, "-t", target)
+		if output, err := paste.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to paste text: %s: %w", string(output), err)
+		}
+	} else {
+		cmd := exec.Command("tmux", "send-keys", "-t", target, "-l", text)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to send text: %s: %w", string(output), err)
+		}
+	}
+	cmd := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to send Enter: %s: %w", string(output), err)
+	}
+	return nil
+}
+
 func (m *Manager) RespawnPane(windowID, command string) error {
 	cmd := exec.Command("tmux", "respawn-pane", "-k", "-t", windowID, command)
 	output, err := cmd.CombinedOutput()
