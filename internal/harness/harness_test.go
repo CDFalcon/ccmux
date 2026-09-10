@@ -77,3 +77,29 @@ func TestInstallsClaudeHooks_ShouldBeClaudeOnly(t *testing.T) {
 		t.Error("Codex should not install Claude hooks")
 	}
 }
+
+func TestContinueWithPromptCommand_ShouldResumeClaude_AndRestartCodex(t *testing.T) {
+	c := Claude.ContinueWithPromptCommand()
+	if !strings.HasPrefix(c, "claude --continue") {
+		t.Errorf("Claude.ContinueWithPromptCommand() = %q, want it to resume with --continue", c)
+	}
+	if !strings.Contains(c, "$SYSTEM_PROMPT") || !strings.Contains(c, "$PROMPT") {
+		t.Errorf("Claude.ContinueWithPromptCommand() must use SYSTEM_PROMPT and PROMPT: %q", c)
+	}
+	x := Codex.ContinueWithPromptCommand()
+	if !strings.HasPrefix(x, "codex ") || strings.Contains(x, "--continue") {
+		t.Errorf("Codex.ContinueWithPromptCommand() = %q, want a fresh codex session", x)
+	}
+	if !strings.Contains(x, "$SYSTEM_PROMPT") || !strings.Contains(x, "$PROMPT") {
+		t.Errorf("Codex.ContinueWithPromptCommand() must use SYSTEM_PROMPT and PROMPT: %q", x)
+	}
+}
+
+func TestTelemetryEnvBlock_ShouldBeSprintfSafe_AndClaudeOnly(t *testing.T) {
+	if strings.Contains(TelemetryEnvBlock, "%") {
+		t.Error("TelemetryEnvBlock is embedded in Sprintf format strings and must not contain percent signs")
+	}
+	if !strings.Contains(TelemetryEnvBlock, `[ "$HARNESS" = "claude" ]`) {
+		t.Error("TelemetryEnvBlock should only enable telemetry for the Claude harness")
+	}
+}

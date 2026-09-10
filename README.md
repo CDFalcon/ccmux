@@ -153,3 +153,29 @@ rather than having text typed into a pane nobody is reading.
 Every agent's system prompt documents both commands, so spawned agents can
 coordinate on shared files, avoid duplicate work, or hand off results without
 going through you.
+
+## Reloading your own harness
+
+Some harness configuration only loads at startup — MCP servers, tools,
+hooks, settings. An agent that has just changed any of that can restart its
+own harness in place, without a human restarting it from the TUI:
+
+```
+ccmux reload [note...]   # restart the harness in your pane, resuming this conversation
+```
+
+A couple of seconds after the command returns, ccmux respawns the agent's
+pane with the same launcher shape as a restart: same worktree, branch, system
+prompt and cost telemetry, exit capture intact. Claude Code resumes the
+conversation with `--continue`; Codex, which cannot resume, starts a fresh
+session seeded with the original task. Either way the agent's first message
+explains that it reloaded itself and carries the optional note, which is a
+handy way to hand instructions across the restart:
+
+```
+ccmux reload I added the chrome MCP server to .mcp.json — verify its tools loaded, then continue with step 3
+```
+
+The shared output pane and the agent's registry entry are untouched. The
+command refuses to run from anywhere but the agent's own pane (for instance
+its shared pane), so it cannot respawn the wrong program.
