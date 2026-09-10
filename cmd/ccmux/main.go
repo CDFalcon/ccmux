@@ -77,6 +77,7 @@ Examples:
 		agentStoppedCmd(),
 		paneCmd(),
 		agentsCmd(),
+		reloadCmd(),
 		focusCmd(),
 		cleanupCmd(),
 		killCmd(),
@@ -966,39 +967,7 @@ cd "$WORKTREE_PATH"
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
-# OpenTelemetry to in-process ccmux collector.
-#
-# Claude Code emits a "claude_code.cost.usage" counter (in USD) over OTLP
-# when telemetry is enabled. Pointing the exporter at the collector
-# started by the ccmux TUI gives us Anthropic's own per-turn cost figure
-# - more accurate than re-deriving cost from the JSONL transcript and
-# automatically correct for any current/future model.
-#
-# Best-effort:
-#   - We never clobber a user's existing OTEL_EXPORTER_OTLP_ENDPOINT
-#     (e.g. someone already running TokenKeeper). They keep their
-#     pipeline; ccmux falls back to the JSONL estimate for those agents.
-#   - We only enable for the Claude harness — the Codex CLI does not
-#     currently emit OTel metrics. Re-evaluate if/when it does.
-#   - If no collector is running (no TUI, or it crashed) the endpoint
-#     file is absent and we skip the export. The agent runs normally
-#     with no telemetry side-effects.
-if [ "$HARNESS" = "claude" ] && [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] && [ -r "$HOME/.ccmux/otel-endpoint" ]; then
-  CCMUX_OTEL_ENDPOINT=$(cat "$HOME/.ccmux/otel-endpoint" 2>/dev/null || true)
-  if [ -n "$CCMUX_OTEL_ENDPOINT" ]; then
-    export CLAUDE_CODE_ENABLE_TELEMETRY=1
-    export OTEL_METRICS_EXPORTER=otlp
-    export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-    export OTEL_EXPORTER_OTLP_ENDPOINT="$CCMUX_OTEL_ENDPOINT"
-    export OTEL_METRIC_EXPORT_INTERVAL=15000
-    # Stamp every metric with the ccmux agent id (resource attribute) so
-    # the collector can attribute cost without depending on Claude's
-    # internal session.id mapping. The worktree path is informational —
-    # handy for future per-project rollups.
-    export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent.id=$AGENT_ID,ccmux.worktree.path=$WORKTREE_PATH"
-  fi
-fi
-
+`+harness.TelemetryEnvBlock+`
 PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
 
 PR_DRAFT_FLAG=""
@@ -1016,7 +985,9 @@ ${PR_DRAFT_NOTE}
 
 `+sysprompt.SharePaneDoc+`
 
-`+sysprompt.PeerAgentsDoc+`"
+`+sysprompt.PeerAgentsDoc+`
+
+`+sysprompt.ReloadDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then
@@ -1048,6 +1019,21 @@ fi
 	}
 
 	return scriptPath, nil
+}
+
+// launcherFileSuffixes lists every file ccmux may write under
+// ~/.ccmux/launchers for an agent: <id><suffix>. Keep it in sync with the
+// script writers; removeLauncherFiles and `ccmux prune` clean up by it.
+var launcherFileSuffixes = []string{
+	".sh", "-review.sh", "-recovery.sh", "-placeholder.sh",
+	"-ci-fix.sh", "-merge-conflict.sh", "-restart.sh", "-reload.sh", "-prompts.txt",
+}
+
+// removeLauncherFiles deletes an agent's launcher scripts and prompts file.
+func removeLauncherFiles(launcherDir, agentID string) {
+	for _, suffix := range launcherFileSuffixes {
+		os.Remove(filepath.Join(launcherDir, agentID+suffix))
+	}
 }
 
 func promptsFilePath(agentID string) string {
@@ -1450,20 +1436,26 @@ func handleAgentStopped(agentStore *agent.Store, queueManager *queue.Queue, a *a
 // cleanup paths can kill it.
 const sharePaneOption = "@ccmux_share_pane"
 
-// sharePaneContext locates the calling agent's own tmux pane and window.
-// `ccmux pane` runs inside the agent's pane (as a child of the harness
-// process), so TMUX_PANE identifies the pane directly — this stays correct
-// across resumes, which give the agent a fresh window.
-type sharePaneContext struct {
+// agentPaneContext locates the calling agent's own tmux pane and window.
+// Agent-facing commands (`ccmux pane`, `ccmux reload`) run inside the agent's
+// pane (as a child of the harness process), so TMUX_PANE identifies the pane
+// directly — this stays correct across resumes, which give the agent a fresh
+// window.
+type agentPaneContext struct {
 	tm        *tmux.Manager
+	agentID   string
+	sessionID string
 	agentPane string
 	windowID  string
 	workDir   string
 }
 
-func getSharePaneContext() (*sharePaneContext, error) {
-	if os.Getenv("CCMUX_AGENT_ID") == "" {
-		return nil, fmt.Errorf("CCMUX_AGENT_ID environment variable not set — 'ccmux pane' is only available inside a ccmux agent")
+// getAgentPaneContext resolves the caller's pane; cmdName names the command
+// in the error shown when it is run outside an agent.
+func getAgentPaneContext(cmdName string) (*agentPaneContext, error) {
+	agentID := os.Getenv("CCMUX_AGENT_ID")
+	if agentID == "" {
+		return nil, fmt.Errorf("CCMUX_AGENT_ID environment variable not set — '%s' is only available inside a ccmux agent", cmdName)
 	}
 	agentPane := os.Getenv("TMUX_PANE")
 	if agentPane == "" {
@@ -1480,12 +1472,12 @@ func getSharePaneContext() (*sharePaneContext, error) {
 
 	workDir, _ := os.Getwd()
 
-	return &sharePaneContext{tm: tm, agentPane: agentPane, windowID: windowID, workDir: workDir}, nil
+	return &agentPaneContext{tm: tm, agentID: agentID, sessionID: sessionID, agentPane: agentPane, windowID: windowID, workDir: workDir}, nil
 }
 
 // currentSharePane returns the recorded share pane ID if it still exists,
 // or "" if none is open.
-func (c *sharePaneContext) currentSharePane() string {
+func (c *agentPaneContext) currentSharePane() string {
 	paneID, err := c.tm.GetWindowOption(c.windowID, sharePaneOption)
 	if err != nil || paneID == "" {
 		return ""
@@ -1514,7 +1506,7 @@ func paneOpenCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			command := strings.Join(args, " ")
 
-			ctx, err := getSharePaneContext()
+			ctx, err := getAgentPaneContext("ccmux pane")
 			if err != nil {
 				return err
 			}
@@ -1567,7 +1559,7 @@ func paneRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			command := strings.Join(args, " ")
 
-			ctx, err := getSharePaneContext()
+			ctx, err := getAgentPaneContext("ccmux pane")
 			if err != nil {
 				return err
 			}
@@ -1615,7 +1607,7 @@ func paneCloseCmd() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, err := getSharePaneContext()
+			ctx, err := getAgentPaneContext("ccmux pane")
 			if err != nil {
 				return err
 			}
@@ -1635,6 +1627,200 @@ func paneCloseCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// reloadDelay is how long `ccmux reload` waits before respawning the caller's
+// pane: enough for the command to return and the harness to record the tool
+// result in its transcript, short enough that the agent has not moved on.
+const reloadDelay = 2 * time.Second
+
+// reloadCmd lets an agent restart its own harness in place — resuming the
+// conversation — so configuration that only loads at startup (MCP servers,
+// tools, hooks, settings) takes effect without a human restarting it from the
+// TUI. The agent's worktree, branch, tmux pane and shared pane all survive;
+// only the harness process is replaced.
+func reloadCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "reload [note...]",
+		Short:        "Restart your own harness in place, resuming this conversation (agent-facing)",
+		Hidden:       true,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			note := strings.TrimSpace(strings.Join(args, " "))
+
+			ctx, err := getAgentPaneContext("ccmux reload")
+			if err != nil {
+				return err
+			}
+			agentStore, err := agent.NewStore(ctx.sessionID)
+			if err != nil {
+				return err
+			}
+			a, err := agentStore.Get(ctx.agentID)
+			if err != nil {
+				return fmt.Errorf("agent %s is not registered in this session: %w", ctx.agentID, err)
+			}
+			if reason := reloadRefusalReason(a, ctx.agentPane, ctx.windowID); reason != "" {
+				return fmt.Errorf("cannot reload: %s", reason)
+			}
+
+			var projectStore *project.Store
+			if ps, err := project.NewStore(); err == nil {
+				projectStore = ps
+			}
+			h := harness.Parse(a.Harness)
+			scriptPath, err := writeReloadScript(a.ID, a.WorktreePath, a.BaseBranch, a.Task, note, h, agentDraftPRs(projectStore, a.ProjectName))
+			if err != nil {
+				return fmt.Errorf("failed to write reload script: %w", err)
+			}
+
+			if err := ctx.tm.RespawnPaneDeferred(ctx.agentPane, "bash "+scriptPath, reloadDelay); err != nil {
+				return err
+			}
+
+			fmt.Printf("Reloading %s for agent %s in pane %s in %s.\n", h.DisplayName(), a.ID, ctx.agentPane, reloadDelay)
+			fmt.Printf("The harness will be restarted with: %s\n", h.ContinueWithPromptCommand())
+			if note != "" {
+				fmt.Printf("Your note will be delivered after the reload: %s\n", note)
+			}
+			fmt.Println("End your turn now — anything you start before the reload will be interrupted.")
+			return nil
+		},
+	}
+	cmd.Flags().SetInterspersed(false)
+	return cmd
+}
+
+// reloadRefusalReason explains why `ccmux reload` must not respawn the caller's
+// pane, or returns "" if it is safe. The registry records which pane the
+// agent's harness lives in; if the caller is somewhere else (typically the
+// agent's shared output pane, whose shell inherited CCMUX_AGENT_ID), respawning
+// TMUX_PANE would kill the wrong program and leave the real harness untouched.
+// Older records carry only a window, so fall back to matching on that.
+func reloadRefusalReason(a *agent.Agent, tmuxPane, windowID string) string {
+	switch {
+	case a.TmuxPane != "" && a.TmuxPane != tmuxPane:
+		return fmt.Sprintf("you are in pane %s but your harness runs in pane %s; run ccmux reload from your own pane, not the shared pane", tmuxPane, a.TmuxPane)
+	case a.TmuxPane == "" && a.TmuxWindow != "" && a.TmuxWindow != windowID:
+		return fmt.Sprintf("you are in window %s but your harness runs in window %s", windowID, a.TmuxWindow)
+	}
+	return ""
+}
+
+// reloadPrompt is the first message the reloaded harness receives. It is what
+// makes the restart self-explanatory to the agent: Claude Code resumes the
+// conversation so it needs only the reason and the note; Codex starts a fresh
+// session (the system prompt restates the task) so it also needs to be told to
+// re-orient from git.
+func reloadPrompt(note string) string {
+	prompt := "Your harness session was just reloaded at your own request (ccmux reload), so newly configured MCP servers, tools, hooks and settings are now loaded. " +
+		"If your conversation history is visible, continue where you left off — the result of the reload call itself may be missing. " +
+		"If it is not visible, review your progress with git log, git status and git diff first."
+	if note != "" {
+		prompt += "\n\nYour note to yourself before reloading:\n" + note
+	}
+	return prompt
+}
+
+// writeReloadScript writes the launcher that `ccmux reload` respawns the
+// agent's pane with. It mirrors the restart script (system prompt with the
+// original task, CLAUDE.md and project prompts, exit capture) but resumes with
+// an explanatory message and, unlike a restart, keeps the telemetry export so
+// the reloaded agent's cost still reaches the TUI.
+func writeReloadScript(agentID, worktreePath, baseBranch, task, note string, h harness.Type, draftPRs bool) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
+	if err := os.MkdirAll(launcherDir, 0755); err != nil {
+		return "", err
+	}
+
+	scriptPath := filepath.Join(launcherDir, agentID+"-reload.sh")
+
+	draftPRsFlag := "0"
+	if draftPRs {
+		draftPRsFlag = "1"
+	}
+
+	sq := shellutil.Quote
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+AGENT_ID=%s
+WORKTREE_PATH=%s
+BASE_BRANCH=%s
+TASK=%s
+HARNESS=%s
+DRAFT_PRS=%s
+PROMPT=%s
+
+cd "$WORKTREE_PATH"
+
+BLUE="\033[38;5;63m"
+WHITE="\033[1;97m"
+DIM="\033[38;5;245m"
+RESET="\033[0m"
+echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
+echo -e "${DIM}Reloading $HARNESS at the agent's request...${RESET}"
+echo ""
+
+export CCMUX_AGENT_ID="$AGENT_ID"
+unset CLAUDECODE
+
+`+harness.TelemetryEnvBlock+`
+PR_BASE_BRANCH="${BASE_BRANCH#origin/}"
+
+PR_DRAFT_FLAG=""
+PR_DRAFT_NOTE="IMPORTANT: this project opens pull requests ready for review — do NOT add a --draft flag."
+if [ "$DRAFT_PRS" = "1" ]; then
+  PR_DRAFT_FLAG="--draft "
+  PR_DRAFT_NOTE="This project opens pull requests as drafts — keep the --draft flag."
+fi
+
+SYSTEM_PROMPT="You are working on a task as part of the ccmux agent system. Environment variable CCMUX_AGENT_ID=$AGENT_ID is set for hook integration.
+
+IMPORTANT: You reloaded your own harness session with ccmux reload. If your conversation history is not visible, review your progress so far with git log, git status and git diff, then continue where you left off.
+
+The original task was:
+$TASK
+
+When done with your task, commit your work and create a PR with:
+    gh pr create ${PR_DRAFT_FLAG}--base $PR_BASE_BRANCH --title \"...\" --body \"...\"
+${PR_DRAFT_NOTE}
+
+`+sysprompt.SharePaneDoc+`
+
+`+sysprompt.PeerAgentsDoc+`
+
+`+sysprompt.ReloadDoc+`"
+
+CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD_PATH" ]; then
+  CLAUDE_MD_CONTENT=$(cat "$CLAUDE_MD_PATH")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${CLAUDE_MD_CONTENT}"
+fi
+
+PROMPTS_FILE=%s
+if [ -f "$PROMPTS_FILE" ]; then
+  PROMPTS_CONTENT=$(cat "$PROMPTS_FILE")
+  SYSTEM_PROMPT="${SYSTEM_PROMPT}
+
+${PROMPTS_CONTENT}"
+fi
+
+`+harness.ExitCapturePrologue+`%s
+`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(task), sq(string(h)), sq(draftPRsFlag), sq(reloadPrompt(note)), sq(promptsFilePath(agentID)), h.ContinueWithPromptCommand())
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
 }
 
 // agentsCmd exposes the session's agent registry to the agents themselves so
@@ -1927,14 +2113,7 @@ func doCleanup(agentID, action string, closePR bool) error {
 	homeDir, _ := os.UserHomeDir()
 	if homeDir != "" {
 		launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
-		os.Remove(filepath.Join(launcherDir, agentID+".sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-review.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-recovery.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-ci-fix.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-merge-conflict.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-restart.sh"))
-		os.Remove(filepath.Join(launcherDir, agentID+"-prompts.txt"))
+		removeLauncherFiles(launcherDir, agentID)
 	}
 
 	// Only forget the agent once its worktree is actually gone.
@@ -2117,14 +2296,7 @@ func killSessionCmd() *cobra.Command {
 					wtManager.Remove(a.WorktreePath)
 					wtManager.DeleteBranch(a.BranchName)
 				}
-				os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
-				os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
+				removeLauncherFiles(launcherDir, a.ID)
 			}
 
 			sessionDir := filepath.Join(homeDir, ".ccmux", "sessions", sessionID)
@@ -2238,14 +2410,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 		if err := removeAgentWorktree(a); err != nil {
 			logging.Log("recovery: failed to remove worktree for %s: %v", a.ID, err)
 		}
-		os.Remove(filepath.Join(launcherDir, a.ID+".sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-review.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-recovery.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-ci-fix.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-merge-conflict.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-restart.sh"))
-		os.Remove(filepath.Join(launcherDir, a.ID+"-prompts.txt"))
+		removeLauncherFiles(launcherDir, a.ID)
 		agentStore.Delete(a.ID)
 	}
 
@@ -2273,14 +2438,7 @@ func recoverOrphanedAgents(sessionID string, tmuxManager *tmux.Manager, homeDir 
 			logging.Log("recovery: failed to remove worktree for %s: %v", id, err)
 		}
 
-		os.Remove(filepath.Join(launcherDir, id+".sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-review.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-recovery.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-placeholder.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-ci-fix.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-merge-conflict.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-restart.sh"))
-		os.Remove(filepath.Join(launcherDir, id+"-prompts.txt"))
+		removeLauncherFiles(launcherDir, id)
 		agentStore.Delete(id)
 	}
 
@@ -2500,7 +2658,9 @@ ${PR_DRAFT_NOTE}
 
 `+sysprompt.SharePaneDoc+`
 
-`+sysprompt.PeerAgentsDoc+`"
+`+sysprompt.PeerAgentsDoc+`
+
+`+sysprompt.ReloadDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

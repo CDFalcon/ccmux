@@ -4160,7 +4160,9 @@ ${PR_DRAFT_NOTE}
 
 `+sysprompt.SharePaneDoc+`
 
-`+sysprompt.PeerAgentsDoc+`"
+`+sysprompt.PeerAgentsDoc+`
+
+`+sysprompt.ReloadDoc+`"
 
 CLAUDE_MD_PATH="$HOME/.claude/CLAUDE.md"
 if [ -f "$CLAUDE_MD_PATH" ]; then

@@ -412,12 +412,7 @@ func executePrune(c pruneCandidate) error {
 
 	if homeDir, err := os.UserHomeDir(); err == nil && c.agentID != "" {
 		launcherDir := filepath.Join(homeDir, ".ccmux", "launchers")
-		for _, suffix := range []string{
-			".sh", "-review.sh", "-recovery.sh", "-placeholder.sh",
-			"-ci-fix.sh", "-merge-conflict.sh", "-restart.sh", "-prompts.txt",
-		} {
-			os.Remove(filepath.Join(launcherDir, c.agentID+suffix))
-		}
+		removeLauncherFiles(launcherDir, c.agentID)
 	}
 
 	if c.agentID != "" && c.sessionID != "" {

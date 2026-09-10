@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/CDFalcon/ccmux/internal/shellutil"
 )
 
 const (
@@ -264,6 +266,37 @@ func (m *Manager) RespawnPaneCmd(target, command string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to respawn pane: %s: %w", string(output), err)
+	}
+	return nil
+}
+
+// RespawnPaneDeferred schedules RespawnPaneCmd to run on target after delay,
+// from a background job owned by the tmux server rather than from this
+// process.
+//
+// It exists for `ccmux reload`, which an agent runs from inside the very pane
+// it is asking to respawn. respawn-pane -k hangs up the pane's whole process
+// tree — the launcher script, the harness, the ccmux process issuing the
+// command, and the tmux client it spawned — so a direct call would kill the
+// harness mid-tool-call before it could record the tool's result. Detaching
+// the respawn into `run-shell -b` and waiting a moment lets ccmux print its
+// confirmation and exit and the harness flush the result to its transcript,
+// so the resumed conversation is intact.
+func (m *Manager) RespawnPaneDeferred(target, command string, delay time.Duration) error {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return fmt.Errorf("tmux not found on PATH: %w", err)
+	}
+	secs := int(delay.Round(time.Second) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	job := fmt.Sprintf("sleep %d; exec %s respawn-pane -k -t %s %s",
+		secs, shellutil.Quote(tmuxBin), shellutil.Quote(target), shellutil.Quote(command))
+	cmd := exec.Command("tmux", "run-shell", "-b", job)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to schedule pane respawn: %s: %w", string(output), err)
 	}
 	return nil
 }

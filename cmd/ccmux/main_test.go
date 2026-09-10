@@ -760,31 +760,158 @@ func TestPeerMessagePrefix_ShouldNameSender(t *testing.T) {
 	}
 }
 
-// TestAgentScripts_ShouldTeachPeerMessaging pins the peer-agent tooling into
-// every system prompt an agent can start from: an agent that does not know
-// `ccmux agents` exists cannot use it, and a resumed agent must not forget.
-func TestAgentScripts_ShouldTeachPeerMessaging(t *testing.T) {
+// TestAgentScripts_ShouldTeachAgentFacingCommands pins the agent-facing
+// tooling into every system prompt an agent can start from: an agent that
+// does not know `ccmux agents`, `ccmux pane` or `ccmux reload` exist cannot
+// use them, and a resumed or reloaded agent must not forget.
+func TestAgentScripts_ShouldTeachAgentFacingCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	launcher, err := writeLauncherScript("peer-launch", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Claude, true)
 	if err != nil {
 		t.Fatalf("writeLauncherScript failed: %v", err)
 	}
-	defer os.Remove(launcher)
 	recovery, err := writeRecoveryScript("peer-recover", "/tmp/wt", "origin/main", "sess", "task", harness.Claude, true)
 	if err != nil {
 		t.Fatalf("writeRecoveryScript failed: %v", err)
 	}
-	defer os.Remove(recovery)
+	reload, err := writeReloadScript("peer-reload", "/tmp/wt", "origin/main", "task", "", harness.Claude, true)
+	if err != nil {
+		t.Fatalf("writeReloadScript failed: %v", err)
+	}
 
-	for _, path := range []string{launcher, recovery} {
+	for _, path := range []string{launcher, recovery, reload} {
 		assertValidBash(t, path)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open"} {
+		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open", "ccmux reload [note...]"} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s: system prompt should mention %q", filepath.Base(path), want)
 			}
+		}
+	}
+}
+
+// --- reload: an agent restarting its own harness ---------------------------
+
+func TestWriteReloadScript_ShouldResumeConversation_WithNoteAndTelemetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	note := "I added the chrome MCP server to .mcp.json; verify its tools loaded, then continue with step 3"
+	path, err := writeReloadScript("reload-1", "/tmp/wt", "origin/main", "the original task", note, harness.Claude, false)
+	if err != nil {
+		t.Fatalf("writeReloadScript failed: %v", err)
+	}
+	if !strings.HasSuffix(path, "reload-1-reload.sh") {
+		t.Errorf("script path = %q, want it to end in reload-1-reload.sh so teardown can find it", path)
+	}
+	assertValidBash(t, path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+
+	for _, want := range []string{
+		harness.Claude.ContinueWithPromptCommand(), // resumes, does not start over
+		note,                          // the note reaches the resumed agent
+		"the original task",           // Codex-style fresh sessions need it; harmless for Claude
+		"OTEL_EXPORTER_OTLP_ENDPOINT", // cost telemetry survives the reload
+		"ccmux agent-stopped",         // exit capture keeps the status machine honest
+		"do NOT add a --draft flag",   // draftPRs=false threaded through
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("reload script should contain %q", want)
+		}
+	}
+}
+
+func TestWriteReloadScript_ShouldStartFreshSession_GivenCodex(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := writeReloadScript("reload-codex", "/tmp/wt", "origin/main", "task", "", harness.Codex, true)
+	if err != nil {
+		t.Fatalf("writeReloadScript failed: %v", err)
+	}
+	assertValidBash(t, path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), harness.Codex.ContinueWithPromptCommand()) {
+		t.Errorf("codex reload script should invoke %q", harness.Codex.ContinueWithPromptCommand())
+	}
+	if strings.Contains(string(data), "claude --continue") {
+		t.Error("codex reload script must not invoke claude")
+	}
+	if !strings.Contains(string(data), "keep the --draft flag") {
+		t.Error("draftPRs=true should be threaded through to the PR instructions")
+	}
+}
+
+func TestReloadPrompt_ShouldExplainReload_AndCarryNote(t *testing.T) {
+	bare := reloadPrompt("")
+	if !strings.Contains(bare, "ccmux reload") || !strings.Contains(bare, "MCP servers") {
+		t.Errorf("prompt should say the harness was reloaded and why: %q", bare)
+	}
+	if strings.Contains(bare, "note to yourself") {
+		t.Errorf("prompt without a note should not mention one: %q", bare)
+	}
+	noted := reloadPrompt("check the new tools")
+	if !strings.HasSuffix(noted, "check the new tools") || !strings.Contains(noted, "note to yourself") {
+		t.Errorf("prompt should end with the agent's note: %q", noted)
+	}
+}
+
+func TestReloadRefusalReason_ShouldOnlyAllowTheAgentsOwnPane(t *testing.T) {
+	cases := []struct {
+		name         string
+		a            *agent.Agent
+		pane, window string
+		wantRefused  bool
+	}{
+		{"own pane", &agent.Agent{TmuxPane: "%5", TmuxWindow: "@2"}, "%5", "@2", false},
+		{"shared pane in same window", &agent.Agent{TmuxPane: "%5", TmuxWindow: "@2"}, "%9", "@2", true},
+		{"legacy record, own window", &agent.Agent{TmuxWindow: "@2"}, "%5", "@2", false},
+		{"legacy record, other window", &agent.Agent{TmuxWindow: "@2"}, "%5", "@7", true},
+		{"no pane recorded at all", &agent.Agent{}, "%5", "@2", false},
+	}
+	for _, tc := range cases {
+		reason := reloadRefusalReason(tc.a, tc.pane, tc.window)
+		if (reason != "") != tc.wantRefused {
+			t.Errorf("%s: reloadRefusalReason = %q, want refused=%v", tc.name, reason, tc.wantRefused)
+		}
+	}
+}
+
+func TestRemoveLauncherFiles_ShouldDeleteEveryScriptKind(t *testing.T) {
+	dir := t.TempDir()
+	for _, suffix := range launcherFileSuffixes {
+		if err := os.WriteFile(filepath.Join(dir, "agent-x"+suffix), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-y.sh"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	removeLauncherFiles(dir, "agent-x")
+
+	left, _ := filepath.Glob(filepath.Join(dir, "agent-x*"))
+	if len(left) != 0 {
+		t.Errorf("launcher files left behind: %v", left)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "agent-y.sh")); err != nil {
+		t.Error("another agent's launcher must survive")
+	}
+	for _, want := range []string{"-reload.sh", "-restart.sh", "-prompts.txt"} {
+		found := false
+		for _, s := range launcherFileSuffixes {
+			if s == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("launcherFileSuffixes should include %q", want)
 		}
 	}
 }

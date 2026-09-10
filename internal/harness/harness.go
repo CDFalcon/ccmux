@@ -112,6 +112,26 @@ func (t Type) ContinueCommand() string {
 	}
 }
 
+// ContinueWithPromptCommand returns the shell command that resumes an agent
+// with a fresh system prompt AND an initial message, for flows where the agent
+// must keep its conversation but be told why it is starting again — currently
+// `ccmux reload`, which an agent runs on itself to pick up newly configured
+// MCP servers, tools, hooks or settings. The launcher script must define the
+// SYSTEM_PROMPT and PROMPT shell variables.
+//
+// Claude Code resumes the prior conversation with --continue and treats the
+// positional argument as the next user message. Codex cannot resume, so as
+// with ContinueCommand it starts a fresh session seeded with the system prompt
+// (which carries the original task) followed by the message.
+func (t Type) ContinueWithPromptCommand() string {
+	switch t {
+	case Codex:
+		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$PROMPT\""
+	default:
+		return "claude --continue --dangerously-skip-permissions --system-prompt \"$SYSTEM_PROMPT\" \"$PROMPT\""
+	}
+}
+
 // ResumeWithPromptPrefix returns the leading portion of a command that resumes
 // an agent and hands it a new, self-contained instruction (PR-review, CI-fix
 // and merge-conflict flows). Callers append a shell-quoted prompt string.
@@ -126,6 +146,43 @@ func (t Type) ResumeWithPromptPrefix() string {
 		return "claude --continue --dangerously-skip-permissions"
 	}
 }
+
+// TelemetryEnvBlock is the launcher-script fragment that points the Claude
+// harness's OpenTelemetry exporter at the in-process ccmux collector, so the
+// TUI gets Anthropic's own per-turn cost figure instead of re-deriving it from
+// the JSONL transcript. It is shared by every script that starts a harness in
+// an agent's pane (spawn and `ccmux reload`) so a reloaded agent keeps
+// reporting cost. Scripts using it must define AGENT_ID, WORKTREE_PATH and
+// HARNESS. Safe to embed in a fmt.Sprintf format string: no percent verbs.
+//
+// Best-effort:
+//   - We never clobber a user's existing OTEL_EXPORTER_OTLP_ENDPOINT
+//     (e.g. someone already running TokenKeeper). They keep their
+//     pipeline; ccmux falls back to the JSONL estimate for those agents.
+//   - We only enable for the Claude harness — the Codex CLI does not
+//     currently emit OTel metrics. Re-evaluate if/when it does.
+//   - If no collector is running (no TUI, or it crashed) the endpoint
+//     file is absent and we skip the export. The agent runs normally
+//     with no telemetry side-effects.
+const TelemetryEnvBlock = `# OpenTelemetry to in-process ccmux collector (Claude harness only; skipped
+# when the user already exports OTEL_EXPORTER_OTLP_ENDPOINT or no ccmux
+# collector is running).
+if [ "$HARNESS" = "claude" ] && [ -z "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] && [ -r "$HOME/.ccmux/otel-endpoint" ]; then
+  CCMUX_OTEL_ENDPOINT=$(cat "$HOME/.ccmux/otel-endpoint" 2>/dev/null || true)
+  if [ -n "$CCMUX_OTEL_ENDPOINT" ]; then
+    export CLAUDE_CODE_ENABLE_TELEMETRY=1
+    export OTEL_METRICS_EXPORTER=otlp
+    export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+    export OTEL_EXPORTER_OTLP_ENDPOINT="$CCMUX_OTEL_ENDPOINT"
+    export OTEL_METRIC_EXPORT_INTERVAL=15000
+    # Stamp every metric with the ccmux agent id (resource attribute) so
+    # the collector can attribute cost without depending on Claude's
+    # internal session.id mapping. The worktree path is informational —
+    # handy for future per-project rollups.
+    export OTEL_RESOURCE_ATTRIBUTES="ccmux.agent.id=$AGENT_ID,ccmux.worktree.path=$WORKTREE_PATH"
+  fi
+fi
+`
 
 // ExitCapturePrologue and ExitCaptureEpilogue bracket the harness invocation in
 // every generated agent script.
