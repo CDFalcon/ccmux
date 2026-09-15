@@ -80,16 +80,19 @@ func (t Type) Installed() bool {
 
 // StartCommand returns the shell command that starts a fresh agent session.
 // The launcher script must define the SYSTEM_PROMPT and TASK shell variables
-// before invoking it.
+// and, for Claude, run SystemPromptFileBlock (which derives
+// SYSTEM_PROMPT_FILE from them) before invoking it.
 //
-// Claude Code accepts a dedicated --system-prompt flag; Codex has no such
-// flag, so the system prompt is prepended to the task as the initial message.
+// Claude Code reads the system prompt from a file via --system-prompt-file;
+// see SystemPromptFileBlock for why it must not travel on the command line.
+// Codex has no such flag, so the system prompt is prepended to the task as
+// the initial message.
 func (t Type) StartCommand() string {
 	switch t {
 	case Codex:
 		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$TASK\""
 	default:
-		return "claude --dangerously-skip-permissions --system-prompt \"$SYSTEM_PROMPT\" \"$TASK\""
+		return "claude --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$TASK\""
 	}
 }
 
@@ -97,7 +100,7 @@ func (t Type) StartCommand() string {
 // session loss or restart, without handing it a new instruction. The launcher
 // script must define the SYSTEM_PROMPT shell variable (which, for resume
 // flows, also carries the original task and "continue where you left off"
-// context).
+// context) and, for Claude, run SystemPromptFileBlock.
 //
 // Claude Code resumes its prior conversation with --continue. Codex sessions
 // are not addressable per-worktree, so ccmux instead starts a fresh Codex
@@ -108,7 +111,7 @@ func (t Type) ContinueCommand() string {
 	case Codex:
 		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\""
 	default:
-		return "claude --continue --dangerously-skip-permissions --system-prompt \"$SYSTEM_PROMPT\""
+		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\""
 	}
 }
 
@@ -117,7 +120,8 @@ func (t Type) ContinueCommand() string {
 // must keep its conversation but be told why it is starting again — currently
 // `ccmux reload`, which an agent runs on itself to pick up newly configured
 // MCP servers, tools, hooks or settings. The launcher script must define the
-// SYSTEM_PROMPT and PROMPT shell variables.
+// SYSTEM_PROMPT and PROMPT shell variables and, for Claude, run
+// SystemPromptFileBlock.
 //
 // Claude Code resumes the prior conversation with --continue and treats the
 // positional argument as the next user message. Codex cannot resume, so as
@@ -128,7 +132,7 @@ func (t Type) ContinueWithPromptCommand() string {
 	case Codex:
 		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$PROMPT\""
 	default:
-		return "claude --continue --dangerously-skip-permissions --system-prompt \"$SYSTEM_PROMPT\" \"$PROMPT\""
+		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
 	}
 }
 
@@ -146,6 +150,39 @@ func (t Type) ResumeWithPromptPrefix() string {
 		return "claude --continue --dangerously-skip-permissions"
 	}
 }
+
+// SystemPromptFileBlock is the launcher-script fragment that writes the
+// assembled $SYSTEM_PROMPT to a per-agent file and points SYSTEM_PROMPT_FILE
+// at it, so the Claude commands above can pass --system-prompt-file instead
+// of putting the prompt itself in argv. Scripts using it must define AGENT_ID
+// and SYSTEM_PROMPT, and must run it after the last SYSTEM_PROMPT append (the
+// CLAUDE.md and -prompts.txt blocks). Safe to embed in a fmt.Sprintf format
+// string: no percent verbs — which is also why it uses a heredoc rather than
+// printf '%s'.
+//
+// The prompt used to ride on the command line. It is a dozen KB of prose
+// (ccmux's own docs, the task, the user's ~/.claude/CLAUDE.md), and argv is
+// what `ps`, `pgrep -f` and `pkill -f` match against. An agent reaping its own
+// background job with `pkill -f 'cloud.*session'` matched that prose in every
+// *other* ccmux agent's command line and SIGTERMed them all (macOS pkill skips
+// its own ancestors, so the culprit was the one agent that survived). Each
+// victim died with "harness exited 143" and had to be restarted mid-turn,
+// repeatedly, with nothing in the victims' own transcripts to explain why.
+// Keeping the prompt out of argv closes that whole class: what remains on the
+// command line is the CLI's flags, the file path and — on a fresh start only —
+// the user's task text, which Claude Code accepts solely as a positional
+// argument.
+//
+// The file lives beside the agent's other launcher files
+// (~/.ccmux/launchers/<id>-system-prompt.txt) and is removed with them.
+const SystemPromptFileBlock = `# Hand the system prompt to the harness through a file, not argv: on the
+# command line it is matched by every pgrep -f / pkill -f on the machine.
+SYSTEM_PROMPT_FILE="$HOME/.ccmux/launchers/$AGENT_ID-system-prompt.txt"
+mkdir -p "$(dirname "$SYSTEM_PROMPT_FILE")"
+cat > "$SYSTEM_PROMPT_FILE" <<CCMUX_SYSTEM_PROMPT_EOF
+$SYSTEM_PROMPT
+CCMUX_SYSTEM_PROMPT_EOF
+`
 
 // TelemetryEnvBlock is the launcher-script fragment that points the Claude
 // harness's OpenTelemetry exporter at the in-process ccmux collector, so the

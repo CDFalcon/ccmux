@@ -362,6 +362,62 @@ func TestVerifyBaseBranch_ShouldRejectMissingBranch(t *testing.T) {
 	}
 }
 
+// Every script that starts a Claude harness must hand it the system prompt
+// through a file. With the prompt in argv, one agent's
+// `pkill -f 'cloud.*session'` (aimed at its own background job) matched the
+// prose in every sibling agent's command line and SIGTERMed them all —
+// "harness exited 143", over and over, with nothing in the victims'
+// transcripts to explain it. Guard each generator: the file block must run
+// after the last SYSTEM_PROMPT append and before the harness call, and no
+// claude invocation may quote $SYSTEM_PROMPT itself.
+func TestClaudeScripts_ShouldPassSystemPromptViaFile(t *testing.T) {
+	gens := map[string]func() (string, error){
+		"launcher": func() (string, error) {
+			return writeLauncherScript("spf-launch", "task", "/tmp/repo", "origin/main", "sess", false, "", "", "", harness.Claude, true)
+		},
+		"recovery": func() (string, error) {
+			return writeRecoveryScript("spf-recover", "/tmp/repo/wt", "origin/main", "sess", "task", harness.Claude, true)
+		},
+		"reload": func() (string, error) {
+			return writeReloadScript("spf-reload", "/tmp/repo/wt", "origin/main", "task", "note", harness.Claude, true)
+		},
+	}
+	for name, gen := range gens {
+		t.Run(name, func(t *testing.T) {
+			path, err := gen()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			defer os.Remove(path)
+			assertValidBash(t, path)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := string(data)
+
+			block := strings.Index(content, harness.SystemPromptFileBlock)
+			if block < 0 {
+				t.Fatalf("%s script does not write the system prompt file", name)
+			}
+			lastAppend := strings.LastIndex(content, "${PROMPTS_CONTENT}")
+			call := strings.Index(content, "--system-prompt-file \"$SYSTEM_PROMPT_FILE\"")
+			if call < 0 {
+				t.Fatalf("%s script does not pass --system-prompt-file to claude", name)
+			}
+			if !(lastAppend < block && block < call) {
+				t.Errorf("%s script must write the prompt file after the last SYSTEM_PROMPT append and before the harness call (append@%d block@%d call@%d)", name, lastAppend, block, call)
+			}
+			for _, line := range strings.Split(content, "\n") {
+				if strings.HasPrefix(line, "claude ") && strings.Contains(line, "$SYSTEM_PROMPT\"") {
+					t.Errorf("%s script puts the system prompt in claude's argv: %q", name, line)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteRecoveryScript_ShouldProduceValidHarnessSpecificScript(t *testing.T) {
 	for _, h := range harness.All() {
 		t.Run(string(h), func(t *testing.T) {
