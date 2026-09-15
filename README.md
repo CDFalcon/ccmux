@@ -5,10 +5,10 @@
   ██║      ██║      ██║╚██╔╝██║██║   ██║ ██╔██╗
   ╚██████╗ ╚██████╗ ██║ ╚═╝ ██║╚██████╔╝██╔╝ ██╗
    ╚═════╝  ╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝
-  Colby's Claude Multiplexer
+  Colby's Coding Multiplexer
 ```
 
-# ccmux — Colby's Claude MUltipleXer
+# ccmux — Colby's Coding MUltipleXer
 
 A terminal-based orchestrator for managing multiple coding agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
