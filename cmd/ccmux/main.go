@@ -1005,6 +1005,7 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
+`+harness.SystemPromptFileBlock+`
 `+harness.ExitCapturePrologue+`%s
 `+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(task), sq(repoPath), sq(baseBranch), sq(sessionID), sq(useFastWT), sq(wtSuffix), sq(string(h)), sq(draftPRsFlag), sq(startupScript), sq(promptsFilePath(agentID)), h.StartCommand())
 
@@ -1027,6 +1028,7 @@ fi
 var launcherFileSuffixes = []string{
 	".sh", "-review.sh", "-recovery.sh", "-placeholder.sh",
 	"-ci-fix.sh", "-merge-conflict.sh", "-restart.sh", "-reload.sh", "-prompts.txt",
+	"-system-prompt.txt",
 }
 
 // removeLauncherFiles deletes an agent's launcher scripts and prompts file.
@@ -1813,6 +1815,7 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
+`+harness.SystemPromptFileBlock+`
 `+harness.ExitCapturePrologue+`%s
 `+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(task), sq(string(h)), sq(draftPRsFlag), sq(reloadPrompt(note)), sq(promptsFilePath(agentID)), h.ContinueWithPromptCommand())
 
@@ -2678,6 +2681,7 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
+`+harness.SystemPromptFileBlock+`
 `+harness.ExitCapturePrologue+`%s
 `+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(sessionID), sq(task), sq(string(h)), sq(draftPRsFlag), sq(promptsFilePath(agentID)), h.ContinueCommand())
 

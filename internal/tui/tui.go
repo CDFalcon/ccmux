@@ -4180,6 +4180,7 @@ if [ -f "$PROMPTS_FILE" ]; then
 ${PROMPTS_CONTENT}"
 fi
 
+`+harness.SystemPromptFileBlock+`
 `+harness.ExitCapturePrologue+`%s
 `+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(task), sq(draftPRsFlag), sq(baseBranch), sq(promptsFile), h.ContinueCommand())
 
