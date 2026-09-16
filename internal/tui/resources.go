@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/CDFalcon/ccmux/internal/agent"
+	"github.com/CDFalcon/ccmux/internal/harness"
 	"github.com/CDFalcon/ccmux/internal/otelcollector"
 	"github.com/CDFalcon/ccmux/internal/tmux"
 )
@@ -147,16 +149,11 @@ func queryAllAgentResources(
 	probe.Retain(keepPaths)
 
 	var wg sync.WaitGroup
-	type tokenResult struct {
+	type usageResult struct {
 		agentID string
-		tokens  tokenBreakdown
+		usage   sessionUsage
 	}
-	tokenCh := make(chan tokenResult, len(agents))
-	type dailyCostResult struct {
-		agentID string
-		costs   map[string]float64
-	}
-	dailyCostCh := make(chan dailyCostResult, len(agents))
+	usageCh := make(chan usageResult, len(agents))
 
 	// Disk is read straight from the probe rather than in a goroutine, because
 	// Sample never blocks on a subprocess: it returns the last known figure and
@@ -175,37 +172,28 @@ func queryAllAgentResources(
 
 		if hasLiveCostData(a) {
 			wg.Add(1)
-			go func(id, path string) {
+			go func(a *agent.Agent) {
 				defer wg.Done()
-				tokenCh <- tokenResult{id, getAgentSessionTokens(path)}
-			}(a.ID, a.WorktreePath)
-			wg.Add(1)
-			go func(id, path string) {
-				defer wg.Done()
-				dailyCostCh <- dailyCostResult{id, getAgentSessionDailyCosts(path)}
-			}(a.ID, a.WorktreePath)
+				usageCh <- usageResult{a.ID, agentSessionUsage(a)}
+			}(a)
 		}
 	}
 
 	go func() {
 		wg.Wait()
-		close(tokenCh)
-		close(dailyCostCh)
+		close(usageCh)
 	}()
 
+	// Keep both the per-agent transcript contribution and the rolled-up
+	// total so that, if the OTel collector has accurate cost for an agent,
+	// we can swap that agent's slice without re-parsing the transcript.
 	tokenMap := make(map[string]tokenBreakdown)
-	for r := range tokenCh {
-		tokenMap[r.agentID] = r.tokens
-	}
-
-	// Keep both the per-agent JSONL contribution and the rolled-up total so
-	// that, if the OTel collector has accurate cost for an agent, we can
-	// swap that agent's slice without re-parsing the JSONL.
 	perAgentJSONLDaily := make(map[string]map[string]float64)
 	liveDailyCosts := make(map[string]float64)
-	for r := range dailyCostCh {
-		perAgentJSONLDaily[r.agentID] = r.costs
-		for date, cost := range r.costs {
+	for r := range usageCh {
+		tokenMap[r.agentID] = r.usage.tokens
+		perAgentJSONLDaily[r.agentID] = r.usage.daily
+		for date, cost := range r.usage.daily {
 			liveDailyCosts[date] += cost
 		}
 	}
@@ -469,15 +457,28 @@ func computeCPUPercent(prevTicks int64, currTicks int64, deltaSeconds float64, c
 // Note on cost source: Claude Code does NOT write per-turn cost to the session
 // JSONL — the `total_cost_usd` and `modelUsage[*].costUSD` fields are emitted
 // only by `claude --print --output-format json` and by the OpenTelemetry
-// exporter (`claude_code.cost.usage` metric, requires `OTEL_METRICS_EXPORTER`
-// and a running collector). Codex CLI is the same. Running a per-agent OTLP
-// receiver purely to read cost would be heavier than the JSONL re-derivation
-// below, so we re-derive cost from the usage blocks Claude already records.
-// Pricing in estimateCost() is reconciled against Claude's own internal
-// calculation — see TestEstimateCost_ShouldMatchClaudeInternal_*.
+// exporter (`claude_code.cost.usage`, which internal/otelcollector receives
+// and queryAllAgentResources prefers). The code below re-derives cost from the
+// usage blocks Claude already records, for agents without telemetry. The
+// pricing model and the rules for reading the transcript are documented in
+// pricing.go.
 type claudeCacheCreation struct {
 	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
 	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+}
+
+// claudeIteration is one leg of a request that the API served through a
+// server-side fallback chain: the model that produced this leg and the
+// tokens it consumed. `type` is "message" for the original model and
+// "fallback_message" for a substitute.
+type claudeIteration struct {
+	Type                     string              `json:"type"`
+	Model                    string              `json:"model"`
+	InputTokens              int64               `json:"input_tokens"`
+	OutputTokens             int64               `json:"output_tokens"`
+	CacheCreationInputTokens int64               `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64               `json:"cache_read_input_tokens"`
+	CacheCreation            claudeCacheCreation `json:"cache_creation"`
 }
 
 type claudeUsage struct {
@@ -486,23 +487,81 @@ type claudeUsage struct {
 	CacheCreationInputTokens int64               `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int64               `json:"cache_read_input_tokens"`
 	CacheCreation            claudeCacheCreation `json:"cache_creation"`
+	// Speed is "fast" when the request ran in fast mode (premium rate).
+	Speed string `json:"speed"`
+	// InferenceGeo is "us" when US-only inference (1.1×) was requested.
+	InferenceGeo string `json:"inference_geo"`
+	// Iterations lists each model leg when a fallback re-served the request.
+	Iterations []claudeIteration `json:"iterations"`
 }
 
-// cacheCreate5m returns the portion of cache-creation tokens billed at the 5m
-// ephemeral rate. When the JSONL carries the explicit split (modern Claude
-// Code), prefer that; otherwise fall back to attributing the whole bucket to
-// 5m, which was the historical default before 1h caching shipped.
-func (u claudeUsage) cacheCreate5m() int64 {
-	if u.CacheCreation.Ephemeral5mInputTokens != 0 || u.CacheCreation.Ephemeral1hInputTokens != 0 {
-		return u.CacheCreation.Ephemeral5mInputTokens
+// splitCacheCreate splits cache-creation tokens into the 5m and 1h buckets.
+// When the JSONL carries the explicit split (modern Claude Code), prefer
+// that; otherwise attribute the whole bucket to 5m, which was the default
+// before 1h caching shipped.
+func splitCacheCreate(total int64, cc claudeCacheCreation) (c5m, c1h int64) {
+	if cc.Ephemeral5mInputTokens != 0 || cc.Ephemeral1hInputTokens != 0 {
+		return cc.Ephemeral5mInputTokens, cc.Ephemeral1hInputTokens
 	}
-	return u.CacheCreationInputTokens
+	return total, 0
 }
 
-// cacheCreate1h returns the portion of cache-creation tokens billed at the 1h
-// ephemeral rate.
+// cacheCreate5m returns the portion of cache-creation tokens billed at the
+// 5m ephemeral rate.
+func (u claudeUsage) cacheCreate5m() int64 {
+	c5m, _ := splitCacheCreate(u.CacheCreationInputTokens, u.CacheCreation)
+	return c5m
+}
+
+// cacheCreate1h returns the portion of cache-creation tokens billed at the
+// 1h ephemeral rate.
 func (u claudeUsage) cacheCreate1h() int64 {
-	return u.CacheCreation.Ephemeral1hInputTokens
+	_, c1h := splitCacheCreate(u.CacheCreationInputTokens, u.CacheCreation)
+	return c1h
+}
+
+// counts returns the billable split of the top-level usage block.
+func (u claudeUsage) counts() claudeTokenCounts {
+	c5m, c1h := splitCacheCreate(u.CacheCreationInputTokens, u.CacheCreation)
+	return claudeTokenCounts{
+		input:         u.InputTokens,
+		output:        u.OutputTokens,
+		cacheRead:     u.CacheReadInputTokens,
+		cacheCreate5m: c5m,
+		cacheCreate1h: c1h,
+	}
+}
+
+type pricedIteration struct {
+	model  string
+	counts claudeTokenCounts
+}
+
+// pricedIterations returns one entry per fallback leg when the request was
+// re-served by another model, else nil (a lone iteration restates the
+// top-level block and often has a null model, so it adds nothing). The
+// top-level usage of a fallback response only reflects the final leg —
+// tokens the refusing model consumed would otherwise go unpriced.
+func (u claudeUsage) pricedIterations(defaultModel string) []pricedIteration {
+	if len(u.Iterations) < 2 {
+		return nil
+	}
+	out := make([]pricedIteration, 0, len(u.Iterations))
+	for _, it := range u.Iterations {
+		model := it.Model
+		if model == "" {
+			model = defaultModel
+		}
+		c5m, c1h := splitCacheCreate(it.CacheCreationInputTokens, it.CacheCreation)
+		out = append(out, pricedIteration{model: model, counts: claudeTokenCounts{
+			input:         it.InputTokens,
+			output:        it.OutputTokens,
+			cacheRead:     it.CacheReadInputTokens,
+			cacheCreate5m: c5m,
+			cacheCreate1h: c1h,
+		}})
+	}
+	return out
 }
 
 type claudeAPIMessage struct {
@@ -516,23 +575,39 @@ type claudeMessage struct {
 	Type      string           `json:"type"`
 	Message   claudeAPIMessage `json:"message"`
 	Timestamp string           `json:"timestamp"`
+	RequestID string           `json:"requestId"`
 }
 
 // dedupKey returns a stable per-API-call identity for an assistant entry.
 // Claude Code logs each content block (thinking/text/tool_use) of one turn as
 // a separate JSONL line, all sharing the same message.id and the same usage
 // object — without dedup we'd double-count by 2-5x. Prefer the explicit
-// message.id; fall back to an input-token signature for older formats that
+// message.id (qualified by requestId when present, matching what ccusage
+// keys on); fall back to an input-token signature for older formats that
 // did not stamp an id.
-func dedupKey(m claudeAPIMessage) string {
-	if m.ID != "" {
-		return m.ID
+func dedupKey(m claudeMessage) string {
+	if m.Message.ID != "" {
+		if m.RequestID != "" {
+			return m.Message.ID + ":" + m.RequestID
+		}
+		return m.Message.ID
 	}
 	return fmt.Sprintf("sig:%d:%d:%d",
-		m.Usage.InputTokens,
-		m.Usage.CacheReadInputTokens,
-		m.Usage.CacheCreationInputTokens,
+		m.Message.Usage.InputTokens,
+		m.Message.Usage.CacheReadInputTokens,
+		m.Message.Usage.CacheCreationInputTokens,
 	)
+}
+
+// usageRecord is one priced API call, in a shape shared by both harnesses.
+type usageRecord struct {
+	model       string
+	date        string // "YYYY-MM-DD" from the transcript timestamp
+	in          int64
+	out         int64
+	cacheRead   int64
+	cacheCreate int64
+	costUSD     float64
 }
 
 type tokenBreakdown struct {
@@ -544,262 +619,181 @@ type tokenBreakdown struct {
 	CostUSD     float64
 }
 
-func getAgentSessionTokens(worktreePath string) tokenBreakdown {
-	var result tokenBreakdown
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return result
-	}
-
-	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
-	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
-
-	entries, err := os.ReadDir(projectDir)
-	if err != nil {
-		return result
-	}
-
-	var jsonlFiles []os.DirEntry
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-			jsonlFiles = append(jsonlFiles, e)
-		}
-	}
-	if len(jsonlFiles) == 0 {
-		return result
-	}
-
-	sort.Slice(jsonlFiles, func(i, j int) bool {
-		infoI, errI := jsonlFiles[i].Info()
-		infoJ, errJ := jsonlFiles[j].Info()
-		if errI != nil || errJ != nil {
-			return false
-		}
-		return infoI.ModTime().After(infoJ.ModTime())
-	})
-
-	latestFile := filepath.Join(projectDir, jsonlFiles[0].Name())
-	f, err := os.Open(latestFile)
-	if err != nil {
-		return result
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var prevKey string
-	var prevUsage claudeUsage
-	var prevModel string
-	var maxOutputTokens int64
-	firstGroup := true
-
-	flushGroup := func() {
-		if firstGroup {
-			return
-		}
-		folded := prevUsage
-		folded.OutputTokens = maxOutputTokens
-		result.In += folded.InputTokens
-		result.Out += folded.OutputTokens
-		result.CacheRead += folded.CacheReadInputTokens
-		result.CacheCreate += folded.CacheCreationInputTokens
-		result.CostUSD += estimateCost(prevModel, folded)
-	}
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		var msg claudeMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
-		}
-		if msg.Type != "assistant" {
-			continue
-		}
-		if msg.Message.Model == "<synthetic>" {
-			continue
-		}
-
-		key := dedupKey(msg.Message)
-		u := msg.Message.Usage
-
-		if key != prevKey || firstGroup {
-			flushGroup()
-			prevKey = key
-			prevUsage = u
-			prevModel = msg.Message.Model
-			maxOutputTokens = u.OutputTokens
-			firstGroup = false
-		} else if u.OutputTokens > maxOutputTokens {
-			maxOutputTokens = u.OutputTokens
-		}
-	}
-	flushGroup()
-
-	result.Total = result.In + result.Out + result.CacheRead + result.CacheCreate
-	return result
+// sessionUsage is everything the TUI wants from an agent's transcripts:
+// the lifetime token/cost totals and the same cost bucketed by UTC day.
+type sessionUsage struct {
+	tokens tokenBreakdown
+	daily  map[string]float64
 }
 
-// modelRates is the list-price per-1M-token rate for input and output, in USD.
-// Cache rates derive from input: read = 0.10x, 5m write = 1.25x, 1h write =
-// 2.00x (Anthropic prompt-caching pricing).
-type modelRates struct {
-	inputPer1M  float64
-	outputPer1M float64
+func summarizeUsage(recs []usageRecord) sessionUsage {
+	u := sessionUsage{daily: make(map[string]float64)}
+	for _, r := range recs {
+		u.tokens.In += r.in
+		u.tokens.Out += r.out
+		u.tokens.CacheRead += r.cacheRead
+		u.tokens.CacheCreate += r.cacheCreate
+		u.tokens.CostUSD += r.costUSD
+		u.daily[r.date] += r.costUSD
+	}
+	u.tokens.Total = u.tokens.In + u.tokens.Out + u.tokens.CacheRead + u.tokens.CacheCreate
+	return u
 }
 
-// modelRatesFor returns the published Anthropic rates for the given model
-// string. Rates verified against `claude --print --output-format json`'s own
-// `total_cost_usd` field — see TestEstimateCost_ShouldMatchClaudeInternal_*.
-func modelRatesFor(model string) modelRates {
-	switch {
-	// Opus 4.5+ subscription / list rates (input $5, output $25). Verified
-	// against Claude's internal cost computation for opus-4-7.
-	case isNewOpus(model):
-		return modelRates{inputPer1M: 5.0, outputPer1M: 25.0}
-	// Legacy Opus 3 / 4 / 4.1 list rates.
-	case strings.Contains(model, "opus"):
-		return modelRates{inputPer1M: 15.0, outputPer1M: 75.0}
-	// Haiku 4.5 list rates (input $1, output $5). Haiku 3.5 was $0.80 / $4
-	// but is no longer in active service rotation; the 1/5 default is a
-	// safe over-estimate of pennies on the rare retro lookup.
-	case strings.Contains(model, "haiku"):
-		return modelRates{inputPer1M: 1.0, outputPer1M: 5.0}
-	// Sonnet (3.5, 4, 4.5, 4.6, ...) — the default branch. Same $3/$15
-	// list rates across the line at the time of writing.
+// agentSessionUsage reads the agent's transcripts with the parser for its
+// harness. Claude Code transcripts live under ~/.claude/projects keyed by
+// worktree path; Codex rollouts are matched to the worktree by their header.
+func agentSessionUsage(a *agent.Agent) sessionUsage {
+	switch harness.Parse(a.Harness) {
+	case harness.Codex:
+		return summarizeUsage(scanCodexSessions(a.WorktreePath, a.CreatedAt))
 	default:
-		return modelRates{inputPer1M: 3.0, outputPer1M: 15.0}
+		return summarizeUsage(scanClaudeSession(a.WorktreePath))
 	}
 }
 
-func estimateCost(model string, u claudeUsage) float64 {
-	r := modelRatesFor(model)
-
-	// Anthropic prompt-caching multipliers (constant across the Claude line).
-	const (
-		cacheReadMult     = 0.10 // read is always 10% of input rate
-		cacheCreate5mMult = 1.25 // 5-minute ephemeral write
-		cacheCreate1hMult = 2.00 // 1-hour ephemeral write — DEFAULT for modern Claude Code
-	)
-
-	cost := float64(u.InputTokens) * r.inputPer1M / 1_000_000
-	cost += float64(u.OutputTokens) * r.outputPer1M / 1_000_000
-	cost += float64(u.CacheReadInputTokens) * (r.inputPer1M * cacheReadMult) / 1_000_000
-	cost += float64(u.cacheCreate5m()) * (r.inputPer1M * cacheCreate5mMult) / 1_000_000
-	cost += float64(u.cacheCreate1h()) * (r.inputPer1M * cacheCreate1hMult) / 1_000_000
-	return cost
+// getAgentSessionTokens is the Claude-transcript path of agentSessionUsage,
+// kept as a narrow entry point for tests.
+func getAgentSessionTokens(worktreePath string) tokenBreakdown {
+	return summarizeUsage(scanClaudeSession(worktreePath)).tokens
 }
 
-func isNewOpus(model string) bool {
-	return strings.Contains(model, "opus-4-5") ||
-		strings.Contains(model, "opus-4-6") ||
-		strings.Contains(model, "opus-4-7") ||
-		strings.Contains(model, "opus-4-8") ||
-		strings.Contains(model, "opus-4-9") ||
-		strings.Contains(model, "opus-5")
-}
-
-func GetAgentDailyCosts(worktreePath string) map[string]float64 {
-	return getAgentSessionDailyCosts(worktreePath)
-}
-
+// getAgentSessionDailyCosts is the Claude-transcript path of
+// agentSessionUsage, kept as a narrow entry point for tests.
 func getAgentSessionDailyCosts(worktreePath string) map[string]float64 {
-	result := make(map[string]float64)
+	return summarizeUsage(scanClaudeSession(worktreePath)).daily
+}
 
+// GetAgentDailyCosts returns the agent's transcript-derived cost by day, for
+// folding into the persistent daily-cost store at teardown.
+func GetAgentDailyCosts(a *agent.Agent) map[string]float64 {
+	return agentSessionUsage(a).daily
+}
+
+// claudeProjectDir returns the directory Claude Code keeps transcripts in
+// for a worktree.
+func claudeProjectDir(worktreePath string) (string, bool) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return result
+		return "", false
 	}
-
 	projectKey := strings.ReplaceAll(worktreePath, "/", "-")
-	projectDir := filepath.Join(homeDir, ".claude", "projects", projectKey)
+	return filepath.Join(homeDir, ".claude", "projects", projectKey), true
+}
 
-	entries, err := os.ReadDir(projectDir)
-	if err != nil {
-		return result
+// claudeTranscriptFiles lists every transcript under the project dir, oldest
+// first: the top-level session files plus each session's
+// `<session-id>/subagents/agent-*.jsonl`, where the Agent tool's sub-agent
+// turns are logged. Those sub-agent calls are billed like any other and were
+// previously invisible to the estimate. Reading only the newest session file
+// was also wrong for the same reason.
+func claudeTranscriptFiles(projectDir string) []string {
+	type entry struct {
+		path string
+		mod  time.Time
 	}
-
-	var jsonlFiles []os.DirEntry
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-			jsonlFiles = append(jsonlFiles, e)
+	var files []entry
+	filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-	}
-	if len(jsonlFiles) == 0 {
-		return result
-	}
-
-	sort.Slice(jsonlFiles, func(i, j int) bool {
-		infoI, errI := jsonlFiles[i].Info()
-		infoJ, errJ := jsonlFiles[j].Info()
-		if errI != nil || errJ != nil {
-			return false
-		}
-		return infoI.ModTime().After(infoJ.ModTime())
-	})
-
-	latestFile := filepath.Join(projectDir, jsonlFiles[0].Name())
-	f, err := os.Open(latestFile)
-	if err != nil {
-		return result
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	type groupEntry struct {
-		key             string
-		usage           claudeUsage
-		model           string
-		maxOutputTokens int64
-		date            string
-	}
-	var prevGroup *groupEntry
-
-	flushGroup := func() {
-		if prevGroup == nil {
-			return
-		}
-		folded := prevGroup.usage
-		folded.OutputTokens = prevGroup.maxOutputTokens
-		result[prevGroup.date] += estimateCost(prevGroup.model, folded)
-	}
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		var msg claudeMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
-		}
-		if msg.Type != "assistant" {
-			continue
-		}
-		if msg.Message.Model == "<synthetic>" {
-			continue
-		}
-
-		date := extractDate(msg.Timestamp)
-		key := dedupKey(msg.Message)
-		u := msg.Message.Usage
-
-		if prevGroup == nil || key != prevGroup.key {
-			flushGroup()
-			prevGroup = &groupEntry{
-				key:             key,
-				usage:           u,
-				model:           msg.Message.Model,
-				maxOutputTokens: u.OutputTokens,
-				date:            date,
+		if d.IsDir() {
+			// Claude Code keeps auto-memory notes here, never transcripts.
+			if path != projectDir && d.Name() == "memory" {
+				return fs.SkipDir
 			}
-		} else if u.OutputTokens > prevGroup.maxOutputTokens {
-			prevGroup.maxOutputTokens = u.OutputTokens
+			return nil
 		}
+		if !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		files = append(files, entry{path, info.ModTime()})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	out := make([]string, len(files))
+	for i, f := range files {
+		out[i] = f.path
 	}
-	flushGroup()
+	return out
+}
 
-	return result
+// scanClaudeSession turns every transcript for a worktree into one priced
+// record per API call. Content-block lines of one message are folded by
+// message id (globally, so a `--resume`d session that re-logs history does
+// not double-count); the line carrying the largest output_tokens is the
+// final one and is the one priced. Lines without a message id (old
+// transcripts) are only folded when consecutive, since their signature
+// cannot distinguish two genuinely identical turns.
+func scanClaudeSession(worktreePath string) []usageRecord {
+	projectDir, ok := claudeProjectDir(worktreePath)
+	if !ok {
+		return nil
+	}
+
+	type call struct {
+		msg claudeMessage
+	}
+	var calls []call
+	byID := make(map[string]int)
+	prevKey := ""
+
+	for _, path := range claudeTranscriptFiles(projectDir) {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		prevKey = ""
+		for scanner.Scan() {
+			var msg claudeMessage
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+				continue
+			}
+			if msg.Type != "assistant" || msg.Message.Model == "<synthetic>" {
+				continue
+			}
+			key := dedupKey(msg)
+			idx := -1
+			if key == prevKey && len(calls) > 0 {
+				idx = len(calls) - 1
+			} else if i, seen := byID[key]; seen && msg.Message.ID != "" {
+				idx = i
+			}
+			if idx >= 0 {
+				if msg.Message.Usage.OutputTokens > calls[idx].msg.Message.Usage.OutputTokens {
+					calls[idx].msg.Message.Usage = msg.Message.Usage
+				}
+			} else {
+				calls = append(calls, call{msg})
+				if msg.Message.ID != "" {
+					byID[key] = len(calls) - 1
+				}
+			}
+			prevKey = key
+		}
+		f.Close()
+	}
+
+	recs := make([]usageRecord, 0, len(calls))
+	for _, c := range calls {
+		u := c.msg.Message.Usage
+		recs = append(recs, usageRecord{
+			model:       c.msg.Message.Model,
+			date:        extractDate(c.msg.Timestamp),
+			in:          u.InputTokens,
+			out:         u.OutputTokens,
+			cacheRead:   u.CacheReadInputTokens,
+			cacheCreate: u.CacheCreationInputTokens,
+			costUSD:     estimateCost(c.msg.Message.Model, u),
+		})
+	}
+	return recs
 }
 
 func extractDate(timestamp string) string {

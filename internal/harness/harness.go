@@ -196,8 +196,10 @@ CCMUX_SYSTEM_PROMPT_EOF
 //   - We never clobber a user's existing OTEL_EXPORTER_OTLP_ENDPOINT
 //     (e.g. someone already running TokenKeeper). They keep their
 //     pipeline; ccmux falls back to the JSONL estimate for those agents.
-//   - We only enable for the Claude harness — the Codex CLI does not
-//     currently emit OTel metrics. Re-evaluate if/when it does.
+//   - We only enable for the Claude harness. Codex's own OTel export
+//     (the [otel] table in config.toml) carries a token-usage histogram
+//     but no cost metric, so ccmux prices Codex agents from their rollout
+//     transcripts instead (internal/tui/codex_session.go).
 //   - If no collector is running (no TUI, or it crashed) the endpoint
 //     file is absent and we skip the export. The agent runs normally
 //     with no telemetry side-effects.
