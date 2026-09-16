@@ -2091,7 +2091,7 @@ func doCleanup(agentID, action string, closePR bool) error {
 
 	dcStore, err := dailycost.NewStore()
 	if err == nil {
-		costs := tui.GetAgentDailyCosts(a.WorktreePath)
+		costs := tui.GetAgentDailyCosts(a)
 		if len(costs) > 0 {
 			dcStore.AddCosts(costs)
 		}
