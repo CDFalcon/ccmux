@@ -69,6 +69,19 @@ const (
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴"}
 
+// ciWaitLabel describes what a waiting_ci agent is actually waiting on. Once
+// CI has finished and only the agent's own busyness is holding the PR back,
+// the honest answer is not a check countdown stuck at zero.
+func ciWaitLabel(p ciProgress, known bool) string {
+	if !known || p.Total == 0 {
+		return "waiting on CI"
+	}
+	if p.Settling {
+		return "CI passed - agent still busy"
+	}
+	return fmt.Sprintf("waiting on CI - %d/%d checks left", p.Total-p.Completed, p.Total)
+}
+
 func renderFooter(help string, ctrlCPressed bool) string {
 	footer := helpStyle.Render(help)
 	if ctrlCPressed {
@@ -184,11 +197,8 @@ func renderMainView(m model) string {
 				b.WriteString("\n")
 			} else if a.Status == agent.StatusWaitingCI {
 				icon := agentWaitingCIStyle.Render("⏳")
-				ciLabel := "waiting on CI"
-				if p, ok := m.ciCheckProgress[a.ID]; ok && p.Total > 0 {
-					remaining := p.Total - p.Completed
-					ciLabel = fmt.Sprintf("waiting on CI - %d/%d checks left", remaining, p.Total)
-				}
+				p, known := m.ciCheckProgress[a.ID]
+				ciLabel := ciWaitLabel(p, known)
 				status := agentWaitingCIStyle.Render(ciLabel)
 				line := fmt.Sprintf("%s%s %s: %s [%s]%s", prefix, icon, a.ID, marquee(a.Task, MaxTaskDisplayLen, m.marqueeOffset), status, statsStr)
 				b.WriteString(line)
@@ -1107,11 +1117,8 @@ func renderAgentSelector(m model, emptyMsg string) string {
 			statusStyle := getAgentStatusStyle(a.Status)
 			statusText := a.Status.DisplayName()
 			if a.Status == agent.StatusWaitingCI {
-				statusText = "waiting on CI"
-				if p, ok := m.ciCheckProgress[a.ID]; ok && p.Total > 0 {
-					remaining := p.Total - p.Completed
-					statusText = fmt.Sprintf("waiting on CI - %d/%d checks left", remaining, p.Total)
-				}
+				p, known := m.ciCheckProgress[a.ID]
+				statusText = ciWaitLabel(p, known)
 			}
 			line := fmt.Sprintf("%s: %s [%s]", a.ID, truncate(a.Task, MaxTaskDisplayLen), statusStyle.Render(statusText))
 			b.WriteString(style.Render(line))
@@ -1134,7 +1141,7 @@ func renderAgentSelector(m model, emptyMsg string) string {
 		}
 		if selected.Status == agent.StatusWaitingCI {
 			if p, ok := m.ciCheckProgress[selected.ID]; ok && p.Total > 0 {
-				b.WriteString(fmt.Sprintf("CI:       %s\n", agentWaitingCIStyle.Render(fmt.Sprintf("waiting on CI - %d/%d checks left", p.Total-p.Completed, p.Total))))
+				b.WriteString(fmt.Sprintf("CI:       %s\n", agentWaitingCIStyle.Render(ciWaitLabel(p, true))))
 			} else {
 				b.WriteString(fmt.Sprintf("CI:       %s\n", dimStyle.Render("waiting for checks...")))
 			}

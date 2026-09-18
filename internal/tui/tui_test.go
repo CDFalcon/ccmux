@@ -2592,7 +2592,7 @@ func TestIsMergeConflictFailure_ShouldNotDetect_GivenUnrelatedFailure(t *testing
 func TestIsAgentBusy_ShouldReturnFalse_GivenNilAgent(t *testing.T) {
 	// Nil-agent guard so callers don't crash when CI fires for an agent that
 	// was deleted between message dispatch and handler execution.
-	if isAgentBusy(nil, nil, nil, nil, nil, 0, ciIdleThreshold) {
+	if isAgentBusy(nil, nil, nil, cpuSample{}, cpuSample{}, 0, ciIdleThreshold) {
 		t.Error("expected nil agent to be reported as not busy")
 	}
 }
@@ -2602,7 +2602,7 @@ func TestIsAgentBusy_ShouldReturnFalse_GivenEmptyTmuxWindow(t *testing.T) {
 	// "no pane to query" as not busy so the CI-pass handler still transitions
 	// to StatusWaitingReview the way it did before this feature.
 	a := &agent.Agent{ID: "agent-1"}
-	if isAgentBusy(a, nil, nil, nil, nil, 0, ciIdleThreshold) {
+	if isAgentBusy(a, nil, nil, cpuSample{}, cpuSample{}, 0, ciIdleThreshold) {
 		t.Error("expected agent with empty TmuxWindow to be reported as not busy")
 	}
 }
@@ -2611,7 +2611,7 @@ func TestIsAgentBusy_ShouldReturnFalse_GivenNilTmuxManager(t *testing.T) {
 	// Defensive: if tmuxManager isn't wired up (early init, tests), don't
 	// pretend the agent is busy — fall through to the existing transition.
 	a := &agent.Agent{ID: "agent-1", TmuxWindow: "@5"}
-	if isAgentBusy(a, nil, nil, nil, nil, 0, ciIdleThreshold) {
+	if isAgentBusy(a, nil, nil, cpuSample{}, cpuSample{}, 0, ciIdleThreshold) {
 		t.Error("expected nil tmux manager to be reported as not busy")
 	}
 }
@@ -2888,5 +2888,126 @@ func TestLocalWorktreeHasMergeConflict_ShouldStripOriginPrefix_GivenBaseBranchWi
 	// Assert.
 	if !result {
 		t.Error("expected conflict to be detected even when baseBranch carries an origin/ prefix")
+	}
+}
+
+// busyProbeWindow is the fake tmux window the isAgentBusy tests drive. The
+// fake reports FAKE_TMUX_PANE_PID for every window, so the process tree under
+// test is whatever the test puts in `procs` under that pid.
+const busyProbePID = 424242
+
+func newBusyProbeAgent() *agent.Agent {
+	return &agent.Agent{ID: "agent-1", TmuxWindow: "@1"}
+}
+
+// loadedTreeSamples returns a pair of CPU snapshots describing a process tree
+// pinned at a full core for two seconds — unambiguously busy.
+func loadedTreeSamples() (cpuSample, cpuSample) {
+	prev := sampleAt(map[int]int64{busyProbePID: 500}, 0)
+	current := sampleAt(map[int]int64{busyProbePID: 700}, 2*time.Second)
+	return current, prev
+}
+
+func TestIsAgentBusy_ShouldReturnTrue_GivenLoadedTreeAndRecentlyQuietPane(t *testing.T) {
+	// Setup. The pane last printed 30s ago — past the 10s idle threshold, but
+	// nowhere near long enough to override the CPU signal — and the process
+	// tree is pinned at a full core. That is an agent mid-turn.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_PANE_PID", fmt.Sprintf("%d", busyProbePID))
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", fmt.Sprintf("%d", time.Now().Add(-30*time.Second).Unix()))
+	procs := map[int]*procInfo{busyProbePID: {pid: busyProbePID, ppid: 1}}
+	current, prev := loadedTreeSamples()
+
+	// Execute.
+	busy := isAgentBusy(newBusyProbeAgent(), tmux.NewManager("test-session"), procs, current, prev, 100, ciIdleThreshold)
+
+	// Assert.
+	if !busy {
+		t.Error("expected busy: a pane quiet for only 30s with a fully loaded process tree is mid-turn")
+	}
+}
+
+func TestIsAgentBusy_ShouldReturnFalse_GivenPaneSilentPastOverride(t *testing.T) {
+	// Setup. Same fully loaded process tree, but the pane has not emitted a
+	// single byte for ten minutes.
+	//
+	// This is the escape hatch. A harness mid-turn prints something — a token,
+	// a spinner frame, a tool line — far more often than once every two
+	// minutes, so silence this long means the agent is not working no matter
+	// what its background threads burn. Without the override, any systematic
+	// over-read of the CPU signal strands the agent forever: nothing else ever
+	// re-examines a waiting_ci agent, so its finished PR never reaches
+	// "ready for review".
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_PANE_PID", fmt.Sprintf("%d", busyProbePID))
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", fmt.Sprintf("%d", time.Now().Add(-10*time.Minute).Unix()))
+	procs := map[int]*procInfo{busyProbePID: {pid: busyProbePID, ppid: 1}}
+	current, prev := loadedTreeSamples()
+
+	// Execute.
+	busy := isAgentBusy(newBusyProbeAgent(), tmux.NewManager("test-session"), procs, current, prev, 100, ciIdleThreshold)
+
+	// Assert.
+	if busy {
+		t.Error("expected idle: a pane silent for ten minutes is not mid-turn, whatever the CPU heuristic says")
+	}
+}
+
+func TestIsAgentBusy_ShouldReturnTrue_GivenPaneActiveWithinIdleThreshold(t *testing.T) {
+	// Setup. The pane printed a moment ago; nothing else needs consulting.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_PANE_PID", fmt.Sprintf("%d", busyProbePID))
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", fmt.Sprintf("%d", time.Now().Unix()))
+
+	// Execute.
+	busy := isAgentBusy(newBusyProbeAgent(), tmux.NewManager("test-session"), map[int]*procInfo{}, cpuSample{}, cpuSample{}, 100, ciIdleThreshold)
+
+	// Assert.
+	if !busy {
+		t.Error("expected busy when the pane produced output within the idle threshold")
+	}
+}
+
+func TestCIWaitLabel_ShouldNotClaimCIIsPending_GivenSettlingAgent(t *testing.T) {
+	// Setup. CI has finished, all checks green; the agent merely looks busy.
+	// The old label rendered "waiting on CI - 0/4 checks left", which is a
+	// contradiction — zero checks left means CI is done — and sent the user
+	// looking at GitHub for a run that had already passed.
+	p := ciProgress{Completed: 4, Total: 4, Settling: true}
+
+	// Execute.
+	label := ciWaitLabel(p, true)
+
+	// Assert.
+	if strings.Contains(label, "checks left") {
+		t.Errorf("expected no check countdown once CI has finished, got %q", label)
+	}
+	if !strings.Contains(label, "CI passed") {
+		t.Errorf("expected the label to say CI passed, got %q", label)
+	}
+}
+
+func TestCIWaitLabel_ShouldCountRemainingChecks_GivenPendingCI(t *testing.T) {
+	// Setup. Two of four checks still running.
+	p := ciProgress{Completed: 2, Total: 4}
+
+	// Execute.
+	label := ciWaitLabel(p, true)
+
+	// Assert.
+	if label != "waiting on CI - 2/4 checks left" {
+		t.Errorf("unexpected label for pending CI: %q", label)
+	}
+}
+
+func TestCIWaitLabel_ShouldFallBackToPlainLabel_GivenNoProgressYet(t *testing.T) {
+	// Setup. No poll has landed yet, so there is nothing to count.
+
+	// Execute.
+	label := ciWaitLabel(ciProgress{}, false)
+
+	// Assert.
+	if label != "waiting on CI" {
+		t.Errorf("unexpected label before the first poll: %q", label)
 	}
 }

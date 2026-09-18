@@ -461,7 +461,7 @@ func TestQueryAllAgentResources_ShouldNotMeasureStaleWorktrees_GivenManyDeadAgen
 
 	// Execute. Drive the refresh loop repeatedly, as the 2s tick does.
 	for i := 0; i < refreshes; i++ {
-		queryAllAgentResources(agents, nil, 0, 0, nil, fastWT, nil, probe, liveWindows)
+		queryAllAgentResources(agents, nil, 0, 0, cpuSample{}, fastWT, nil, probe, liveWindows)
 	}
 	waitFor(t, func() bool { return measurements.Load() >= int64(liveCount) }, "live measurements to start")
 

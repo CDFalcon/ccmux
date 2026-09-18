@@ -123,14 +123,21 @@ func queryAllAgentResources(
 	tmuxMgr *tmux.Manager,
 	totalMemKB int64,
 	clkTck int64,
-	prevCPUTicks map[int]int64,
+	prevCPU cpuSample,
 	fastWTProjects map[string]bool,
 	collector *otelcollector.Collector,
 	probe *diskProbe,
 	liveWindows map[string]bool,
-) (map[string]*AgentResources, map[int]int64, map[string]float64) {
+) (map[string]*AgentResources, cpuSample, map[string]float64) {
 	procs := listAllProcesses()
-	procTicks := readAllProcTicks()
+	current := sampleCPUTicks()
+	procTicks := current.ticks
+	// How much wall time the CPU deltas below actually span. This used to be
+	// hardcoded to 2.0 (the tick interval), which quietly overstated or
+	// understated every agent's CPU% whenever a refresh took longer than the
+	// tick — which it routinely does, since a refresh forks tmux per agent and
+	// parses multi-megabyte transcripts.
+	cpuWindow := current.elapsedSince(prevCPU).Seconds()
 	resources := make(map[string]*AgentResources)
 	numCPU := float64(runtime.NumCPU())
 
@@ -198,7 +205,8 @@ func queryAllAgentResources(
 		}
 	}
 
-	newCPUTicks := make(map[int]int64)
+	newCPU := cpuSample{ticks: make(map[int]int64), at: current.at}
+	newCPUTicks := newCPU.ticks
 
 	for _, a := range agents {
 		res := &AgentResources{}
@@ -226,13 +234,13 @@ func queryAllAgentResources(
 
 				var prevTotalTicks int64
 				for _, pid := range descendants {
-					if prev, ok := prevCPUTicks[pid]; ok {
+					if prev, ok := prevCPU.ticks[pid]; ok {
 						prevTotalTicks += prev
 					}
 				}
 
-				if len(prevCPUTicks) > 0 && clkTck > 0 {
-					res.CPUPercent = computeCPUPercent(prevTotalTicks, currentTicks, 2.0, clkTck, int(numCPU))
+				if len(prevCPU.ticks) > 0 && clkTck > 0 && cpuWindow > 0 {
+					res.CPUPercent = computeCPUPercent(prevTotalTicks, currentTicks, cpuWindow, clkTck, int(numCPU))
 				}
 
 				res.MemBytes = totalRSS * 1024
@@ -295,7 +303,7 @@ func queryAllAgentResources(
 		}
 	}
 
-	return resources, newCPUTicks, liveDailyCosts
+	return resources, newCPU, liveDailyCosts
 }
 
 func findDescendants(rootPID int, procs map[int]*procInfo) []int {
@@ -315,39 +323,94 @@ func findDescendants(rootPID int, procs map[int]*procInfo) []int {
 	return result
 }
 
-// cpuActiveThreshold is the amount of CPU time (in CPU-seconds) the persistent
-// process tree must consume between two refresh samples (~2s apart) for an
-// agent to be considered actively working rather than idle. An agent that is
-// genuinely idle at its input prompt only burns a tiny amount of CPU on its
-// long-lived processes (event loop, render, MCP keepalives), so the threshold
-// is set well above that noise floor but far below the cost of real tool /
-// subagent work.
-const cpuActiveThreshold = 0.20
+// cpuActiveCoreFraction is how much of one CPU core the persistent process
+// tree must average, over the interval between two samples, for an agent to
+// count as actively working rather than idle. An agent sitting at its input
+// prompt still burns a little CPU on long-lived processes (event loop, render,
+// MCP keepalives), so the threshold sits well above that noise floor but far
+// below the cost of real tool / subagent work.
+//
+// This is deliberately a RATE, not a CPU-second budget. It used to be the
+// latter (0.20 CPU-seconds, "between two refresh samples ~2s apart"), which
+// silently assumed every comparison spanned the same 2 seconds. Nothing
+// enforced that: the snapshot these samples are compared against is refreshed
+// once per refresh cycle, and a refresh takes as long as it takes (tmux forks,
+// `gh` calls, transcript parsing, disk probes), while the CI poller consults
+// it from an asynchronous message handler. Whenever the real interval stretched
+// past ~4s, an idle long-context agent's ordinary background noise cleared
+// 0.20 CPU-seconds and the agent read as permanently busy — which is what kept
+// green PRs pinned in "waiting on CI" instead of flipping to ready for review.
+// 0.10 of a core over 2s is exactly the old 0.20 CPU-seconds, now independent
+// of how far apart the samples happen to be.
+const cpuActiveCoreFraction = 0.10
+
+// minCPUSampleWindow is the shortest interval over which a CPU rate means
+// anything. `ps` reports cumulative CPU time in centiseconds, so over a very
+// short window a single 10ms tick of quantization reads as a large fraction of
+// a core. Below this, report "not active" rather than guess.
+const minCPUSampleWindow = 500 * time.Millisecond
+
+// cpuSample is a snapshot of per-PID cumulative CPU ticks together with the
+// instant it was taken. The timestamp is the whole point: CPU usage is a rate,
+// and the difference between two tick snapshots says nothing until you know
+// how far apart they are.
+type cpuSample struct {
+	ticks map[int]int64
+	at    time.Time
+}
+
+// sampleCPUTicks reads every process's cumulative CPU time and stamps it.
+func sampleCPUTicks() cpuSample {
+	return cpuSample{ticks: readAllProcTicks(), at: time.Now()}
+}
+
+// elapsedSince returns how long this sample is after prev, or 0 when either
+// end is missing (an unstamped or empty snapshot can't bound an interval).
+func (c cpuSample) elapsedSince(prev cpuSample) time.Duration {
+	if c.at.IsZero() || prev.at.IsZero() {
+		return 0
+	}
+	return c.at.Sub(prev.at)
+}
 
 func isProcessTreeActive(
 	windowID string,
 	tmuxMgr *tmux.Manager,
 	procs map[int]*procInfo,
-	currentTicks map[int]int64,
-	prevTicks map[int]int64,
+	current cpuSample,
+	prev cpuSample,
 	clkTck int64,
 ) bool {
 	panePID, err := tmuxMgr.GetPanePID(windowID)
 	if err != nil || panePID <= 0 {
 		return false
 	}
-	return isProcessTreeActiveFromPID(panePID, procs, currentTicks, prevTicks, clkTck)
+	return isProcessTreeActiveFromPID(panePID, procs, current, prev, clkTck)
 }
+
+// paneQuietOverride is how long an agent's pane must go without producing a
+// single byte before we stop believing the CPU heuristic and call the agent
+// idle outright.
+//
+// The CPU test is a proxy for "is this agent doing work". Output is the direct
+// evidence: a harness that is mid-turn prints something — a token, a spinner
+// frame, a tool line — far more often than once every two minutes. So when the
+// pane has been silent this long, the agent is not mid-turn no matter what its
+// background threads are burning, and holding its finished PR hostage to a
+// heuristic is strictly worse than believing the silence. Without this, any
+// systematic over-read of the CPU signal strands the agent forever, because
+// nothing else ever re-examines it.
+const paneQuietOverride = 2 * time.Minute
 
 // isAgentBusy reports whether the agent's pane shows recent activity or its
 // process tree has measurable CPU usage. It's the same idle test refreshCmd
-// uses to flip StatusRunning to StatusReady, exposed so the CI-pass handler
-// and the StatusWaitingReview revert path can gate "PR ready for review" on
-// the underlying agent actually being idle.
+// uses to flip StatusRunning to StatusReady, exposed so the CI handlers can
+// gate "PR ready for review", CI-fix resumes and review resumes on the
+// underlying agent actually being idle.
 //
-// procs/currentTicks may be nil — refreshCmd has fresh snapshots from the top
-// of its loop and passes them through to avoid the extra fork; one-off
-// callers (the CI-pass message handler) pass nil and let us sample inline.
+// procs/current may be zero — refreshCmd has fresh snapshots from the top of
+// its loop and passes them through to avoid the extra fork; one-off callers
+// (the CI message handlers) pass the zero value and let us sample inline.
 //
 // Returns false (treats the agent as idle) when there's no tmux window to
 // query or the tmux manager isn't wired up — this keeps tests, which
@@ -356,8 +419,8 @@ func isAgentBusy(
 	a *agent.Agent,
 	tmuxMgr *tmux.Manager,
 	procs map[int]*procInfo,
-	currentTicks map[int]int64,
-	prevTicks map[int]int64,
+	current cpuSample,
+	prev cpuSample,
 	clkTck int64,
 	idleThreshold time.Duration,
 ) bool {
@@ -365,29 +428,42 @@ func isAgentBusy(
 		return false
 	}
 	if activity, err := tmuxMgr.GetWindowActivity(a.TmuxWindow); err == nil {
-		if time.Since(activity) <= idleThreshold {
+		quietFor := time.Since(activity)
+		if quietFor <= idleThreshold {
 			return true
+		}
+		if quietFor >= paneQuietOverride {
+			return false
 		}
 	}
 	if procs == nil {
 		procs = listAllProcesses()
 	}
-	if currentTicks == nil {
-		currentTicks = readAllProcTicks()
+	if current.ticks == nil {
+		current = sampleCPUTicks()
 	}
-	return isProcessTreeActive(a.TmuxWindow, tmuxMgr, procs, currentTicks, prevTicks, clkTck)
+	return isProcessTreeActive(a.TmuxWindow, tmuxMgr, procs, current, prev, clkTck)
 }
 
 func isProcessTreeActiveFromPID(
 	rootPID int,
 	procs map[int]*procInfo,
-	currentTicks map[int]int64,
-	prevTicks map[int]int64,
+	current cpuSample,
+	prev cpuSample,
 	clkTck int64,
 ) bool {
-	if len(prevTicks) == 0 || clkTck <= 0 {
+	if len(prev.ticks) == 0 || clkTck <= 0 {
 		return false
 	}
+	// An unmeasurable interval yields an unmeasurable rate. Report "not
+	// active" rather than divide by a number we don't trust: the cost of a
+	// false idle is one extra poll, the cost of a false busy is an agent
+	// stuck out of the state machine.
+	window := current.elapsedSince(prev)
+	if window < minCPUSampleWindow {
+		return false
+	}
+	currentTicks, prevTicks := current.ticks, prev.ticks
 	descendants := findDescendants(rootPID, procs)
 
 	// Only count CPU deltas for processes present in BOTH samples.
@@ -417,7 +493,7 @@ func isProcessTreeActiveFromPID(
 		return false
 	}
 	cpuSeconds := float64(deltaTicks) / float64(clkTck)
-	return cpuSeconds > cpuActiveThreshold
+	return cpuSeconds/window.Seconds() > cpuActiveCoreFraction
 }
 
 // Note: the unbounded getDiskUsageIncremental / getDiskUsage pair that used to
