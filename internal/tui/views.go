@@ -102,7 +102,7 @@ func renderLogo() string {
 		c.Render("  ██║      ██║      ") + w.Render("██║╚██╔╝██║██║   ██║ ██╔██╗ "),
 		c.Render("  ╚██████╗ ╚██████╗ ") + w.Render("██║ ╚═╝ ██║╚██████╔╝██╔╝ ██╗"),
 		c.Render("   ╚═════╝  ╚═════╝ ") + w.Render("╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝"),
-		"  " + c.Render("C") + w.Render("olby's ") + c.Render("C") + w.Render("laude ") + w.Render("Mu") + w.Render("ltiple") + w.Render("x") + w.Render("er"),
+		"  " + c.Render("C") + w.Render("olby's ") + c.Render("C") + w.Render("oding ") + w.Render("Mu") + w.Render("ltiple") + w.Render("x") + w.Render("er"),
 	}
 
 	return strings.Join(lines, "\n")
