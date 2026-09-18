@@ -293,7 +293,7 @@ func TestQueryAllAgentResources_ShouldPriceCodexAgent_GivenRollout(t *testing.T)
 	}}
 
 	// Execute.
-	resources, _, daily := queryAllAgentResources(agents, nil, 0, 0, nil, nil, nil, newDiskProbe(), nil)
+	resources, _, daily := queryAllAgentResources(agents, nil, 0, 0, cpuSample{}, nil, nil, newDiskProbe(), nil)
 
 	// Assert. 400k × $5 + 600k × $0.50 + 100k × $30 = $5.30.
 	res := resources["codex-agent"]

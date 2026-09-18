@@ -133,7 +133,7 @@ type model struct {
 	clkTck          int64
 	hostDiskAvailGB float64
 	hostMemPercent  float64
-	prevCPUTicks    map[int]int64
+	prevCPU         cpuSample
 
 	// diskProbe bounds the per-worktree disk measurement subprocesses. Held by
 	// pointer so the single-flight state survives bubbletea copying the model
@@ -600,7 +600,7 @@ type refreshMsg struct {
 	projects        []*project.Project
 	prompts         []*prompt.Prompt
 	resources       map[string]*AgentResources
-	prevCPUTicks    map[int]int64
+	prevCPU         cpuSample
 	liveDailyCosts  map[string]float64
 	hostDiskAvailGB float64
 	hostMemPercent  float64
@@ -662,6 +662,12 @@ const (
 type ciProgress struct {
 	Completed int
 	Total     int
+	// Settled is true once CI has finished and the only thing still holding
+	// the PR back is the agent looking busy. Without this the UI reported
+	// "waiting on CI - 0/N checks left", which is a contradiction: zero checks
+	// left means CI is done. Tracking it separately lets the label say what is
+	// actually being waited on.
+	Settling bool
 }
 
 // prDetectedMsg reports the result of polling for a Codex agent's PR. prURL is
@@ -734,7 +740,7 @@ func initialModel(agentStore *agent.Store, queueManager *queue.Queue, projectSto
 		prevWindowNames:     make(map[string]string),
 		totalMemKB:          getTotalMemoryKB(),
 		clkTck:              getClockTicks(),
-		prevCPUTicks:        make(map[int]int64),
+		prevCPU:             cpuSample{ticks: make(map[int]int64)},
 		diskProbe:           newDiskProbe(),
 		refreshInFlight:     &atomic.Bool{},
 		downloadProgress:    progress,
@@ -841,7 +847,7 @@ func (m model) refreshCmd() tea.Cmd {
 		}
 
 		procs := listAllProcesses()
-		procTicks := readAllProcTicks()
+		curCPU := sampleCPUTicks()
 
 		changed := false
 		for _, a := range agents {
@@ -859,7 +865,7 @@ func (m model) refreshCmd() tea.Cmd {
 				_, hasIdleItem := idleItemByAgent[a.ID]
 
 				if isIdle {
-					if isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, procTicks, m.prevCPUTicks, m.clkTck) {
+					if isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, curCPU, m.prevCPU, m.clkTck) {
 						continue
 					}
 					if a.PRURL != "" {
@@ -924,7 +930,7 @@ func (m model) refreshCmd() tea.Cmd {
 					continue
 				}
 				paneActive := now.Sub(activity) < idleThreshold
-				cpuActive := isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, procTicks, m.prevCPUTicks, m.clkTck)
+				cpuActive := isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, curCPU, m.prevCPU, m.clkTck)
 				if paneActive || cpuActive {
 					m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 						ag.Status = agent.StatusRunning
@@ -947,7 +953,7 @@ func (m model) refreshCmd() tea.Cmd {
 					continue
 				}
 				paneActive := now.Sub(activity) < idleThreshold
-				cpuActive := isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, procTicks, m.prevCPUTicks, m.clkTck)
+				cpuActive := isProcessTreeActive(a.TmuxWindow, m.tmuxManager, procs, curCPU, m.prevCPU, m.clkTck)
 				if paneActive || cpuActive {
 					m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 						ag.Status = agent.StatusRunning
@@ -987,8 +993,8 @@ func (m model) refreshCmd() tea.Cmd {
 				fastWTProjects[p.Name] = true
 			}
 		}
-		resources, newCPUTicks, liveDailyCosts := queryAllAgentResources(
-			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPUTicks, fastWTProjects, m.otelCollector,
+		resources, newCPU, liveDailyCosts := queryAllAgentResources(
+			agents, m.tmuxManager, m.totalMemKB, m.clkTck, m.prevCPU, fastWTProjects, m.otelCollector,
 			m.diskProbe, liveWindows,
 		)
 
@@ -1010,7 +1016,7 @@ func (m model) refreshCmd() tea.Cmd {
 			projects:        projects,
 			prompts:         prompts,
 			resources:       resources,
-			prevCPUTicks:    newCPUTicks,
+			prevCPU:         newCPU,
 			liveDailyCosts:  liveDailyCosts,
 			hostDiskAvailGB: diskAvailGB,
 			hostMemPercent:  memPercent,
@@ -1101,7 +1107,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects = msg.projects
 		m.prompts = msg.prompts
 		m.agentResources = msg.resources
-		m.prevCPUTicks = msg.prevCPUTicks
+		m.prevCPU = msg.prevCPU
 		m.liveDailyCosts = msg.liveDailyCosts
 		m.hostDiskAvailGB = msg.hostDiskAvailGB
 		m.hostMemPercent = msg.hostMemPercent
@@ -1286,7 +1292,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// spams merge-conflict resumes until the throttle parks the
 				// agent. Only resume when the pane and process tree are
 				// genuinely quiet.
-				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, cpuSample{}, m.prevCPU, m.clkTck, ciIdleThreshold) {
 					return m, nil
 				}
 				if m.shouldThrottleResume(currentAgent) {
@@ -1306,7 +1312,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Same busy gate as the merge-conflict branch above: don't
 				// kill and re-prompt an agent that's still mid-turn replying
 				// to the previous batch of review comments.
-				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, cpuSample{}, m.prevCPU, m.clkTck, ciIdleThreshold) {
 					return m, nil
 				}
 				if m.shouldThrottleResume(currentAgent) {
@@ -1336,7 +1342,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// settles. Without this gate, "waiting for review" can light
 				// up while the agent is still mid-task and the PR isn't
 				// actually ready for a human to look at.
-				if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+				if isAgentBusy(currentAgent, m.tmuxManager, nil, cpuSample{}, m.prevCPU, m.clkTck, ciIdleThreshold) {
+					// CI is green; we are only waiting on the agent to go
+					// quiet. Say that, instead of leaving a "waiting on CI"
+					// countdown sitting at zero checks remaining.
+					p := m.ciCheckProgress[msg.agentID]
+					p.Settling = true
+					m.ciCheckProgress[msg.agentID] = p
 					return m, nil
 				}
 				delete(m.ciCheckProgress, msg.agentID)
@@ -1382,7 +1394,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// genuinely quiet — the same idle check refreshCmd uses
 					// to decide running→idle, and the ciStatusPassed branch
 					// above uses for the same kind of "agent settled?" gate.
-					if isAgentBusy(currentAgent, m.tmuxManager, nil, nil, m.prevCPUTicks, m.clkTck, ciIdleThreshold) {
+					if isAgentBusy(currentAgent, m.tmuxManager, nil, cpuSample{}, m.prevCPU, m.clkTck, ciIdleThreshold) {
 						return m, nil
 					}
 					if m.shouldThrottleResume(currentAgent) {

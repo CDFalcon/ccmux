@@ -765,7 +765,7 @@ func TestQueryAllAgentResources_ShouldPreferCollectorCost_GivenCollectorHasData(
 	}}
 
 	// Execute.
-	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c, newDiskProbe(), nil)
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, cpuSample{}, nil, c, newDiskProbe(), nil)
 
 	// Assert.
 	res, ok := resources["agent-with-otel"]
@@ -812,7 +812,7 @@ func TestQueryAllAgentResources_ShouldFallBackToJSONL_GivenCollectorEmpty(t *tes
 	}}
 
 	// Execute.
-	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, nil, nil, c, newDiskProbe(), nil)
+	resources, _, dailyCosts := queryAllAgentResources(agents, nil, 0, 0, cpuSample{}, nil, c, newDiskProbe(), nil)
 
 	// Assert. The JSONL estimate is 1000 input + 500 output at Sonnet
 	// pricing → $0.003 + $0.0075 = $0.0105.
@@ -892,6 +892,14 @@ func TestIsNewOpus_ShouldReturnFalse_GivenOldOpus(t *testing.T) {
 	}
 }
 
+// sampleAt builds a cpuSample whose timestamp is `offset` after a fixed base,
+// so a test can state exactly how far apart two snapshots are. The window is
+// the whole point of the rate calculation, so no test should leave it implicit.
+func sampleAt(ticks map[int]int64, offset time.Duration) cpuSample {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return cpuSample{ticks: ticks, at: base.Add(offset)}
+}
+
 func TestIsProcessTreeActiveFromPID_ShouldReturnTrue_GivenSignificantCPUDelta(t *testing.T) {
 	// Setup.
 	procs := map[int]*procInfo{
@@ -903,7 +911,7 @@ func TestIsProcessTreeActiveFromPID_ShouldReturnTrue_GivenSignificantCPUDelta(t 
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if !result {
@@ -922,7 +930,7 @@ func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenNoCPUDelta(t *testing
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if result {
@@ -940,7 +948,7 @@ func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenNoPrevTicks(t *testin
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if result {
@@ -962,7 +970,7 @@ func TestIsProcessTreeActiveFromPID_ShouldIgnoreNewlySpawnedChild_GivenPhantomDe
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if result {
@@ -982,7 +990,7 @@ func TestIsProcessTreeActiveFromPID_ShouldIgnoreExitedChild_GivenStalePrevTicks(
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if result {
@@ -992,17 +1000,18 @@ func TestIsProcessTreeActiveFromPID_ShouldIgnoreExitedChild_GivenStalePrevTicks(
 
 func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenSubThresholdIdleNoise(t *testing.T) {
 	// Setup. A persistent process burns a small amount of CPU between samples
-	// (idle render / event-loop noise) that is below cpuActiveThreshold.
+	// (idle render / event-loop noise) that is below cpuActiveCoreFraction.
 	procs := map[int]*procInfo{
 		100: {pid: 100, ppid: 1, rss: 1000},
 	}
-	// 10 ticks / 100 = 0.10 CPU-seconds, below the 0.20 threshold.
+	// 10 ticks / 100 = 0.10 CPU-seconds over 2s = 5% of a core, below the
+	// 10%-of-a-core threshold.
 	currentTicks := map[int]int64{100: 510}
 	prevTicks := map[int]int64{100: 500}
 	clkTck := int64(100)
 
 	// Execute.
-	result := isProcessTreeActiveFromPID(100, procs, currentTicks, prevTicks, clkTck)
+	result := isProcessTreeActiveFromPID(100, procs, sampleAt(currentTicks, 2*time.Second), sampleAt(prevTicks, 0), clkTck)
 
 	// Assert.
 	if result {
@@ -1153,5 +1162,91 @@ func TestGetAgentSessionDailyCosts_ShouldDedup_GivenDuplicateContentBlocks(t *te
 	})
 	if math.Abs(result["2026-03-25"]-expectedCost) > 1e-10 {
 		t.Errorf("expected %.6f, got %.6f", expectedCost, result["2026-03-25"])
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenIdleNoiseOverLongWindow(t *testing.T) {
+	// Setup. This is the bug that pinned green PRs in "waiting on CI".
+	//
+	// A long-context agent sitting idle at its prompt still burns a little CPU
+	// on its persistent tree — here ~4% of a core, well under the "actively
+	// working" bar. The old check compared raw tick deltas against a fixed
+	// 0.20 CPU-second budget that assumed every comparison spanned ~2 seconds.
+	// Nothing enforced that window: the snapshot being compared against is
+	// only refreshed once per refresh cycle, and the CI poller consults it from
+	// an async message handler. Over a 10-second window the same idle noise
+	// accumulates 0.40 CPU-seconds, sails past 0.20, and the agent reads as
+	// busy — forever, because the next poll measures the same way.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	// 40 ticks / 100 = 0.40 CPU-seconds over 10s = 4% of one core.
+	current := sampleAt(map[int]int64{100: 540}, 10*time.Second)
+	prev := sampleAt(map[int]int64{100: 500}, 0)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, current, prev, 100)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive: 4% of a core is idle noise no matter how long the sampling window is")
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldReturnTrue_GivenSustainedLoadOverLongWindow(t *testing.T) {
+	// Setup. The mirror of the case above: genuine work must still register
+	// when the sampling window is long. 50% of a core for 10 seconds is an
+	// agent doing something, not background noise.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	current := sampleAt(map[int]int64{100: 1000}, 10*time.Second)
+	prev := sampleAt(map[int]int64{100: 500}, 0)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, current, prev, 100)
+
+	// Assert.
+	if !result {
+		t.Error("expected active: sustained half-core load is real work")
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenUnmeasurablyShortWindow(t *testing.T) {
+	// Setup. `ps` reports CPU time in centiseconds, so across a window this
+	// short a single tick of quantization looks like a large share of a core.
+	// A rate we cannot measure must not be reported as activity: a false idle
+	// costs one extra poll, a false busy strands the agent.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	current := sampleAt(map[int]int64{100: 501}, 10*time.Millisecond)
+	prev := sampleAt(map[int]int64{100: 500}, 0)
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, current, prev, 100)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive when the sampling window is too short to measure a rate")
+	}
+}
+
+func TestIsProcessTreeActiveFromPID_ShouldReturnFalse_GivenUnstampedSamples(t *testing.T) {
+	// Setup. A snapshot with no timestamp cannot bound an interval. Callers
+	// that have not been taught to stamp their samples must fall through to
+	// "idle" rather than silently divide by an unknown window.
+	procs := map[int]*procInfo{
+		100: {pid: 100, ppid: 1, rss: 1000},
+	}
+	current := cpuSample{ticks: map[int]int64{100: 9999}}
+	prev := cpuSample{ticks: map[int]int64{100: 500}}
+
+	// Execute.
+	result := isProcessTreeActiveFromPID(100, procs, current, prev, 100)
+
+	// Assert.
+	if result {
+		t.Error("expected inactive when samples carry no timestamps")
 	}
 }
