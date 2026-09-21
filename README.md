@@ -179,3 +179,26 @@ ccmux reload I added the chrome MCP server to .mcp.json — verify its tools loa
 The shared output pane and the agent's registry entry are untouched. The
 command refuses to run from anywhere but the agent's own pane (for instance
 its shared pane), so it cannot respawn the wrong program.
+
+### Switching harness
+
+`--harness` reloads the pane onto a different coding-agent CLI:
+
+```
+ccmux reload --harness codex [note...]   # move this agent to Codex
+ccmux reload --harness claude [note...]  # ...or to Claude Code
+```
+
+The agent keeps its worktree, branch, shared pane and registry entry, and
+the registry now records the new harness, so later restarts, PR-review
+resumes and cost tracking all follow it. Because the new CLI has no
+conversation of its own to resume, the switch always starts a fresh session:
+the system prompt restates the original task, the first message says which
+harness it came from and tells it to re-orient from `git log`, `git status`
+and `git diff`, and the note is the place to hand over anything else the new
+session must know. The reload script also runs the target harness's worktree
+setup — Claude Code's Stop/PostToolUse hooks and directory trust, or Codex's
+project trust — since the worktree was only prepared for the harness it was
+spawned with. Asking for the harness the agent is already running is a plain
+reload; naming a CLI that is not on `PATH` is refused before anything is
+respawned.

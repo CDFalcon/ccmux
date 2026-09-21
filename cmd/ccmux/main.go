@@ -727,6 +727,106 @@ fi
 exit 0
 `
 
+// harnessWorktreeSetupBlock is the launcher-script fragment that prepares a
+// worktree for its harness: for Claude Code it installs the Stop/PostToolUse
+// hooks (which drive the agent's status machine), keeps them out of git, and
+// pre-trusts the directory; for Codex it pre-trusts the directory in Codex's
+// config. It runs at spawn and again from `ccmux reload --harness`, since a
+// worktree set up for one harness lacks the other's wiring — an agent moved
+// from Codex to Claude Code without the Stop hook would sit in "running"
+// forever after its first turn. Idempotent: the settings.json edit strips
+// any earlier ccmux hook entries before adding its own. Scripts using it must
+// define AGENT_ID, WORKTREE_PATH and HARNESS and have cd'd into the worktree.
+// Safe to embed in a fmt.Sprintf format string: no percent verbs.
+const harnessWorktreeSetupBlock = `# Claude Code hook installation + directory trust. These are specific to the
+# Claude harness; other harnesses (e.g. Codex) ignore .claude/ entirely.
+if [ "$HARNESS" = "claude" ]; then
+echo "→ Installing Claude Code hooks..."
+mkdir -p .claude/hooks
+
+cat > .claude/hooks/stop.sh << 'HOOKEOF'
+#!/bin/bash
+ccmux agent-stopped "$CCMUX_AGENT_ID"
+HOOKEOF
+chmod +x .claude/hooks/stop.sh
+
+cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
+` + postToolUseHookScript + `HOOKEOF
+chmod +x .claude/hooks/post_tool_use.sh
+
+CCMUX_STOP_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
+CCMUX_PTU_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/post_tool_use.sh"
+
+if [ -f .claude/settings.json ]; then
+  EXISTING=$(cat .claude/settings.json)
+  CLEANED=$(echo "$EXISTING" | jq '
+    .hooks.Stop = [((.hooks.Stop // [])[]) | select((.hooks // []) | any(.command | contains("ccmux agent-stopped") or contains("/.claude/hooks/stop.sh")) | not)]
+    | .hooks.PostToolUse = [((.hooks.PostToolUse // [])[]) | select((.hooks // []) | any(.command | contains("/.claude/hooks/post_tool_use.sh")) | not)]
+  ')
+  echo "$CLEANED" | jq \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '.hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop_cmd}]}])
+     | .hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}])' \
+    > .claude/settings.json
+else
+  jq -n \
+    --arg stop_cmd "$CCMUX_STOP_CMD" \
+    --arg ptu_cmd "$CCMUX_PTU_CMD" \
+    '{hooks: {Stop: [{hooks: [{type: "command", command: $stop_cmd}]}], PostToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}]}}' \
+    > .claude/settings.json
+fi
+
+# Prevent ccmux hook files from being committed
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
+mkdir -p "$GIT_COMMON_DIR/info"
+STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
+PTU_SH_TRACKED=$(git ls-files .claude/hooks/post_tool_use.sh)
+SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
+
+if [ -z "$STOP_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/stop.sh
+fi
+
+if [ -z "$PTU_SH_TRACKED" ]; then
+  grep -qxF '.claude/hooks/post_tool_use.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/post_tool_use.sh' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/hooks/post_tool_use.sh
+fi
+
+if [ -z "$SETTINGS_TRACKED" ]; then
+  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
+else
+  git update-index --assume-unchanged .claude/settings.json
+fi
+
+echo "✓ Hooks installed"
+echo ""
+
+# Pre-trust worktree directory in Claude Code.
+#
+# This is a locked, atomic read-modify-write in Go rather than the jq/mv
+# one-liner it replaces: concurrent spawns all used the same
+# $HOME/.claude.json.tmp scratch path, so one spawn's mv renamed the file away
+# and a sibling died with "mv: rename ... No such file or directory" — under
+# set -e, before register-agent ever ran.
+echo "→ Pre-trusting worktree directory..."
+ccmux trust-claude-project "$WORKTREE_PATH"
+echo "✓ Directory trusted"
+echo ""
+fi
+
+if [ "$HARNESS" = "codex" ]; then
+  echo "→ Pre-trusting worktree directory in Codex..."
+  ccmux trust-codex-project "$WORKTREE_PATH"
+  echo "✓ Directory trusted"
+  echo ""
+fi
+`
+
 func writeLauncherScript(agentID, task, repoPath, baseBranch, sessionID string, useFastWorktrees bool, worktreeName string, promptContent string, startupScript string, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -851,94 +951,7 @@ else
   echo ""
 fi
 
-# Claude Code hook installation + directory trust. These are specific to the
-# Claude harness; other harnesses (e.g. Codex) ignore .claude/ entirely.
-if [ "$HARNESS" = "claude" ]; then
-echo "→ Installing Claude Code hooks..."
-mkdir -p .claude/hooks
-
-cat > .claude/hooks/stop.sh << 'HOOKEOF'
-#!/bin/bash
-ccmux agent-stopped "$CCMUX_AGENT_ID"
-HOOKEOF
-chmod +x .claude/hooks/stop.sh
-
-cat > .claude/hooks/post_tool_use.sh << 'HOOKEOF'
-`+postToolUseHookScript+`HOOKEOF
-chmod +x .claude/hooks/post_tool_use.sh
-
-CCMUX_STOP_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/stop.sh"
-CCMUX_PTU_CMD="CCMUX_AGENT_ID=$AGENT_ID $WORKTREE_PATH/.claude/hooks/post_tool_use.sh"
-
-if [ -f .claude/settings.json ]; then
-  EXISTING=$(cat .claude/settings.json)
-  CLEANED=$(echo "$EXISTING" | jq '
-    .hooks.Stop = [((.hooks.Stop // [])[]) | select((.hooks // []) | any(.command | contains("ccmux agent-stopped") or contains("/.claude/hooks/stop.sh")) | not)]
-    | .hooks.PostToolUse = [((.hooks.PostToolUse // [])[]) | select((.hooks // []) | any(.command | contains("/.claude/hooks/post_tool_use.sh")) | not)]
-  ')
-  echo "$CLEANED" | jq \
-    --arg stop_cmd "$CCMUX_STOP_CMD" \
-    --arg ptu_cmd "$CCMUX_PTU_CMD" \
-    '.hooks.Stop = ((.hooks.Stop // []) + [{hooks: [{type: "command", command: $stop_cmd}]}])
-     | .hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}])' \
-    > .claude/settings.json
-else
-  jq -n \
-    --arg stop_cmd "$CCMUX_STOP_CMD" \
-    --arg ptu_cmd "$CCMUX_PTU_CMD" \
-    '{hooks: {Stop: [{hooks: [{type: "command", command: $stop_cmd}]}], PostToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $ptu_cmd}]}]}}' \
-    > .claude/settings.json
-fi
-
-# Prevent ccmux hook files from being committed
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-EXCLUDE_FILE="$GIT_COMMON_DIR/info/exclude"
-mkdir -p "$GIT_COMMON_DIR/info"
-STOP_SH_TRACKED=$(git ls-files .claude/hooks/stop.sh)
-PTU_SH_TRACKED=$(git ls-files .claude/hooks/post_tool_use.sh)
-SETTINGS_TRACKED=$(git ls-files .claude/settings.json)
-
-if [ -z "$STOP_SH_TRACKED" ]; then
-  grep -qxF '.claude/hooks/stop.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/stop.sh' >> "$EXCLUDE_FILE"
-else
-  git update-index --assume-unchanged .claude/hooks/stop.sh
-fi
-
-if [ -z "$PTU_SH_TRACKED" ]; then
-  grep -qxF '.claude/hooks/post_tool_use.sh' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/hooks/post_tool_use.sh' >> "$EXCLUDE_FILE"
-else
-  git update-index --assume-unchanged .claude/hooks/post_tool_use.sh
-fi
-
-if [ -z "$SETTINGS_TRACKED" ]; then
-  grep -qxF '.claude/settings.json' "$EXCLUDE_FILE" 2>/dev/null || echo '.claude/settings.json' >> "$EXCLUDE_FILE"
-else
-  git update-index --assume-unchanged .claude/settings.json
-fi
-
-echo "✓ Hooks installed"
-echo ""
-
-# Pre-trust worktree directory in Claude Code.
-#
-# This is a locked, atomic read-modify-write in Go rather than the jq/mv
-# one-liner it replaces: concurrent spawns all used the same
-# $HOME/.claude.json.tmp scratch path, so one spawn's mv renamed the file away
-# and a sibling died with "mv: rename ... No such file or directory" — under
-# set -e, before register-agent ever ran.
-echo "→ Pre-trusting worktree directory..."
-ccmux trust-claude-project "$WORKTREE_PATH"
-echo "✓ Directory trusted"
-echo ""
-fi
-
-if [ "$HARNESS" = "codex" ]; then
-  echo "→ Pre-trusting worktree directory in Codex..."
-  ccmux trust-codex-project "$WORKTREE_PATH"
-  echo "✓ Directory trusted"
-  echo ""
-fi
-
+`+harnessWorktreeSetupBlock+`
 # Register agent
 echo "→ Registering agent..."
 WINDOW_ID=$(tmux display-message -p '#{window_id}')
@@ -1642,8 +1655,9 @@ const reloadDelay = 2 * time.Second
 // TUI. The agent's worktree, branch, tmux pane and shared pane all survive;
 // only the harness process is replaced.
 func reloadCmd() *cobra.Command {
+	var harnessName string
 	cmd := &cobra.Command{
-		Use:          "reload [note...]",
+		Use:          "reload [--harness claude|codex] [note...]",
 		Short:        "Restart your own harness in place, resuming this conversation (agent-facing)",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -1666,22 +1680,46 @@ func reloadCmd() *cobra.Command {
 				return fmt.Errorf("cannot reload: %s", reason)
 			}
 
+			from := harness.Parse(a.Harness)
+			h, switching, err := reloadTarget(from, harnessName)
+			if err != nil {
+				return fmt.Errorf("cannot reload: %w", err)
+			}
+
 			var projectStore *project.Store
 			if ps, err := project.NewStore(); err == nil {
 				projectStore = ps
 			}
-			h := harness.Parse(a.Harness)
-			scriptPath, err := writeReloadScript(a.ID, a.WorktreePath, a.BaseBranch, a.Task, note, h, agentDraftPRs(projectStore, a.ProjectName))
+			scriptPath, err := writeReloadScript(a.ID, a.WorktreePath, a.BaseBranch, a.Task, note, from, h, agentDraftPRs(projectStore, a.ProjectName))
 			if err != nil {
 				return fmt.Errorf("failed to write reload script: %w", err)
 			}
 
+			// Record the new harness before the respawn fires: the TUI's
+			// restart, resume and cost paths all read it from the registry,
+			// and the pane is about to run the new CLI regardless.
+			if switching {
+				if err := agentStore.Update(a.ID, func(a *agent.Agent) { a.Harness = string(h) }); err != nil {
+					return fmt.Errorf("failed to record harness %s for agent %s: %w", h, a.ID, err)
+				}
+			}
+
 			if err := ctx.tm.RespawnPaneDeferred(ctx.agentPane, "bash "+scriptPath, reloadDelay); err != nil {
+				if switching {
+					// Nothing is going to respawn; put the registry back.
+					_ = agentStore.Update(a.ID, func(a *agent.Agent) { a.Harness = string(from) })
+				}
 				return err
 			}
 
-			fmt.Printf("Reloading %s for agent %s in pane %s in %s.\n", h.DisplayName(), a.ID, ctx.agentPane, reloadDelay)
-			fmt.Printf("The harness will be restarted with: %s\n", h.ContinueWithPromptCommand())
+			if switching {
+				fmt.Printf("Switching agent %s from %s to %s in pane %s in %s.\n", a.ID, from.DisplayName(), h.DisplayName(), ctx.agentPane, reloadDelay)
+				fmt.Printf("The new harness starts a fresh session with: %s\n", h.StartWithPromptCommand())
+				fmt.Println("Your conversation history does not carry over; the new session is told the original task and to re-orient from git.")
+			} else {
+				fmt.Printf("Reloading %s for agent %s in pane %s in %s.\n", h.DisplayName(), a.ID, ctx.agentPane, reloadDelay)
+				fmt.Printf("The harness will be restarted with: %s\n", h.ContinueWithPromptCommand())
+			}
 			if note != "" {
 				fmt.Printf("Your note will be delivered after the reload: %s\n", note)
 			}
@@ -1689,8 +1727,32 @@ func reloadCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&harnessName, "harness", "", "Switch the pane to this coding agent CLI (claude or codex) instead of resuming the current one")
 	cmd.Flags().SetInterspersed(false)
 	return cmd
+}
+
+// reloadTarget resolves the harness a reload should start from the agent's
+// current one and the optional --harness flag. It returns the harness to run
+// and whether that is a switch away from the current one. An unknown name is
+// an error, as is a switch to a CLI that is not on PATH: the respawned pane
+// would die on "command not found" and the agent would be marked failed with
+// no harness left to tell about it.
+func reloadTarget(current harness.Type, flag string) (harness.Type, bool, error) {
+	if strings.TrimSpace(flag) == "" {
+		return current, false, nil
+	}
+	if !harness.Valid(flag) {
+		return current, false, fmt.Errorf("unknown harness: %s (expected claude or codex)", flag)
+	}
+	target := harness.Parse(flag)
+	if target == current {
+		return current, false, nil
+	}
+	if !target.Installed() {
+		return current, false, fmt.Errorf("%s is not installed (no %q on PATH)", target.DisplayName(), target.CLIName())
+	}
+	return target, true, nil
 }
 
 // reloadRefusalReason explains why `ccmux reload` must not respawn the caller's
@@ -1714,10 +1776,22 @@ func reloadRefusalReason(a *agent.Agent, tmuxPane, windowID string) string {
 // conversation so it needs only the reason and the note; Codex starts a fresh
 // session (the system prompt restates the task) so it also needs to be told to
 // re-orient from git.
-func reloadPrompt(note string) string {
-	prompt := "Your harness session was just reloaded at your own request (ccmux reload), so newly configured MCP servers, tools, hooks and settings are now loaded. " +
-		"If your conversation history is visible, continue where you left off — the result of the reload call itself may be missing. " +
-		"If it is not visible, review your progress with git log, git status and git diff first."
+//
+// A harness switch (`ccmux reload --harness`) is always a fresh session on
+// the new CLI, so that variant does not offer the "if your history is
+// visible" branch: it says what it was switched from and sends the agent to
+// git for its bearings.
+func reloadPrompt(note string, from, to harness.Type) string {
+	var prompt string
+	if from != to {
+		prompt = fmt.Sprintf("Your harness was just switched from %s to %s at your own request (ccmux reload --harness %s). ", from.DisplayName(), to.DisplayName(), to) +
+			"This is a fresh session on the new harness: your previous conversation is not available here. " +
+			"Review your progress with git log, git status and git diff, then continue where you left off."
+	} else {
+		prompt = "Your harness session was just reloaded at your own request (ccmux reload), so newly configured MCP servers, tools, hooks and settings are now loaded. " +
+			"If your conversation history is visible, continue where you left off — the result of the reload call itself may be missing. " +
+			"If it is not visible, review your progress with git log, git status and git diff first."
+	}
 	if note != "" {
 		prompt += "\n\nYour note to yourself before reloading:\n" + note
 	}
@@ -1729,7 +1803,12 @@ func reloadPrompt(note string) string {
 // original task, CLAUDE.md and project prompts, exit capture) but resumes with
 // an explanatory message and, unlike a restart, keeps the telemetry export so
 // the reloaded agent's cost still reaches the TUI.
-func writeReloadScript(agentID, worktreePath, baseBranch, task, note string, h harness.Type, draftPRs bool) (string, error) {
+//
+// When the reload switches harness (from != h), the script also runs the
+// harness's worktree setup (Claude hooks, directory trust) — the worktree was
+// prepared for the old harness at spawn — and starts a fresh session rather
+// than resuming one, since the new harness has no conversation to continue.
+func writeReloadScript(agentID, worktreePath, baseBranch, task, note string, from, h harness.Type, draftPRs bool) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1745,6 +1824,17 @@ func writeReloadScript(agentID, worktreePath, baseBranch, task, note string, h h
 	draftPRsFlag := "0"
 	if draftPRs {
 		draftPRsFlag = "1"
+	}
+
+	// A plain reload resumes the conversation; a switch starts the new
+	// harness fresh and first wires the worktree up for it.
+	banner := `echo -e "${DIM}Reloading $HARNESS at the agent's request...${RESET}"`
+	setup := ""
+	command := h.ContinueWithPromptCommand()
+	if from != h {
+		banner = `echo -e "${DIM}Switching from ` + from.DisplayName() + ` to $HARNESS at the agent's request...${RESET}"`
+		setup = harnessWorktreeSetupBlock
+		command = h.StartWithPromptCommand()
 	}
 
 	sq := shellutil.Quote
@@ -1766,9 +1856,10 @@ WHITE="\033[1;97m"
 DIM="\033[38;5;245m"
 RESET="\033[0m"
 echo -e "${BLUE}CC${WHITE}MUX Agent ${DIM}$AGENT_ID${RESET}"
-echo -e "${DIM}Reloading $HARNESS at the agent's request...${RESET}"
+`+banner+`
 echo ""
 
+`+setup+`
 export CCMUX_AGENT_ID="$AGENT_ID"
 unset CLAUDECODE
 
@@ -1817,7 +1908,7 @@ fi
 
 `+harness.SystemPromptFileBlock+`
 `+harness.ExitCapturePrologue+`%s
-`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(task), sq(string(h)), sq(draftPRsFlag), sq(reloadPrompt(note)), sq(promptsFilePath(agentID)), h.ContinueWithPromptCommand())
+`+harness.ExitCaptureCapture+harness.ExitCaptureReport, sq(agentID), sq(worktreePath), sq(baseBranch), sq(task), sq(string(h)), sq(draftPRsFlag), sq(reloadPrompt(note, from, h)), sq(promptsFilePath(agentID)), command)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		return "", err
