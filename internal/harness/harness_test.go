@@ -98,6 +98,19 @@ func TestContinueWithPromptCommand_ShouldResumeClaude_AndRestartCodex(t *testing
 	}
 }
 
+func TestStartWithPromptCommand_ShouldStartFresh_WithThePrompt(t *testing.T) {
+	c := Claude.StartWithPromptCommand()
+	if strings.Contains(c, "--continue") {
+		t.Errorf("Claude.StartWithPromptCommand() = %q, must not resume: a swapped-in harness has no conversation of its own", c)
+	}
+	if !strings.HasPrefix(c, "claude ") || !strings.Contains(c, `--system-prompt-file "$SYSTEM_PROMPT_FILE"`) || !strings.HasSuffix(c, `"$PROMPT"`) {
+		t.Errorf("Claude.StartWithPromptCommand() must start claude with SYSTEM_PROMPT_FILE and PROMPT as the first message: %q", c)
+	}
+	if got, want := Codex.StartWithPromptCommand(), Codex.ContinueWithPromptCommand(); got != want {
+		t.Errorf("Codex.StartWithPromptCommand() = %q, want the same fresh session as ContinueWithPromptCommand %q", got, want)
+	}
+}
+
 // The system prompt must never appear in the Claude harness's argv: it is a
 // dozen KB of prose that any `pkill -f` on the machine can match, and one
 // agent's pkill aimed at its own background job took down every sibling agent
@@ -107,6 +120,7 @@ func TestClaudeCommands_ShouldKeepSystemPromptOutOfArgv(t *testing.T) {
 		"StartCommand":              Claude.StartCommand(),
 		"ContinueCommand":           Claude.ContinueCommand(),
 		"ContinueWithPromptCommand": Claude.ContinueWithPromptCommand(),
+		"StartWithPromptCommand":    Claude.StartWithPromptCommand(),
 	} {
 		if strings.Contains(cmd, `"$SYSTEM_PROMPT"`) || strings.Contains(cmd, "--system-prompt ") {
 			t.Errorf("Claude.%s() = %q, must pass the prompt via --system-prompt-file, not argv", name, cmd)

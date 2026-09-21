@@ -136,6 +136,26 @@ func (t Type) ContinueWithPromptCommand() string {
 	}
 }
 
+// StartWithPromptCommand returns the shell command that starts a fresh
+// session on this harness with an initial message, for `ccmux reload
+// --harness`: the agent asked to be moved to a different harness, which has no
+// conversation of its own to resume, so --continue would either fail ("No
+// conversation found to continue") or pick up whatever unrelated session was
+// last run in that worktree. The launcher script must define the
+// SYSTEM_PROMPT and PROMPT shell variables and, for Claude, run
+// SystemPromptFileBlock.
+//
+// For Codex this is the same command as ContinueWithPromptCommand, since
+// Codex always starts fresh.
+func (t Type) StartWithPromptCommand() string {
+	switch t {
+	case Codex:
+		return Codex.ContinueWithPromptCommand()
+	default:
+		return "claude --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
+	}
+}
+
 // ResumeWithPromptPrefix returns the leading portion of a command that resumes
 // an agent and hands it a new, self-contained instruction (PR-review, CI-fix
 // and merge-conflict flows). Callers append a shell-quoted prompt string.

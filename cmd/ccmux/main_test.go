@@ -379,7 +379,7 @@ func TestClaudeScripts_ShouldPassSystemPromptViaFile(t *testing.T) {
 			return writeRecoveryScript("spf-recover", "/tmp/repo/wt", "origin/main", "sess", "task", harness.Claude, true)
 		},
 		"reload": func() (string, error) {
-			return writeReloadScript("spf-reload", "/tmp/repo/wt", "origin/main", "task", "note", harness.Claude, true)
+			return writeReloadScript("spf-reload", "/tmp/repo/wt", "origin/main", "task", "note", harness.Claude, harness.Claude, true)
 		},
 	}
 	for name, gen := range gens {
@@ -830,7 +830,7 @@ func TestAgentScripts_ShouldTeachAgentFacingCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeRecoveryScript failed: %v", err)
 	}
-	reload, err := writeReloadScript("peer-reload", "/tmp/wt", "origin/main", "task", "", harness.Claude, true)
+	reload, err := writeReloadScript("peer-reload", "/tmp/wt", "origin/main", "task", "", harness.Claude, harness.Claude, true)
 	if err != nil {
 		t.Fatalf("writeReloadScript failed: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestAgentScripts_ShouldTeachAgentFacingCommands(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open", "ccmux reload [note...]"} {
+		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open", "ccmux reload [note...]", "ccmux reload --harness <claude|codex>"} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s: system prompt should mention %q", filepath.Base(path), want)
 			}
@@ -854,7 +854,7 @@ func TestAgentScripts_ShouldTeachAgentFacingCommands(t *testing.T) {
 func TestWriteReloadScript_ShouldResumeConversation_WithNoteAndTelemetry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	note := "I added the chrome MCP server to .mcp.json; verify its tools loaded, then continue with step 3"
-	path, err := writeReloadScript("reload-1", "/tmp/wt", "origin/main", "the original task", note, harness.Claude, false)
+	path, err := writeReloadScript("reload-1", "/tmp/wt", "origin/main", "the original task", note, harness.Claude, harness.Claude, false)
 	if err != nil {
 		t.Fatalf("writeReloadScript failed: %v", err)
 	}
@@ -880,11 +880,14 @@ func TestWriteReloadScript_ShouldResumeConversation_WithNoteAndTelemetry(t *test
 			t.Errorf("reload script should contain %q", want)
 		}
 	}
+	if strings.Contains(script, "Installing Claude Code hooks") || strings.Contains(script, "trust-claude-project") {
+		t.Error("a same-harness reload must not redo the worktree setup; that is only for a harness switch")
+	}
 }
 
 func TestWriteReloadScript_ShouldStartFreshSession_GivenCodex(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	path, err := writeReloadScript("reload-codex", "/tmp/wt", "origin/main", "task", "", harness.Codex, true)
+	path, err := writeReloadScript("reload-codex", "/tmp/wt", "origin/main", "task", "", harness.Codex, harness.Codex, true)
 	if err != nil {
 		t.Fatalf("writeReloadScript failed: %v", err)
 	}
@@ -905,16 +908,141 @@ func TestWriteReloadScript_ShouldStartFreshSession_GivenCodex(t *testing.T) {
 }
 
 func TestReloadPrompt_ShouldExplainReload_AndCarryNote(t *testing.T) {
-	bare := reloadPrompt("")
+	bare := reloadPrompt("", harness.Claude, harness.Claude)
 	if !strings.Contains(bare, "ccmux reload") || !strings.Contains(bare, "MCP servers") {
 		t.Errorf("prompt should say the harness was reloaded and why: %q", bare)
 	}
 	if strings.Contains(bare, "note to yourself") {
 		t.Errorf("prompt without a note should not mention one: %q", bare)
 	}
-	noted := reloadPrompt("check the new tools")
+	noted := reloadPrompt("check the new tools", harness.Claude, harness.Claude)
 	if !strings.HasSuffix(noted, "check the new tools") || !strings.Contains(noted, "note to yourself") {
 		t.Errorf("prompt should end with the agent's note: %q", noted)
+	}
+}
+
+// --- reload --harness: an agent moving itself to another harness -----------
+
+func TestReloadPrompt_ShouldExplainSwitch_AndSendAgentToGit(t *testing.T) {
+	p := reloadPrompt("the PR is half-written in src/x.go", harness.Claude, harness.Codex)
+	for _, want := range []string{
+		"switched from Claude Code to Codex",
+		"ccmux reload --harness codex",
+		"fresh session",
+		"git log, git status and git diff",
+		"the PR is half-written in src/x.go",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("switch prompt should contain %q: %q", want, p)
+		}
+	}
+	if strings.Contains(p, "If your conversation history is visible") {
+		t.Errorf("a switched harness never has the old conversation; the prompt must not suggest it might: %q", p)
+	}
+}
+
+func TestWriteReloadScript_ShouldStartFreshAndInstallHooks_GivenSwitchToClaude(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := writeReloadScript("switch-claude", "/tmp/wt", "origin/main", "task", "", harness.Codex, harness.Claude, true)
+	if err != nil {
+		t.Fatalf("writeReloadScript failed: %v", err)
+	}
+	assertValidBash(t, path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+
+	for _, want := range []string{
+		"HARNESS='claude'",                      // the script runs the target harness
+		harness.Claude.StartWithPromptCommand(), // fresh session, not --continue
+		"Installing Claude Code hooks",          // Codex worktrees have no Stop hook
+		"ccmux trust-claude-project",            // ...and are not trusted by Claude
+		"Switching from Codex to $HARNESS",      // banner says what is happening
+		"switched from Codex to Claude Code",    // and so does the first message
+		"OTEL_EXPORTER_OTLP_ENDPOINT",           // cost telemetry for the new Claude session
+		"ccmux agent-stopped",                   // exit capture intact
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("switch-to-claude script should contain %q", want)
+		}
+	}
+	if strings.Contains(script, "claude --continue") {
+		t.Error("switch-to-claude script must not --continue: there is no Claude conversation for this agent to resume")
+	}
+	// The worktree setup must run before the harness starts, from inside the
+	// worktree.
+	cd := strings.Index(script, `cd "$WORKTREE_PATH"`)
+	hooks := strings.Index(script, "Installing Claude Code hooks")
+	start := strings.Index(script, harness.Claude.StartWithPromptCommand())
+	if !(cd < hooks && hooks < start) {
+		t.Errorf("worktree setup must run after cd and before the harness call (cd@%d hooks@%d start@%d)", cd, hooks, start)
+	}
+}
+
+func TestWriteReloadScript_ShouldStartFreshAndTrustCodex_GivenSwitchToCodex(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := writeReloadScript("switch-codex", "/tmp/wt", "origin/main", "task", "", harness.Claude, harness.Codex, false)
+	if err != nil {
+		t.Fatalf("writeReloadScript failed: %v", err)
+	}
+	assertValidBash(t, path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+
+	for _, want := range []string{
+		"HARNESS='codex'",
+		harness.Codex.StartWithPromptCommand(),
+		"ccmux trust-codex-project",
+		"Switching from Claude Code to $HARNESS",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("switch-to-codex script should contain %q", want)
+		}
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if strings.HasPrefix(line, "claude ") {
+			t.Errorf("switch-to-codex script must not invoke claude: %q", line)
+		}
+	}
+}
+
+func TestReloadTarget_ShouldOnlySwitch_GivenADifferentKnownHarness(t *testing.T) {
+	// Only the harness under test is "installed": a bare PATH with a stub
+	// codex and no claude.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	cases := []struct {
+		name       string
+		current    harness.Type
+		flag       string
+		wantTarget harness.Type
+		wantSwitch bool
+		wantErr    bool
+	}{
+		{"no flag keeps current", harness.Claude, "", harness.Claude, false, false},
+		{"same harness is a plain reload", harness.Codex, "codex", harness.Codex, false, false},
+		{"same harness, odd case", harness.Codex, " Codex ", harness.Codex, false, false},
+		{"switch to installed harness", harness.Claude, "codex", harness.Codex, true, false},
+		{"unknown harness", harness.Claude, "gemini", harness.Claude, false, true},
+		{"switch to missing CLI", harness.Codex, "claude", harness.Codex, false, true},
+	}
+	for _, tc := range cases {
+		got, switching, err := reloadTarget(tc.current, tc.flag)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr=%v", tc.name, err, tc.wantErr)
+		}
+		if got != tc.wantTarget || switching != tc.wantSwitch {
+			t.Errorf("%s: reloadTarget = (%s, %v), want (%s, %v)", tc.name, got, switching, tc.wantTarget, tc.wantSwitch)
+		}
 	}
 }
 
