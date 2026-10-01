@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -217,11 +218,25 @@ func (m *Manager) SplitPaneBelow(targetPane, workingDir, command string) (string
 		args = append(args, command)
 	}
 	cmd := exec.Command("tmux", args...)
-	output, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	// -P prints the new pane's ID first; a failing hook appends its own
+	// error text to stdout after it.
+	paneID, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
+	paneID = strings.TrimSpace(paneID)
 	if err != nil {
-		return "", fmt.Errorf("failed to split pane: %s: %w", string(output), err)
+		// A failing after-split-window hook (ours from an older ccmux, or
+		// one in the user's tmux config) makes split-window exit non-zero
+		// even though the pane was created and its ID printed. Treat the
+		// split as successful so the caller tracks the pane instead of
+		// orphaning it.
+		if strings.HasPrefix(paneID, "%") && m.PaneExists(paneID) {
+			return paneID, nil
+		}
+		return "", fmt.Errorf("failed to split pane: %s%s: %w", string(output), stderr.String(), err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return paneID, nil
 }
 
 // PaneExists reports whether the pane with the given ID still exists.
