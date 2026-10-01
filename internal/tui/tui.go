@@ -3286,8 +3286,7 @@ func (m model) commentPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
 
-		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
-		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		newWindowID, newPaneID, err := m.tmuxManager.RelaunchAgentPane(tmuxPane, tmuxWindow, worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
 		}
@@ -3318,21 +3317,6 @@ func (m model) rejectPRCmd(a *agent.Agent, prURL string) tea.Cmd {
 
 		return successMsg{fmt.Sprintf("Rejected PR, cleaning up agent %s", agentID)}
 	}
-}
-
-func killAgentPane(tm *tmux.Manager, paneID, windowID string) {
-	// Kill the agent's shared output pane (ccmux pane) along with the agent
-	// pane, so resumes don't leave it orphaned in the old window.
-	if windowID != "" {
-		if sharePane, err := tm.GetWindowOption(windowID, "@ccmux_share_pane"); err == nil && sharePane != "" {
-			tm.KillPane(sharePane)
-		}
-	}
-	if paneID != "" {
-		tm.KillPane(paneID)
-		return
-	}
-	tm.KillWindow(windowID)
 }
 
 func writeReviewScript(agentID, worktreePath, prURL string, h harness.Type) (string, error) {
@@ -3916,8 +3900,7 @@ func (m model) resumeAgentForCIFixCmd(a *agent.Agent, failureSummary string) tea
 			return errMsg{fmt.Errorf("failed to write CI fix script: %w", err)}
 		}
 
-		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
-		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		newWindowID, newPaneID, err := m.tmuxManager.RelaunchAgentPane(tmuxPane, tmuxWindow, worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create CI fix window: %w", err)}
 		}
@@ -3997,8 +3980,7 @@ func (m model) resumeAgentForMergeConflictCmd(a *agent.Agent) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write merge conflict script: %w", err)}
 		}
 
-		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
-		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		newWindowID, newPaneID, err := m.tmuxManager.RelaunchAgentPane(tmuxPane, tmuxWindow, worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create merge conflict window: %w", err)}
 		}
@@ -4031,8 +4013,7 @@ func (m model) resumeAgentForNewReviewCmd(a *agent.Agent, prURL string) tea.Cmd 
 			return errMsg{fmt.Errorf("failed to write review script: %w", err)}
 		}
 
-		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
-		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		newWindowID, newPaneID, err := m.tmuxManager.RelaunchAgentPane(tmuxPane, tmuxWindow, worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create review window: %w", err)}
 		}
@@ -4093,8 +4074,7 @@ func (m model) restartAgentCmd(a *agent.Agent) tea.Cmd {
 			return errMsg{fmt.Errorf("failed to write restart script: %w", err)}
 		}
 
-		killAgentPane(m.tmuxManager, tmuxPane, tmuxWindow)
-		newWindowID, newPaneID, err := m.tmuxManager.CreateWindow(worktreePath, "bash "+scriptPath, agentID[:8])
+		newWindowID, newPaneID, err := m.tmuxManager.RelaunchAgentPane(tmuxPane, tmuxWindow, worktreePath, "bash "+scriptPath, agentID[:8])
 		if err != nil {
 			return errMsg{fmt.Errorf("failed to create restart window: %w", err)}
 		}

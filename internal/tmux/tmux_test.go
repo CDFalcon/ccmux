@@ -651,3 +651,67 @@ func TestSendText_ShouldDeliverEveryLine_GivenMultilineMessage(t *testing.T) {
 		t.Errorf("expected the paste buffer to be deleted after use; buffers:\n%s", string(buffers))
 	}
 }
+
+func TestRelaunchAgentPane_ShouldKeepWindowAndSharePane_GivenLiveAgentPane(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup: an agent window with a shared output pane split below it.
+	mgr := createTestSession(t, "ccmux-test-relaunch-in-place")
+	windowID, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	sharePaneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "sleep 60")
+	if err != nil {
+		t.Fatalf("failed to split pane below: %v", err)
+	}
+
+	// Execute: what a CI-failure resume does.
+	newWindowID, newPaneID, err := mgr.RelaunchAgentPane(agentPaneID, windowID, "/tmp", "sleep 30", "test-agent")
+	if err != nil {
+		t.Fatalf("RelaunchAgentPane failed: %v", err)
+	}
+
+	// Assert: same window, same pane, share pane still alongside it.
+	if newWindowID != windowID || newPaneID != agentPaneID {
+		t.Errorf("expected agent to stay in %s/%s, got %s/%s", windowID, agentPaneID, newWindowID, newPaneID)
+	}
+	if !mgr.PaneExists(sharePaneID) {
+		t.Fatalf("expected share pane %s to survive the relaunch", sharePaneID)
+	}
+	if win, _ := mgr.GetPaneWindowID(sharePaneID); win != windowID {
+		t.Errorf("expected share pane in window %s, got %s", windowID, win)
+	}
+	out, err := exec.Command("tmux", "display-message", "-t", agentPaneID, "-p", "#{pane_start_command}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to query pane_start_command: %s: %v", string(out), err)
+	}
+	if !strings.Contains(string(out), "sleep 30") {
+		t.Errorf("expected agent pane running 'sleep 30', got: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestRelaunchAgentPane_ShouldCreateWindow_GivenAgentPaneGone(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup: an agent window whose pane has since been closed.
+	mgr := createTestSession(t, "ccmux-test-relaunch-fallback")
+	windowID, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	if err := mgr.KillWindow(windowID); err != nil {
+		t.Fatalf("failed to kill window: %v", err)
+	}
+
+	// Execute.
+	newWindowID, newPaneID, err := mgr.RelaunchAgentPane(agentPaneID, windowID, "/tmp", "sleep 30", "test-agent")
+	if err != nil {
+		t.Fatalf("RelaunchAgentPane failed: %v", err)
+	}
+
+	// Assert.
+	if newWindowID == "" || newPaneID == "" || !mgr.PaneExists(newPaneID) {
+		t.Errorf("expected a fresh live window, got %q/%q", newWindowID, newPaneID)
+	}
+}
