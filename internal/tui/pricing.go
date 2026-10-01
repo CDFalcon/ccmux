@@ -41,6 +41,10 @@ import "strings"
 //     zero on the OpenAI provider — a ChatGPT-subscription login — are priced
 //     with the OpenAI table below, like Codex (internal/tui/opencode_session.go).
 //
+//   - Pi: records its own per-request cost in each usage block of its JSONL
+//     session files; same rule as OpenCode for zero-cost OpenAI rows
+//     (internal/tui/pi_session.go).
+//
 // Both tables are list prices in USD per million tokens, as published on
 // platform.claude.com/docs/en/about-claude/pricing and
 // developers.openai.com/api/docs/pricing (checked 2026-09-16; gpt-6-astra

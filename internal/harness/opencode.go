@@ -290,12 +290,6 @@ func PrepareOpenCodeLaunch(agentID string, resume bool, prompt string, environ [
 	return &OpenCodeLaunch{Args: args, Env: env}, nil
 }
 
-// OpenCodeResumeMessage is the first message of a plain resume (session
-// recovery, restart). The full context — the original task and the "you are
-// resuming" explanation — is in the refreshed system prompt OpenCode reads as
-// an instructions file, so unlike Codex the prompt never travels in argv.
-const OpenCodeResumeMessage = "Your ccmux session was restarted. Continue where you left off; your task and the reason for the restart are in your instructions. If your conversation history is not visible, review your progress with git log, git status and git diff first."
-
 // OpenCodePluginJS is the OpenCode plugin ccmux installs at
 // ~/.ccmux/opencode/ccmux-plugin.js. It is inert unless CCMUX_AGENT_ID is
 // set, so a user who points their own config at it is unaffected.

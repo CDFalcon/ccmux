@@ -19,6 +19,8 @@ func TestParse_ShouldFallBackToDefault_GivenEmptyOrUnknown(t *testing.T) {
 		"codex":    Codex,
 		"opencode": OpenCode,
 		"OpenCode": OpenCode,
+		"pi":       Pi,
+		" PI ":     Pi,
 	}
 	for in, want := range cases {
 		if got := Parse(in); got != want {
@@ -28,7 +30,7 @@ func TestParse_ShouldFallBackToDefault_GivenEmptyOrUnknown(t *testing.T) {
 }
 
 func TestValid_ShouldOnlyAcceptKnownHarnesses(t *testing.T) {
-	for _, in := range []string{"claude", "codex", "CODEX", " claude ", "opencode"} {
+	for _, in := range []string{"claude", "codex", "CODEX", " claude ", "opencode", "pi"} {
 		if !Valid(in) {
 			t.Errorf("Valid(%q) = false, want true", in)
 		}
@@ -85,6 +87,9 @@ func TestInstallsClaudeHooks_ShouldBeClaudeOnly(t *testing.T) {
 	}
 	if Codex.InstallsClaudeHooks() {
 		t.Error("Codex should not install Claude hooks")
+	}
+	if Pi.InstallsClaudeHooks() {
+		t.Error("Pi should not install Claude hooks")
 	}
 	if OpenCode.InstallsClaudeHooks() {
 		t.Error("OpenCode should not install Claude hooks")
