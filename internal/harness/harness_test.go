@@ -17,6 +17,8 @@ func TestParse_ShouldFallBackToDefault_GivenEmptyOrUnknown(t *testing.T) {
 		"Claude":   Claude,
 		"  CODEX ": Codex,
 		"codex":    Codex,
+		"opencode": OpenCode,
+		"OpenCode": OpenCode,
 	}
 	for in, want := range cases {
 		if got := Parse(in); got != want {
@@ -26,7 +28,7 @@ func TestParse_ShouldFallBackToDefault_GivenEmptyOrUnknown(t *testing.T) {
 }
 
 func TestValid_ShouldOnlyAcceptKnownHarnesses(t *testing.T) {
-	for _, in := range []string{"claude", "codex", "CODEX", " claude "} {
+	for _, in := range []string{"claude", "codex", "CODEX", " claude ", "opencode"} {
 		if !Valid(in) {
 			t.Errorf("Valid(%q) = false, want true", in)
 		}
@@ -63,11 +65,16 @@ func TestStartCommand_ShouldReferenceHarnessSpecificCLI(t *testing.T) {
 
 func TestContinueAndResumeCommands_ShouldMatchHarness(t *testing.T) {
 	for _, h := range All() {
-		if !strings.HasPrefix(h.ContinueCommand(), h.CLIName()+" ") {
-			t.Errorf("%s.ContinueCommand() = %q, want it to invoke %s", h, h.ContinueCommand(), h.CLIName())
-		}
-		if !strings.HasPrefix(h.ResumeWithPromptPrefix(), h.CLIName()+" ") {
-			t.Errorf("%s.ResumeWithPromptPrefix() = %q, want it to invoke %s", h, h.ResumeWithPromptPrefix(), h.CLIName())
+		for name, cmd := range map[string]string{
+			"StartCommand":              h.StartCommand(),
+			"ContinueCommand":           h.ContinueCommand(),
+			"ContinueWithPromptCommand": h.ContinueWithPromptCommand(),
+			"StartWithPromptCommand":    h.StartWithPromptCommand(),
+			"ResumeWithPromptPrefix":    h.ResumeWithPromptPrefix(),
+		} {
+			if !strings.HasPrefix(cmd, h.LaunchPrefix()+" ") {
+				t.Errorf("%s.%s() = %q, want it to invoke %s", h, name, cmd, h.LaunchPrefix())
+			}
 		}
 	}
 }
@@ -78,6 +85,9 @@ func TestInstallsClaudeHooks_ShouldBeClaudeOnly(t *testing.T) {
 	}
 	if Codex.InstallsClaudeHooks() {
 		t.Error("Codex should not install Claude hooks")
+	}
+	if OpenCode.InstallsClaudeHooks() {
+		t.Error("OpenCode should not install Claude hooks")
 	}
 }
 

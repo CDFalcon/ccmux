@@ -841,7 +841,7 @@ func TestAgentScripts_ShouldTeachAgentFacingCommands(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open", "ccmux reload [note...]", "ccmux reload --harness <claude|codex>"} {
+		for _, want := range []string{"ccmux agents list", "ccmux agents send <agent-id>", "ccmux pane open", "ccmux reload [note...]", "ccmux reload --harness <claude|codex|opencode>"} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s: system prompt should mention %q", filepath.Base(path), want)
 			}

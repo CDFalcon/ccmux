@@ -718,11 +718,14 @@ func summarizeUsage(recs []usageRecord) sessionUsage {
 
 // agentSessionUsage reads the agent's transcripts with the parser for its
 // harness. Claude Code transcripts live under ~/.claude/projects keyed by
-// worktree path; Codex rollouts are matched to the worktree by their header.
+// worktree path; Codex rollouts are matched to the worktree by their header;
+// OpenCode sessions by the directory recorded in its SQLite database.
 func agentSessionUsage(a *agent.Agent) sessionUsage {
 	switch harness.Parse(a.Harness) {
 	case harness.Codex:
 		return summarizeUsage(scanCodexSessions(a.WorktreePath, a.CreatedAt))
+	case harness.OpenCode:
+		return summarizeUsage(scanOpenCodeSessions(a.WorktreePath))
 	default:
 		return summarizeUsage(scanClaudeSession(a.WorktreePath))
 	}

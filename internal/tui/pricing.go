@@ -2,7 +2,7 @@ package tui
 
 import "strings"
 
-// Pricing tables for the two harnesses ccmux runs, used only when the harness
+// Pricing tables for the harnesses ccmux runs, used only when the harness
 // itself does not hand us a cost figure.
 //
 // How session cost is computed, and why:
@@ -36,9 +36,15 @@ import "strings"
 //     of `output_tokens` and is not billed separately. The model comes from
 //     the most recent `turn_context` event.
 //
+//   - OpenCode: records its own per-request cost (from models.dev prices) in
+//     its SQLite database, and ccmux uses it as-is. Requests it recorded at
+//     zero on the OpenAI provider — a ChatGPT-subscription login — are priced
+//     with the OpenAI table below, like Codex (internal/tui/opencode_session.go).
+//
 // Both tables are list prices in USD per million tokens, as published on
 // platform.claude.com/docs/en/about-claude/pricing and
-// developers.openai.com/api/docs/pricing (checked 2026-09-16). Subscription
+// developers.openai.com/api/docs/pricing (checked 2026-09-16; gpt-6-astra
+// added 2026-10-01 at its launch price of $10 / $1 cached / $50). Subscription
 // users (Claude Max, ChatGPT Team/Pro) are not billed per token, so the
 // figure is what the same work would have cost on the API — hence "(est.)"
 // everywhere the TUI shows it.
@@ -173,6 +179,7 @@ var codexRateTable = []struct {
 	prefix string
 	rates  codexRates
 }{
+	{"gpt-6-astra", codexRates{10, 1, 50}},
 	{"gpt-5.6-sol", codexRates{4, 0.40, 20}},
 	{"gpt-5.6-terra", codexRates{2, 0.20, 12}},
 	{"gpt-5.6-luna", codexRates{0.20, 0.02, 1.20}},

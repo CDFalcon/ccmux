@@ -24,5 +24,5 @@ Use this to coordinate on shared files, avoid duplicate work, ask another agent 
 // tools, hooks or settings.
 const ReloadDoc = `You can reload your own harness session in place, e.g. after adding an MCP server or changing settings that only load at startup:
     ccmux reload [note...]         restart the harness in your pane, resuming this conversation; the optional note is handed to you after the reload
-    ccmux reload --harness <claude|codex> [note...]   the same, but switch your pane to that harness; it starts a fresh session there (no conversation carries over), so put anything it must know in the note
-The reload happens a couple of seconds after the command returns, so end your turn there: do not start more work after calling it. Your conversation history is preserved (Claude Code and Codex both resume it), and your worktree, branch, and shared pane are untouched.`
+    ccmux reload --harness <claude|codex|opencode> [note...]   the same, but switch your pane to that harness; it starts a fresh session there (no conversation carries over), so put anything it must know in the note
+The reload happens a couple of seconds after the command returns, so end your turn there: do not start more work after calling it. Your conversation history is preserved (Claude Code, Codex and OpenCode all resume it), and your worktree, branch, and shared pane are untouched.`

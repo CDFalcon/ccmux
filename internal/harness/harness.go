@@ -1,12 +1,14 @@
 // Package harness describes the coding-agent CLIs ("harnesses") that ccmux
 // can launch and drive. Historically ccmux only spoke to Claude Code; this
-// package adds an abstraction so other CLIs (currently OpenAI's Codex) can be
-// driven through the same spawn/recover/resume machinery.
+// package adds an abstraction so other CLIs (OpenAI's Codex and OpenCode) can
+// be driven through the same spawn/recover/resume machinery.
 package harness
 
 import (
 	"os/exec"
 	"strings"
+
+	"github.com/CDFalcon/ccmux/internal/shellutil"
 )
 
 // Type identifies a coding-agent CLI that ccmux can launch.
@@ -17,6 +19,9 @@ const (
 	Claude Type = "claude"
 	// Codex is OpenAI's Codex CLI (`codex`).
 	Codex Type = "codex"
+	// OpenCode is the open-source OpenCode CLI (`opencode`), launched through
+	// `ccmux run-opencode`; see opencode.go.
+	OpenCode Type = "opencode"
 )
 
 // Default is the harness used when none is specified. It is Claude so that
@@ -26,7 +31,7 @@ const Default = Claude
 
 // All returns the selectable harnesses in display order.
 func All() []Type {
-	return []Type{Claude, Codex}
+	return []Type{Claude, Codex, OpenCode}
 }
 
 // Parse normalises a stored or flag-provided string into a Type. Empty or
@@ -35,6 +40,8 @@ func Parse(s string) Type {
 	switch Type(strings.ToLower(strings.TrimSpace(s))) {
 	case Codex:
 		return Codex
+	case OpenCode:
+		return OpenCode
 	case Claude:
 		return Claude
 	default:
@@ -45,7 +52,7 @@ func Parse(s string) Type {
 // Valid reports whether s names a known harness (ignoring case/whitespace).
 func Valid(s string) bool {
 	switch Type(strings.ToLower(strings.TrimSpace(s))) {
-	case Claude, Codex:
+	case Claude, Codex, OpenCode:
 		return true
 	default:
 		return false
@@ -57,6 +64,8 @@ func (t Type) DisplayName() string {
 	switch t {
 	case Codex:
 		return "Codex"
+	case OpenCode:
+		return "OpenCode"
 	default:
 		return "Claude Code"
 	}
@@ -67,9 +76,21 @@ func (t Type) CLIName() string {
 	switch t {
 	case Codex:
 		return "codex"
+	case OpenCode:
+		return "opencode"
 	default:
 		return "claude"
 	}
+}
+
+// LaunchPrefix is the start of every command ccmux runs to launch this
+// harness: the CLI itself, except for OpenCode, which goes through the
+// `ccmux run-opencode` wrapper (see opencode.go).
+func (t Type) LaunchPrefix() string {
+	if t == OpenCode {
+		return "ccmux run-opencode"
+	}
+	return t.CLIName()
 }
 
 // Installed reports whether the harness CLI is available on PATH.
@@ -86,11 +107,14 @@ func (t Type) Installed() bool {
 // Claude Code reads the system prompt from a file via --system-prompt-file;
 // see SystemPromptFileBlock for why it must not travel on the command line.
 // Codex has no such flag, so the system prompt is prepended to the task as
-// the initial message.
+// the initial message. OpenCode reads it from the same file as an
+// instructions entry, wired up by `ccmux run-opencode`.
 func (t Type) StartCommand() string {
 	switch t {
 	case Codex:
 		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$TASK\""
+	case OpenCode:
+		return "ccmux run-opencode --prompt \"$TASK\""
 	default:
 		return "claude --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$TASK\""
 	}
@@ -107,10 +131,16 @@ func (t Type) StartCommand() string {
 // system-prompt slot on resume, so the prompt travels as the next message —
 // which also seeds the fallback fresh session when the worktree has no Codex
 // conversation to resume.
+//
+// OpenCode resumes the agent's recorded session (`run-opencode --resume`)
+// and re-reads the refreshed system prompt file as instructions, so its
+// first message is only OpenCodeResumeMessage, a short nudge.
 func (t Type) ContinueCommand() string {
 	switch t {
 	case Codex:
 		return CodexResumeLast + " \"$SYSTEM_PROMPT\""
+	case OpenCode:
+		return "ccmux run-opencode --resume --prompt " + shellutil.Quote(OpenCodeResumeMessage)
 	default:
 		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\""
 	}
@@ -133,6 +163,8 @@ func (t Type) ContinueWithPromptCommand() string {
 	switch t {
 	case Codex:
 		return CodexResumeLast + " \"$SYSTEM_PROMPT\n\n$PROMPT\""
+	case OpenCode:
+		return "ccmux run-opencode --resume --prompt \"$PROMPT\""
 	default:
 		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
 	}
@@ -153,6 +185,8 @@ func (t Type) StartWithPromptCommand() string {
 	switch t {
 	case Codex:
 		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$PROMPT\""
+	case OpenCode:
+		return "ccmux run-opencode --prompt \"$PROMPT\""
 	default:
 		return "claude --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
 	}
@@ -186,12 +220,15 @@ const CodexResumeLast = "codex resume --last --disable worktrees --dangerously-b
 // an agent and hands it a new, self-contained instruction (PR-review, CI-fix
 // and merge-conflict flows). Callers append a shell-quoted prompt string.
 //
-// As with ContinueCommand, Claude Code keeps its conversation via --continue
-// and Codex via CodexResumeLast.
+// As with ContinueCommand, Claude Code keeps its conversation via --continue,
+// Codex via CodexResumeLast and OpenCode via `run-opencode --resume` (whose
+// plugin submits the prompt to the resumed session).
 func (t Type) ResumeWithPromptPrefix() string {
 	switch t {
 	case Codex:
 		return CodexResumeLast
+	case OpenCode:
+		return "ccmux run-opencode --resume --prompt"
 	default:
 		return "claude --continue --dangerously-skip-permissions"
 	}
