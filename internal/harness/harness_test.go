@@ -194,6 +194,11 @@ func TestCodexFollowUps_ShouldResumeLastSessionInWorktree(t *testing.T) {
 	if !strings.Contains(CodexResumeLast, "resume --last") || strings.Contains(CodexResumeLast, "--all") {
 		t.Fatalf("CodexResumeLast = %q, want `resume --last` scoped to the cwd (no --all)", CodexResumeLast)
 	}
+	// With Codex's worktrees feature on, the cwd filter spans every linked
+	// worktree of the repo, i.e. every sibling ccmux agent.
+	if !strings.Contains(CodexResumeLast, "--disable worktrees") {
+		t.Errorf("CodexResumeLast = %q, must disable the worktrees feature so --last cannot resume a sibling agent's session", CodexResumeLast)
+	}
 	for name, cmd := range map[string]string{
 		"ContinueCommand":           Codex.ContinueCommand(),
 		"ContinueWithPromptCommand": Codex.ContinueWithPromptCommand(),

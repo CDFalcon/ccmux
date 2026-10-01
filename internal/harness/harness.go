@@ -170,7 +170,17 @@ func (t Type) StartWithPromptCommand() string {
 // that Codex sessions could not be addressed per worktree. They can: `resume
 // --last` filters by cwd unless given --all. Starting fresh threw away the
 // agent's whole conversation each time ccmux handed it new work.
-const CodexResumeLast = "codex resume --last --dangerously-bypass-approvals-and-sandbox"
+//
+// Only CLI and IDE sessions are candidates (Codex sub-agent and `codex exec`
+// threads are excluded unless --include-non-interactive is passed), so a
+// sub-agent's thread is never resumed in place of the agent's own.
+//
+// --disable worktrees is load-bearing. With Codex's experimental "worktrees"
+// feature on, the cwd filter widens to every linked worktree of the
+// repository — and every ccmux agent of a project is a linked worktree of the
+// same repository, so --last would resume whichever sibling agent ran most
+// recently. Disabling it pins the filter to this worktree alone.
+const CodexResumeLast = "codex resume --last --disable worktrees --dangerously-bypass-approvals-and-sandbox"
 
 // ResumeWithPromptPrefix returns the leading portion of a command that resumes
 // an agent and hands it a new, self-contained instruction (PR-review, CI-fix
