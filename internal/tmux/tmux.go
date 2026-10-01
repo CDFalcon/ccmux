@@ -285,6 +285,37 @@ func (m *Manager) RespawnPaneCmd(target, command string) error {
 	return nil
 }
 
+// RelaunchAgentPane restarts an agent with command in place: when the agent's
+// pane still exists it is respawned (respawn-pane -k) in its own window, so
+// the window keeps its position in the session and every other pane in it —
+// the agent's shared output pane in particular — survives untouched. Only
+// when the pane is gone (or was never recorded) does it fall back to killing
+// whatever is left of the old window and opening a fresh one.
+//
+// It returns the window and pane the agent now lives in; on the in-place path
+// those are the same IDs it was given.
+func (m *Manager) RelaunchAgentPane(paneID, windowID, workingDir, command, name string) (string, string, error) {
+	if paneID != "" && m.PaneExists(paneID) {
+		args := []string{"respawn-pane", "-k", "-t", paneID}
+		if workingDir != "" {
+			args = append(args, "-c", workingDir)
+		}
+		args = append(args, command)
+		if err := exec.Command("tmux", args...).Run(); err == nil {
+			if win, werr := m.GetPaneWindowID(paneID); werr == nil && win != "" {
+				windowID = win
+			}
+			return windowID, paneID, nil
+		}
+		// The respawn failed: fall through to a fresh window rather than
+		// leaving the agent without a running launcher.
+	}
+	if windowID != "" {
+		m.KillWindow(windowID)
+	}
+	return m.CreateWindow(workingDir, command, name)
+}
+
 // RespawnPaneDeferred schedules RespawnPaneCmd to run on target after delay,
 // from a background job owned by the tmux server rather than from this
 // process.
