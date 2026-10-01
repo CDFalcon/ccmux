@@ -102,14 +102,15 @@ func (t Type) StartCommand() string {
 // flows, also carries the original task and "continue where you left off"
 // context) and, for Claude, run SystemPromptFileBlock.
 //
-// Claude Code resumes its prior conversation with --continue. Codex sessions
-// are not addressable per-worktree, so ccmux instead starts a fresh Codex
-// session seeded with the full context; the worktree's commits and working
-// tree carry the actual progress.
+// Claude Code resumes its prior conversation with --continue; Codex with
+// CodexResumeLast (see there for why that is per-worktree). Codex has no
+// system-prompt slot on resume, so the prompt travels as the next message —
+// which also seeds the fallback fresh session when the worktree has no Codex
+// conversation to resume.
 func (t Type) ContinueCommand() string {
 	switch t {
 	case Codex:
-		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\""
+		return CodexResumeLast + " \"$SYSTEM_PROMPT\""
 	default:
 		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\""
 	}
@@ -124,13 +125,14 @@ func (t Type) ContinueCommand() string {
 // SystemPromptFileBlock.
 //
 // Claude Code resumes the prior conversation with --continue and treats the
-// positional argument as the next user message. Codex cannot resume, so as
-// with ContinueCommand it starts a fresh session seeded with the system prompt
-// (which carries the original task) followed by the message.
+// positional argument as the next user message. Codex resumes the worktree's
+// latest conversation with CodexResumeLast; as with ContinueCommand the system
+// prompt (which carries the original task) rides ahead of the message, so a
+// fallback fresh session still knows what it is doing.
 func (t Type) ContinueWithPromptCommand() string {
 	switch t {
 	case Codex:
-		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$PROMPT\""
+		return CodexResumeLast + " \"$SYSTEM_PROMPT\n\n$PROMPT\""
 	default:
 		return "claude --continue --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
 	}
@@ -145,27 +147,41 @@ func (t Type) ContinueWithPromptCommand() string {
 // SYSTEM_PROMPT and PROMPT shell variables and, for Claude, run
 // SystemPromptFileBlock.
 //
-// For Codex this is the same command as ContinueWithPromptCommand, since
-// Codex always starts fresh.
+// The same holds for Codex: `codex resume --last` would pick up whatever Codex
+// session last ran in the worktree before the agent moved off Codex.
 func (t Type) StartWithPromptCommand() string {
 	switch t {
 	case Codex:
-		return Codex.ContinueWithPromptCommand()
+		return "codex --dangerously-bypass-approvals-and-sandbox \"$SYSTEM_PROMPT\n\n$PROMPT\""
 	default:
 		return "claude --dangerously-skip-permissions --system-prompt-file \"$SYSTEM_PROMPT_FILE\" \"$PROMPT\""
 	}
 }
+
+// CodexResumeLast is the Codex counterpart of `claude --continue`: it resumes
+// the most recent interactive Codex session whose recorded cwd is the current
+// directory — the agent's worktree, since every launcher cds there first — and
+// treats a trailing positional argument as the next user message. When the
+// worktree has no Codex session yet, Codex starts a fresh one with that
+// message instead of failing.
+//
+// ccmux used to start every Codex follow-up (PR comments, CI fixes, merge
+// conflicts, restarts, reloads) as a brand-new `codex` session, on the belief
+// that Codex sessions could not be addressed per worktree. They can: `resume
+// --last` filters by cwd unless given --all. Starting fresh threw away the
+// agent's whole conversation each time ccmux handed it new work.
+const CodexResumeLast = "codex resume --last --dangerously-bypass-approvals-and-sandbox"
 
 // ResumeWithPromptPrefix returns the leading portion of a command that resumes
 // an agent and hands it a new, self-contained instruction (PR-review, CI-fix
 // and merge-conflict flows). Callers append a shell-quoted prompt string.
 //
 // As with ContinueCommand, Claude Code keeps its conversation via --continue
-// while Codex starts a fresh session driven entirely by the appended prompt.
+// and Codex via CodexResumeLast.
 func (t Type) ResumeWithPromptPrefix() string {
 	switch t {
 	case Codex:
-		return "codex --dangerously-bypass-approvals-and-sandbox"
+		return CodexResumeLast
 	default:
 		return "claude --continue --dangerously-skip-permissions"
 	}

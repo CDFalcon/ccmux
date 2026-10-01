@@ -1772,10 +1772,10 @@ func reloadRefusalReason(a *agent.Agent, tmuxPane, windowID string) string {
 }
 
 // reloadPrompt is the first message the reloaded harness receives. It is what
-// makes the restart self-explanatory to the agent: Claude Code resumes the
-// conversation so it needs only the reason and the note; Codex starts a fresh
-// session (the system prompt restates the task) so it also needs to be told to
-// re-orient from git.
+// makes the restart self-explanatory to the agent: both harnesses resume the
+// conversation, so it needs only the reason and the note — plus a pointer to
+// git in case the resume found nothing (Codex then starts fresh, with the
+// system prompt restating the task).
 //
 // A harness switch (`ccmux reload --harness`) is always a fresh session on
 // the new CLI, so that variant does not offer the "if your history is

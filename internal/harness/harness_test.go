@@ -81,7 +81,7 @@ func TestInstallsClaudeHooks_ShouldBeClaudeOnly(t *testing.T) {
 	}
 }
 
-func TestContinueWithPromptCommand_ShouldResumeClaude_AndRestartCodex(t *testing.T) {
+func TestContinueWithPromptCommand_ShouldResumeBothHarnesses(t *testing.T) {
 	c := Claude.ContinueWithPromptCommand()
 	if !strings.HasPrefix(c, "claude --continue") {
 		t.Errorf("Claude.ContinueWithPromptCommand() = %q, want it to resume with --continue", c)
@@ -90,8 +90,8 @@ func TestContinueWithPromptCommand_ShouldResumeClaude_AndRestartCodex(t *testing
 		t.Errorf("Claude.ContinueWithPromptCommand() must use SYSTEM_PROMPT_FILE and PROMPT: %q", c)
 	}
 	x := Codex.ContinueWithPromptCommand()
-	if !strings.HasPrefix(x, "codex ") || strings.Contains(x, "--continue") {
-		t.Errorf("Codex.ContinueWithPromptCommand() = %q, want a fresh codex session", x)
+	if !strings.HasPrefix(x, CodexResumeLast+" ") {
+		t.Errorf("Codex.ContinueWithPromptCommand() = %q, want it to resume with %q", x, CodexResumeLast)
 	}
 	if !strings.Contains(x, "$SYSTEM_PROMPT") || !strings.Contains(x, "$PROMPT") {
 		t.Errorf("Codex.ContinueWithPromptCommand() must use SYSTEM_PROMPT and PROMPT: %q", x)
@@ -106,8 +106,12 @@ func TestStartWithPromptCommand_ShouldStartFresh_WithThePrompt(t *testing.T) {
 	if !strings.HasPrefix(c, "claude ") || !strings.Contains(c, `--system-prompt-file "$SYSTEM_PROMPT_FILE"`) || !strings.HasSuffix(c, `"$PROMPT"`) {
 		t.Errorf("Claude.StartWithPromptCommand() must start claude with SYSTEM_PROMPT_FILE and PROMPT as the first message: %q", c)
 	}
-	if got, want := Codex.StartWithPromptCommand(), Codex.ContinueWithPromptCommand(); got != want {
-		t.Errorf("Codex.StartWithPromptCommand() = %q, want the same fresh session as ContinueWithPromptCommand %q", got, want)
+	x := Codex.StartWithPromptCommand()
+	if !strings.HasPrefix(x, "codex ") || strings.Contains(x, "resume") {
+		t.Errorf("Codex.StartWithPromptCommand() = %q, must start a fresh codex session, not resume an older one in the worktree", x)
+	}
+	if !strings.HasSuffix(x, `$PROMPT"`) {
+		t.Errorf("Codex.StartWithPromptCommand() must end with PROMPT as the first message: %q", x)
 	}
 }
 
@@ -180,5 +184,23 @@ func TestTelemetryEnvBlock_ShouldBeSprintfSafe_AndClaudeOnly(t *testing.T) {
 	}
 	if !strings.Contains(TelemetryEnvBlock, `[ "$HARNESS" = "claude" ]`) {
 		t.Error("TelemetryEnvBlock should only enable telemetry for the Claude harness")
+	}
+}
+
+// Every Codex follow-up (restart, reload, PR comments, CI fix, merge
+// conflict) must resume the worktree's conversation rather than start a new
+// one; starting fresh silently discarded the agent's context each time.
+func TestCodexFollowUps_ShouldResumeLastSessionInWorktree(t *testing.T) {
+	if !strings.Contains(CodexResumeLast, "resume --last") || strings.Contains(CodexResumeLast, "--all") {
+		t.Fatalf("CodexResumeLast = %q, want `resume --last` scoped to the cwd (no --all)", CodexResumeLast)
+	}
+	for name, cmd := range map[string]string{
+		"ContinueCommand":           Codex.ContinueCommand(),
+		"ContinueWithPromptCommand": Codex.ContinueWithPromptCommand(),
+		"ResumeWithPromptPrefix":    Codex.ResumeWithPromptPrefix(),
+	} {
+		if !strings.HasPrefix(cmd, CodexResumeLast) {
+			t.Errorf("Codex.%s() = %q, want it to start with %q", name, cmd, CodexResumeLast)
+		}
 	}
 }
