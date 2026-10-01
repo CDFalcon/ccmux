@@ -175,6 +175,9 @@ func runSession(sessionID string) error {
 			tmuxManager.SourceUserConfig()
 			tmuxManager.EnsureRemainOnExit()
 			tmuxManager.SetupAgentNavigation()
+			// Reinstall so a long-lived session picks up the current hook
+			// rather than whatever version created it.
+			tmuxManager.SetupPaneHooks()
 
 			exePath, err := os.Executable()
 			if err == nil {
@@ -954,7 +957,7 @@ fi
 `+harnessWorktreeSetupBlock+`
 # Register agent
 echo "→ Registering agent..."
-WINDOW_ID=$(tmux display-message -p '#{window_id}')
+WINDOW_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}')
 ccmux register-agent --id="$AGENT_ID" --task="$TASK" --worktree="$WORKTREE_PATH" --branch="$BRANCH_NAME" --base="$BASE_BRANCH" --window="$WINDOW_ID"
 CCMUX_REGISTERED=1
 echo "✓ Agent registered"
@@ -962,7 +965,10 @@ echo ""
 
 # Store the worktree path in a tmux window option so that any new pane opened
 # in this window (e.g. via prefix-%% or prefix-") automatically cds there.
-tmux set-option -w @ccmux_worktree "$WORKTREE_PATH"
+# Target this pane explicitly: an untargeted set-option resolves to the
+# attached client's current window (usually the ccmux main window, since
+# agent windows are created detached), which leaves this window unset.
+tmux set-option -w -t "$TMUX_PANE" @ccmux_worktree "$WORKTREE_PATH"
 
 STARTUP_SCRIPT=%s
 if [ -n "$STARTUP_SCRIPT" ] && [ -f "$STARTUP_SCRIPT" ]; then

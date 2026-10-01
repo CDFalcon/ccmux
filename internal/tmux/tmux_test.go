@@ -412,6 +412,33 @@ func TestSplitPaneBelow_ShouldOpenShell_GivenNoCommand(t *testing.T) {
 	}
 }
 
+func TestSplitPaneBelow_ShouldReturnPane_GivenFailingSplitHook(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup: the pre-#211 hook exits 1 in a window with no @ccmux_worktree,
+	// which makes split-window itself exit non-zero.
+	mgr := createTestSession(t, "ccmux-test-split-failing-hook")
+	_, agentPaneID, err := mgr.CreateWindow("/tmp", "sleep 60", "test-agent")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	hook := `run-shell 'wdir=$(tmux show-options -w -t "#{window_id}" -qv @ccmux_worktree 2>/dev/null); [ -n "$wdir" ] && tmux send-keys -t "#{pane_id}" "cd $wdir" Enter'`
+	if out, err := exec.Command("tmux", "set-hook", "-t", mgr.SessionName(), "after-split-window", hook).CombinedOutput(); err != nil {
+		t.Fatalf("failed to set hook: %s: %v", string(out), err)
+	}
+
+	// Execute.
+	paneID, err := mgr.SplitPaneBelow(agentPaneID, "/tmp", "sleep 60")
+
+	// Assert: the pane was created, so the split must report it.
+	if err != nil {
+		t.Fatalf("expected split to succeed despite failing hook, got: %v", err)
+	}
+	if !mgr.PaneExists(paneID) {
+		t.Errorf("expected pane %q to exist", paneID)
+	}
+}
+
 func TestPaneExists_ShouldReportLifecycle_GivenPaneKilled(t *testing.T) {
 	skipIfNoTmux(t)
 
