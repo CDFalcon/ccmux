@@ -873,7 +873,7 @@ func renderEditProjectView(m model) string {
 		{"Teardown script:", m.editProjectForm.teardownScriptInput.View()},
 		{"Merge when accepted (yes/no):", m.editProjectForm.mergeWhenAcceptedInput.View()},
 		{"Use Trunk merge queue (yes/no):", m.editProjectForm.useTrunkMergeInput.View()},
-		{"Default harness (claude/codex):", m.editProjectForm.harnessInput.View()},
+		{"Default harness (claude/codex/opencode):", m.editProjectForm.harnessInput.View()},
 		{"Draft PRs (yes/no):", m.editProjectForm.draftPRsInput.View()},
 	}
 

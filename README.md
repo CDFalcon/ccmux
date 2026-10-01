@@ -12,7 +12,7 @@
 
 A terminal-based orchestrator for managing multiple coding agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
-ccmux can drive either [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://developers.openai.com/codex/cli) as the underlying agent ("harness"). You pick the harness when creating a task, and each project has a configurable default harness (set it from the Manage Projects screen).
+ccmux can drive [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://developers.openai.com/codex/cli) or [OpenCode](https://opencode.ai) as the underlying agent ("harness"). You pick the harness when creating a task, and each project has a configurable default harness (set it from the Manage Projects screen).
 
 When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up. Agents will be automatically notified when their PRs fail CI, have merge conflicts, or receive merge conflicts. Users will only be notified to review PRs which are fully ready to merge.
 
@@ -43,6 +43,11 @@ curl -fsSL https://claude.ai/install.sh | bash
 # (Optional) Install Codex if you want to drive it as a harness
 npm install -g @openai/codex
 
+# (Optional) Install OpenCode to run OpenAI's GPT-6 Astra (or any other
+# provider's model) through an open-source harness, then log in to OpenAI
+brew install anomalyco/tap/opencode   # or: npm install -g opencode-ai
+opencode auth login                   # choose OpenAI: ChatGPT Plus/Pro or an API key
+
 # (Optional) Install rift for fast copy-on-write worktrees
 # https://github.com/anomalyco/rift
 npm install -g rift-snapshot
@@ -71,6 +76,11 @@ curl -fsSL https://claude.ai/install.sh | bash
 # (Optional) Install Codex if you want to drive it as a harness
 npm install -g @openai/codex
 
+# (Optional) Install OpenCode to run OpenAI's GPT-6 Astra (or any other
+# provider's model) through an open-source harness, then log in to OpenAI
+brew install anomalyco/tap/opencode   # or: npm install -g opencode-ai
+opencode auth login                   # choose OpenAI: ChatGPT Plus/Pro or an API key
+
 # (Optional) Install rift for fast copy-on-write worktrees
 # https://github.com/anomalyco/rift
 npm install -g rift-snapshot
@@ -89,7 +99,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 1. **Start a session:** `ccmux` (or `ccmux <name>` for a named session).
 
-2. **Register a project:** Press `P` to open project management, then `a` to add a git repository. Press `enter` on a project to edit it — including its default harness (Claude Code or Codex).
+2. **Register a project:** Press `P` to open project management, then `a` to add a git repository. Press `enter` on a project to edit it — including its default harness (Claude Code, Codex or OpenCode).
 
 3. **Spawn an agent:** Press `n`, select a project, pick the harness (defaults to the project's default), choose a base branch, and describe the task. ccmux creates a worktree and launches the selected agent.
 
@@ -97,6 +107,33 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
    - 💤 **Idle** — agent's terminal has gone quiet (may be stuck). Jump in to check on it or send it a message.
    - 🔀 **PR Ready** — agent opened a pull request. `a`ccept (cleanup agent and worktree), `c`omment (resume agent to address feedback), `r`eject (close PR + cleanup), or `b`rowser (open PR in browser).
+
+## OpenCode and GPT-6 Astra
+
+The `opencode` harness runs [OpenCode](https://github.com/anomalyco/opencode)
+(MIT), the open-source harness with first-class support for OpenAI's GPT-6
+Astra. ccmux launches it on `openai/gpt-6-astra` by default. To use a
+different model, set `CCMUX_OPENCODE_MODEL` to another `provider/model` id
+before starting ccmux. Set it to the empty string to use whatever your own
+`opencode.json` picks.
+
+OpenCode agents get the same lifecycle as Claude Code agents:
+
+- **Status and CI tracking.** A small plugin that ccmux writes to
+  `~/.ccmux/opencode/ccmux-plugin.js` reports end-of-turn and runs
+  `ccmux ci-wait` after `gh pr create` or `git push`.
+- **System prompt.** ccmux's system prompt reaches OpenCode as an
+  `instructions` file, alongside your `AGENTS.md`.
+- **Resumes.** PR-review, CI-fix, merge-conflict, restart and reload all
+  continue the agent's own session.
+- **Cost.** Each agent's cost is read from OpenCode's database, which needs
+  `sqlite3` on `PATH`.
+
+ccmux adds its plugin and instructions through `OPENCODE_CONFIG_CONTENT`.
+OpenCode merges that with your config, so neither the worktree nor your
+`opencode.json` is modified. Agents run with `--auto`, which approves
+OpenCode's permission prompts the way Claude Code agents run with
+`--dangerously-skip-permissions`.
 
 ## Spawning tasks from the CLI
 
@@ -111,7 +148,7 @@ Only the project name and description are required. The remaining arguments
 are optional and positional — pass `-` to skip one while still supplying a
 later one:
 
-- `harness` — `claude` or `codex` (defaults to the project's configured harness)
+- `harness` — `claude`, `codex` or `opencode` (defaults to the project's configured harness)
 - `base-branch` — branch the worktree is created from (defaults to the project's configured base branch). Must exist on the project repo's `origin` remote, or the command fails fast with the list of available branches.
 - `branch-name` — human-readable name for the worktree and branch
 
@@ -168,8 +205,9 @@ A couple of seconds after the command returns, ccmux respawns the agent's
 pane with the same launcher shape as a restart: same worktree, branch, system
 prompt and cost telemetry, exit capture intact. Claude Code resumes the
 conversation with `--continue`, Codex with `codex resume --last` (the latest
-Codex session in the worktree). Either way the original task is restated, so
-a Codex worktree with no session to resume starts fresh with it. Either way the agent's first message
+Codex session in the worktree), OpenCode with `--session` on the agent's own
+recorded session. Either way the original task is restated, so a Codex or
+OpenCode worktree with no session to resume starts fresh with it. Either way the agent's first message
 explains that it reloaded itself and carries the optional note, which is a
 handy way to hand instructions across the restart:
 
@@ -188,6 +226,7 @@ its shared pane), so it cannot respawn the wrong program.
 ```
 ccmux reload --harness codex [note...]   # move this agent to Codex
 ccmux reload --harness claude [note...]  # ...or to Claude Code
+ccmux reload --harness opencode [note...] # ...or to OpenCode
 ```
 
 The agent keeps its worktree, branch, shared pane and registry entry, and
@@ -199,7 +238,7 @@ harness it came from and tells it to re-orient from `git log`, `git status`
 and `git diff`, and the note is the place to hand over anything else the new
 session must know. The reload script also runs the target harness's worktree
 setup — Claude Code's Stop/PostToolUse hooks and directory trust, or Codex's
-project trust — since the worktree was only prepared for the harness it was
+project trust (OpenCode needs none) — since the worktree was only prepared for the harness it was
 spawned with. Asking for the harness the agent is already running is a plain
 reload; naming a CLI that is not on `PATH` is refused before anything is
 respawned.

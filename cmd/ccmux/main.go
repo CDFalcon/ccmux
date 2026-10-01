@@ -69,6 +69,7 @@ Examples:
 		taskCmd(),
 		trustCodexProjectCmd(),
 		trustClaudeProjectCmd(),
+		runOpenCodeCmd(),
 		registerAgentCmd(),
 		agentFailedCmd(),
 		queueAddCmd(),
@@ -317,7 +318,7 @@ func runSpawn(opts spawnOptions) (string, error) {
 	}
 
 	if opts.HarnessName != "" && !harness.Valid(opts.HarnessName) {
-		return "", fmt.Errorf("unknown harness: %s (expected claude or codex)", opts.HarnessName)
+		return "", fmt.Errorf("unknown harness: %s (expected claude, codex or opencode)", opts.HarnessName)
 	}
 
 	sessionID := getCurrentSessionID()
@@ -434,7 +435,7 @@ func spawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseBranch, "branch", "", "Base branch to create worktree from (default: project's configured base branch)")
 	cmd.Flags().StringVar(&worktreeName, "worktree-name", "", "Optional human-readable name for the worktree and branch")
 	cmd.Flags().StringVar(&promptContent, "prompts", "", "Custom prompt content to inject into the agent's system prompt")
-	cmd.Flags().StringVar(&harnessName, "harness", "", "Coding agent CLI to launch: claude or codex (default: project default)")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "Coding agent CLI to launch: claude, codex or opencode (default: project default)")
 	cmd.MarkFlagRequired("project")
 
 	return cmd
@@ -463,7 +464,7 @@ and tmux window, then launches a coding agent on the described task.
 Arguments:
   project      Name of a registered ccmux project (required)
   description  Task description handed to the new agent (required)
-  harness      Coding agent CLI: claude or codex (optional, default: project default)
+  harness      Coding agent CLI: claude, codex or opencode (optional, default: project default)
   base-branch  Base branch to create the worktree from (optional, default: project's configured base branch)
   branch-name  Human-readable name for the worktree and branch (optional)
 
@@ -1047,7 +1048,7 @@ fi
 var launcherFileSuffixes = []string{
 	".sh", "-review.sh", "-recovery.sh", "-placeholder.sh",
 	"-ci-fix.sh", "-merge-conflict.sh", "-restart.sh", "-reload.sh", "-prompts.txt",
-	"-system-prompt.txt",
+	"-system-prompt.txt", "-opencode-session.txt", "-opencode-prompt.txt",
 }
 
 // removeLauncherFiles deletes an agent's launcher scripts and prompts file.
@@ -1663,7 +1664,7 @@ const reloadDelay = 2 * time.Second
 func reloadCmd() *cobra.Command {
 	var harnessName string
 	cmd := &cobra.Command{
-		Use:          "reload [--harness claude|codex] [note...]",
+		Use:          "reload [--harness claude|codex|opencode] [note...]",
 		Short:        "Restart your own harness in place, resuming this conversation (agent-facing)",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -1733,7 +1734,7 @@ func reloadCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&harnessName, "harness", "", "Switch the pane to this coding agent CLI (claude or codex) instead of resuming the current one")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "Switch the pane to this coding agent CLI (claude, codex or opencode) instead of resuming the current one")
 	cmd.Flags().SetInterspersed(false)
 	return cmd
 }
@@ -1749,7 +1750,7 @@ func reloadTarget(current harness.Type, flag string) (harness.Type, bool, error)
 		return current, false, nil
 	}
 	if !harness.Valid(flag) {
-		return current, false, fmt.Errorf("unknown harness: %s (expected claude or codex)", flag)
+		return current, false, fmt.Errorf("unknown harness: %s (expected claude, codex or opencode)", flag)
 	}
 	target := harness.Parse(flag)
 	if target == current {
