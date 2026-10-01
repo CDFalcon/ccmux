@@ -871,7 +871,7 @@ func TestWriteReloadScript_ShouldResumeConversation_WithNoteAndTelemetry(t *test
 	for _, want := range []string{
 		harness.Claude.ContinueWithPromptCommand(), // resumes, does not start over
 		note,                          // the note reaches the resumed agent
-		"the original task",           // Codex-style fresh sessions need it; harmless for Claude
+		"the original task",           // a Codex resume that finds no session starts fresh and needs it
 		"OTEL_EXPORTER_OTLP_ENDPOINT", // cost telemetry survives the reload
 		"ccmux agent-stopped",         // exit capture keeps the status machine honest
 		"do NOT add a --draft flag",   // draftPRs=false threaded through

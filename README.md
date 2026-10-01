@@ -167,8 +167,9 @@ ccmux reload [note...]   # restart the harness in your pane, resuming this conve
 A couple of seconds after the command returns, ccmux respawns the agent's
 pane with the same launcher shape as a restart: same worktree, branch, system
 prompt and cost telemetry, exit capture intact. Claude Code resumes the
-conversation with `--continue`; Codex, which cannot resume, starts a fresh
-session seeded with the original task. Either way the agent's first message
+conversation with `--continue`, Codex with `codex resume --last` (the latest
+Codex session in the worktree). Either way the original task is restated, so
+a Codex worktree with no session to resume starts fresh with it. Either way the agent's first message
 explains that it reloaded itself and carries the optional note, which is a
 handy way to hand instructions across the restart:
 

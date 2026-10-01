@@ -16,8 +16,8 @@ import (
 // Nothing in the file name ties a rollout to a ccmux agent; the link is the
 // `session_meta` line at the top of the file, whose payload.cwd is the
 // directory Codex was started in — the agent's worktree. A single agent can
-// own several rollouts (ccmux starts a fresh Codex thread on `ccmux reload`
-// and for follow-up prompts, and Codex sub-agents fork their own), so every
+// own several rollouts (a `ccmux reload --harness codex` starts a fresh Codex
+// thread, and Codex sub-agents fork their own), so every
 // rollout whose cwd matches is summed.
 
 // codexHome returns the directory Codex keeps its state in, honouring the
