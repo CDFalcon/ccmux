@@ -12,7 +12,7 @@
 
 A terminal-based orchestrator for managing multiple coding agents working on tasks in parallel. Provides a unified tmux-backed interface to spawn, monitor, intervene with, and manage concurrent AI agents across git projects.
 
-ccmux can drive [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://developers.openai.com/codex/cli) or [OpenCode](https://opencode.ai) as the underlying agent ("harness"). You pick the harness when creating a task, and each project has a configurable default harness (set it from the Manage Projects screen).
+ccmux can drive [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://developers.openai.com/codex/cli), [OpenCode](https://opencode.ai) or [Pi](https://github.com/earendil-works/pi) as the underlying agent ("harness"). You pick the harness when creating a task, and each project has a configurable default harness (set it from the Manage Projects screen).
 
 When spawned, each agent gets its own git worktree, branch, and tmux window. ccmux will watch each agent while they work, queuing user actions (e.g. PR reviews) as appropriate. After an agent's PR is marked as accepted by the user, its worktree will be automatically cleaned up. Agents will be automatically notified when their PRs fail CI, have merge conflicts, or receive merge conflicts. Users will only be notified to review PRs which are fully ready to merge.
 
@@ -48,6 +48,10 @@ npm install -g @openai/codex
 brew install anomalyco/tap/opencode   # or: npm install -g opencode-ai
 opencode auth login                   # choose OpenAI: ChatGPT Plus/Pro or an API key
 
+# (Optional) Install Pi, Earendil's minimal open-source coding agent, then
+# run `pi` once and use /login to sign in to OpenAI (API key or ChatGPT)
+npm install -g @earendil-works/pi-coding-agent
+
 # (Optional) Install rift for fast copy-on-write worktrees
 # https://github.com/anomalyco/rift
 npm install -g rift-snapshot
@@ -81,6 +85,10 @@ npm install -g @openai/codex
 brew install anomalyco/tap/opencode   # or: npm install -g opencode-ai
 opencode auth login                   # choose OpenAI: ChatGPT Plus/Pro or an API key
 
+# (Optional) Install Pi, Earendil's minimal open-source coding agent, then
+# run `pi` once and use /login to sign in to OpenAI (API key or ChatGPT)
+npm install -g @earendil-works/pi-coding-agent
+
 # (Optional) Install rift for fast copy-on-write worktrees
 # https://github.com/anomalyco/rift
 npm install -g rift-snapshot
@@ -99,7 +107,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 1. **Start a session:** `ccmux` (or `ccmux <name>` for a named session).
 
-2. **Register a project:** Press `P` to open project management, then `a` to add a git repository. Press `enter` on a project to edit it — including its default harness (Claude Code, Codex or OpenCode).
+2. **Register a project:** Press `P` to open project management, then `a` to add a git repository. Press `enter` on a project to edit it — including its default harness (Claude Code, Codex, OpenCode or Pi).
 
 3. **Spawn an agent:** Press `n`, select a project, pick the harness (defaults to the project's default), choose a base branch, and describe the task. ccmux creates a worktree and launches the selected agent.
 
@@ -135,6 +143,26 @@ OpenCode merges that with your config, so neither the worktree nor your
 OpenCode's permission prompts the way Claude Code agents run with
 `--dangerously-skip-permissions`.
 
+## Pi
+
+The `pi` harness runs [Pi](https://github.com/earendil-works/pi) (MIT).
+Like OpenCode, it starts on `openai/gpt-6-astra` by default. To change the
+model, set `CCMUX_PI_MODEL`:
+
+- `openai-codex/gpt-6-astra` for a ChatGPT-subscription login;
+- any other Pi model pattern, including a `:<thinking>` suffix;
+- the empty string to use Pi's own settings.
+
+ccmux loads a small extension for each run with `--extension`. It reports
+end-of-turn on Pi's `agent_settled` event and runs `ccmux ci-wait` after
+`gh pr create` or `git push`. ccmux's system prompt reaches Pi as a file
+through `--append-system-prompt`. Resumes use `pi --continue`, which Pi
+already scopes to the worktree. Cost comes from Pi's JSONL session files.
+
+Pi does not ask for approval per tool. ccmux passes `--approve` so a
+repository's own `.pi` extensions load without the project-trust dialog,
+the same way it pre-trusts worktrees for Claude Code and Codex.
+
 ## Spawning tasks from the CLI
 
 Agents (or you) can spawn new tasks from inside a ccmux session without going
@@ -148,7 +176,7 @@ Only the project name and description are required. The remaining arguments
 are optional and positional — pass `-` to skip one while still supplying a
 later one:
 
-- `harness` — `claude`, `codex` or `opencode` (defaults to the project's configured harness)
+- `harness` — `claude`, `codex`, `opencode` or `pi` (defaults to the project's configured harness)
 - `base-branch` — branch the worktree is created from (defaults to the project's configured base branch). Must exist on the project repo's `origin` remote, or the command fails fast with the list of available branches.
 - `branch-name` — human-readable name for the worktree and branch
 
@@ -206,8 +234,9 @@ pane with the same launcher shape as a restart: same worktree, branch, system
 prompt and cost telemetry, exit capture intact. Claude Code resumes the
 conversation with `--continue`, Codex with `codex resume --last` (the latest
 Codex session in the worktree), OpenCode with `--session` on the agent's own
-recorded session. Either way the original task is restated, so a Codex or
-OpenCode worktree with no session to resume starts fresh with it. Either way the agent's first message
+recorded session, Pi with `--continue` (Pi keeps sessions per working
+directory). Either way the original task is restated, so a Codex, OpenCode or
+Pi worktree with no session to resume starts fresh with it. Either way the agent's first message
 explains that it reloaded itself and carries the optional note, which is a
 handy way to hand instructions across the restart:
 
@@ -227,6 +256,7 @@ its shared pane), so it cannot respawn the wrong program.
 ccmux reload --harness codex [note...]   # move this agent to Codex
 ccmux reload --harness claude [note...]  # ...or to Claude Code
 ccmux reload --harness opencode [note...] # ...or to OpenCode
+ccmux reload --harness pi [note...]       # ...or to Pi
 ```
 
 The agent keeps its worktree, branch, shared pane and registry entry, and
@@ -238,7 +268,7 @@ harness it came from and tells it to re-orient from `git log`, `git status`
 and `git diff`, and the note is the place to hand over anything else the new
 session must know. The reload script also runs the target harness's worktree
 setup — Claude Code's Stop/PostToolUse hooks and directory trust, or Codex's
-project trust (OpenCode needs none) — since the worktree was only prepared for the harness it was
+project trust (OpenCode and Pi need none) — since the worktree was only prepared for the harness it was
 spawned with. Asking for the harness the agent is already running is a plain
 reload; naming a CLI that is not on `PATH` is refused before anything is
 respawned.
