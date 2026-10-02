@@ -124,4 +124,10 @@ func init() {
 		// `gh pr merge` path when MergeWhenAccepted is on.
 		return data, nil
 	})
+	migrations.Register(11, func(data []byte) ([]byte, error) {
+		// v11 -> v12: add the optional `cleanup_on_merge` field. Existing
+		// projects leave it unset, which resolves to true via
+		// EffectiveCleanupOnMerge — merged agents keep being cleaned up.
+		return data, nil
+	})
 }

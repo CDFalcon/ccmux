@@ -2,7 +2,7 @@ package project
 
 import "github.com/CDFalcon/ccmux/internal/harness"
 
-const CurrentSchemaVersion = 11
+const CurrentSchemaVersion = 12
 
 const SetupStatusSettingUp = "setting_up"
 
@@ -35,6 +35,12 @@ type Project struct {
 	// EffectiveDraftPRs, so projects created before this setting existed
 	// keep the original draft-PR behaviour.
 	DraftPRs *bool `json:"draft_prs,omitempty"`
+	// CleanupOnMerge controls whether ccmux tears an agent down (kills its
+	// window, removes its worktree) when CI polling sees its PR merge. When
+	// false the agent is kept alive and returned to idle so it can take
+	// follow-up work. A nil pointer means "unset" and resolves to true via
+	// EffectiveCleanupOnMerge, preserving the original behaviour.
+	CleanupOnMerge *bool `json:"cleanup_on_merge,omitempty"`
 }
 
 func (p *Project) IsSettingUp() bool {
@@ -72,6 +78,16 @@ func (p *Project) EffectiveDraftPRs() bool {
 		return true
 	}
 	return *p.DraftPRs
+}
+
+// EffectiveCleanupOnMerge reports whether agents in this project should be
+// cleaned up automatically once their PR merges. It defaults to true when
+// unset (CleanupOnMerge == nil) so existing projects are unaffected.
+func (p *Project) EffectiveCleanupOnMerge() bool {
+	if p.CleanupOnMerge == nil {
+		return true
+	}
+	return *p.CleanupOnMerge
 }
 
 type storeData struct {

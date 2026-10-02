@@ -1209,3 +1209,51 @@ func TestEffectiveHarness_ShouldReflectStoredValue(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveCleanupOnMerge_ShouldDefaultToTrue_GivenUnset(t *testing.T) {
+	// Setup.
+	p := &Project{Name: "p", Path: "/repo"}
+
+	// Execute & Assert.
+	if !p.EffectiveCleanupOnMerge() {
+		t.Error("expected EffectiveCleanupOnMerge to default to true when CleanupOnMerge is unset")
+	}
+}
+
+func TestEffectiveCleanupOnMerge_ShouldReflectExplicitValue_GivenSet(t *testing.T) {
+	// Setup.
+	yes, no := true, false
+
+	// Execute & Assert.
+	if !(&Project{CleanupOnMerge: &yes}).EffectiveCleanupOnMerge() {
+		t.Error("expected EffectiveCleanupOnMerge to be true when CleanupOnMerge is explicitly true")
+	}
+	if (&Project{CleanupOnMerge: &no}).EffectiveCleanupOnMerge() {
+		t.Error("expected EffectiveCleanupOnMerge to be false when CleanupOnMerge is explicitly false")
+	}
+}
+
+func TestUpdate_ShouldPersistCleanupOnMerge_GivenFalse(t *testing.T) {
+	// Setup.
+	store, repoDir, cleanup := setupTestStore(t)
+	defer cleanup()
+	store.Add(&Project{Name: "keep-agents", Path: repoDir})
+
+	// Execute.
+	err := store.Update("keep-agents", func(p *Project) {
+		no := false
+		p.CleanupOnMerge = &no
+	})
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	retrieved, _ := store.Get("keep-agents")
+	if retrieved.CleanupOnMerge == nil || *retrieved.CleanupOnMerge {
+		t.Error("expected CleanupOnMerge to persist as false")
+	}
+	if retrieved.EffectiveCleanupOnMerge() {
+		t.Error("expected EffectiveCleanupOnMerge to be false after persisting false")
+	}
+}
