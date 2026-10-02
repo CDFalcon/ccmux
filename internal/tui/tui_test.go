@@ -3011,3 +3011,121 @@ func TestCIWaitLabel_ShouldFallBackToPlainLabel_GivenNoProgressYet(t *testing.T)
 		t.Errorf("unexpected label before the first poll: %q", label)
 	}
 }
+
+func TestLoadFromProject_ShouldShowCleanupOnMergeValue_GivenEachState(t *testing.T) {
+	yes := true
+	no := false
+	cases := []struct {
+		name           string
+		cleanupOnMerge *bool
+		want           string
+	}{
+		{"unset defaults to yes", nil, "yes"},
+		{"explicitly enabled", &yes, "yes"},
+		{"explicitly disabled", &no, "no"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Setup.
+			ef := newEditProjectForm()
+			p := &project.Project{Name: "test", Path: "/test", CleanupOnMerge: tc.cleanupOnMerge}
+
+			// Execute.
+			ef.loadFromProject(p)
+
+			// Assert.
+			if got := ef.cleanupOnMergeInput.Value(); got != tc.want {
+				t.Errorf("cleanupOnMergeInput value = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// newMergeTestModel wires a model to a throwaway HOME so the project store
+// it uses never touches the real ~/.ccmux/projects.json.
+func newMergeTestModel(t *testing.T, cleanupOnMerge *bool) model {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModelWithStoreAndQueue(t)
+	projectStore, err := project.NewStore()
+	if err != nil {
+		t.Fatalf("failed to create project store: %v", err)
+	}
+	repoDir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repoDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %s: %v", out, err)
+	}
+	if err := projectStore.Add(&project.Project{Name: "proj", Path: repoDir, CleanupOnMerge: cleanupOnMerge}); err != nil {
+		t.Fatalf("failed to seed project: %v", err)
+	}
+	m.projectStore = projectStore
+	return m
+}
+
+func TestPRMerged_ShouldKeepAgentIdle_GivenCleanupOnMergeDisabled(t *testing.T) {
+	// Setup.
+	no := false
+	m := newMergeTestModel(t, &no)
+	a := &agent.Agent{
+		ID:          "agent-1",
+		ProjectName: "proj",
+		Status:      agent.StatusWaitingReview,
+		PRURL:       "https://github.com/owner/repo/pull/1",
+		CIWaitAt:    time.Now(),
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	m.queueManager.Add(queue.ItemTypePRReady, "agent-1", "PR ready", a.PRURL)
+
+	// Execute.
+	m.Update(ciCheckResultMsg{agentID: "agent-1", prURL: a.PRURL, isMerged: true})
+
+	// Assert. The agent survives as idle with its PR cleared so polling
+	// stops and its next PR can be detected; its queue items are gone.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("expected agent to be kept, got error: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected status %s, got %s", agent.StatusReady, reloaded.Status)
+	}
+	if reloaded.PRURL != "" {
+		t.Errorf("expected PRURL cleared, got %q", reloaded.PRURL)
+	}
+	items, _ := m.queueManager.List()
+	for _, it := range items {
+		if it.AgentID == "agent-1" {
+			t.Errorf("expected queue items for agent cleared, found %v", it.Type)
+		}
+	}
+}
+
+func TestPRMerged_ShouldMarkAgentMerged_GivenCleanupOnMergeUnset(t *testing.T) {
+	// Setup. Unset resolves to the default (clean up).
+	m := newMergeTestModel(t, nil)
+	a := &agent.Agent{
+		ID:          "agent-1",
+		ProjectName: "proj",
+		Status:      agent.StatusWaitingReview,
+		PRURL:       "https://github.com/owner/repo/pull/1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	// Execute. Only the Update is driven; the returned cmd (which would spawn
+	// `ccmux cleanup`) is deliberately not run.
+	m.Update(ciCheckResultMsg{agentID: "agent-1", prURL: a.PRURL, isMerged: true})
+
+	// Assert.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusMerged {
+		t.Errorf("expected status %s, got %s", agent.StatusMerged, reloaded.Status)
+	}
+}

@@ -210,12 +210,13 @@ type editProjectFormModel struct {
 	useTrunkMergeInput     textinput.Model
 	harnessInput           textinput.Model
 	draftPRsInput          textinput.Model
-	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=useTrunkMerge, 7=harness, 8=draftPRs
+	cleanupOnMergeInput    textinput.Model
+	focusIndex             int // 0=path, 1=baseBranch, 2=fastWT, 3=startupScript, 4=teardownScript, 5=mergeWhenAccepted, 6=useTrunkMerge, 7=harness, 8=draftPRs, 9=cleanupOnMerge
 }
 
 // editProjectFieldCount is the number of focusable fields in the edit-project
 // form; focusIndex cycles modulo this value.
-const editProjectFieldCount = 9
+const editProjectFieldCount = 10
 
 type promptFormModel struct {
 	nameInput    textinput.Model
@@ -389,6 +390,11 @@ func newEditProjectForm() editProjectFormModel {
 	draftPRsInput.Width = 10
 	draftPRsInput.CharLimit = 5
 
+	cleanupOnMergeInput := textinput.New()
+	cleanupOnMergeInput.Placeholder = "yes"
+	cleanupOnMergeInput.Width = 10
+	cleanupOnMergeInput.CharLimit = 5
+
 	return editProjectFormModel{
 		pathInput:              pathInput,
 		baseBranchInput:        baseBranchInput,
@@ -399,6 +405,7 @@ func newEditProjectForm() editProjectFormModel {
 		useTrunkMergeInput:     useTrunkMergeInput,
 		harnessInput:           harnessInput,
 		draftPRsInput:          draftPRsInput,
+		cleanupOnMergeInput:    cleanupOnMergeInput,
 		focusIndex:             0,
 	}
 }
@@ -413,6 +420,7 @@ func (ef *editProjectFormModel) blurAll() {
 	ef.useTrunkMergeInput.Blur()
 	ef.harnessInput.Blur()
 	ef.draftPRsInput.Blur()
+	ef.cleanupOnMergeInput.Blur()
 }
 
 func (ef *editProjectFormModel) focusCurrent() {
@@ -436,6 +444,8 @@ func (ef *editProjectFormModel) focusCurrent() {
 		ef.harnessInput.Focus()
 	case 8:
 		ef.draftPRsInput.Focus()
+	case 9:
+		ef.cleanupOnMergeInput.Focus()
 	}
 }
 
@@ -462,6 +472,7 @@ func (ef *editProjectFormModel) loadFromProject(p *project.Project) {
 	ef.useTrunkMergeInput.SetValue(yesNo(p.UseTrunkMerge))
 	ef.harnessInput.SetValue(string(p.EffectiveHarness()))
 	ef.draftPRsInput.SetValue(yesNo(p.EffectiveDraftPRs()))
+	ef.cleanupOnMergeInput.SetValue(yesNo(p.EffectiveCleanupOnMerge()))
 	ef.focusIndex = 0
 	ef.focusCurrent()
 }
@@ -1235,6 +1246,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.isMerged {
 			m.queueManager.RemoveByAgent(msg.agentID)
 			delete(m.ciCheckProgress, msg.agentID)
+			if !m.cleanupOnMergeFor(msg.agentID) {
+				// The project opted out of post-merge cleanup: keep the
+				// agent's window and worktree and park it as idle. Clearing
+				// PRURL stops CI polling for the merged PR (otherwise every
+				// poll would re-enter this branch) and lets PR detection pick
+				// up the next PR the agent opens. StatusMerged is not used
+				// here because it is terminal — recovery and prune treat it
+				// as a teardown in progress and would remove the agent.
+				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
+					ag.Status = agent.StatusReady
+					ag.PRURL = ""
+					ag.CIWaitAt = time.Time{}
+					ag.CILastNotifiedSummary = ""
+				})
+				agentID := msg.agentID
+				return m, tea.Batch(m.refreshCmd(), func() tea.Msg {
+					return successMsg{fmt.Sprintf("PR merged; keeping agent %s (cleanup on merge is off)", agentID)}
+				})
+			}
 			m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
 				ag.Status = agent.StatusMerged
 			})
@@ -1575,6 +1605,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
 		case 8:
 			m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
+		case 9:
+			m.editProjectForm.cleanupOnMergeInput, cmd = m.editProjectForm.cleanupOnMergeInput.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -2385,6 +2417,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		useTrunkMerge := trunkStr == "yes" || trunkStr == "true" || trunkStr == "y"
 		draftStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.draftPRsInput.Value()))
 		draftPRs := draftStr == "yes" || draftStr == "true" || draftStr == "y"
+		cleanupStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.cleanupOnMergeInput.Value()))
+		cleanupOnMerge := cleanupStr == "yes" || cleanupStr == "true" || cleanupStr == "y"
 		// An unrecognised harness value resolves to "" so EffectiveHarness
 		// falls back to the default rather than persisting garbage.
 		harnessStr := strings.ToLower(strings.TrimSpace(m.editProjectForm.harnessInput.Value()))
@@ -2403,7 +2437,7 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if useFastWT && !alreadyHasFastWT {
 			m.projSetupBuffers[projName] = &projImportBuffer{}
 		}
-		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, useTrunkMerge, harnessStr, draftPRs)
+		return m, m.updateProjectCmd(projName, path, baseBranch, useFastWT, startupScript, teardownScript, mergeWhenAccepted, useTrunkMerge, harnessStr, draftPRs, cleanupOnMerge)
 	}
 
 	var cmd tea.Cmd
@@ -2426,6 +2460,8 @@ func (m model) handleEditProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editProjectForm.harnessInput, cmd = m.editProjectForm.harnessInput.Update(msg)
 	case 8:
 		m.editProjectForm.draftPRsInput, cmd = m.editProjectForm.draftPRsInput.Update(msg)
+	case 9:
+		m.editProjectForm.cleanupOnMergeInput, cmd = m.editProjectForm.cleanupOnMergeInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -3049,7 +3085,7 @@ func (m model) addProjectCmd(name, path string, useFastWT bool) tea.Cmd {
 	}
 }
 
-func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted, useTrunkMerge bool, defaultHarness string, draftPRs bool) tea.Cmd {
+func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, startupScript, teardownScript string, mergeWhenAccepted, useTrunkMerge bool, defaultHarness string, draftPRs, cleanupOnMerge bool) tea.Cmd {
 	buf := m.projSetupBuffers[name]
 	return func() tea.Msg {
 		// Only run rift init when the user has just opted in (or moved
@@ -3070,6 +3106,8 @@ func (m model) updateProjectCmd(name, path, baseBranch string, useFastWT bool, s
 			p.UseTrunkMerge = useTrunkMerge
 			draft := draftPRs
 			p.DraftPRs = &draft
+			cleanup := cleanupOnMerge
+			p.CleanupOnMerge = &cleanup
 			if needsRiftInit {
 				p.SetupStatus = project.SetupStatusSettingUp
 			}
@@ -3206,6 +3244,27 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 		}()
 		return successMsg{fmt.Sprintf("Cleaning up agent %s...", agentID)}
 	}
+}
+
+// cleanupOnMergeFor reports whether the agent's project wants agents torn
+// down once their PR merges. Agents with no project, or whose project can't
+// be loaded, keep the default (true).
+func (m model) cleanupOnMergeFor(agentID string) bool {
+	var projectName string
+	for _, ag := range m.agents {
+		if ag.ID == agentID {
+			projectName = ag.ProjectName
+			break
+		}
+	}
+	if projectName == "" {
+		return true
+	}
+	proj, err := m.projectStore.Get(projectName)
+	if err != nil {
+		return true
+	}
+	return proj.EffectiveCleanupOnMerge()
 }
 
 func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {

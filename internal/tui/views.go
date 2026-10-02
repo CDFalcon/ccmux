@@ -875,6 +875,7 @@ func renderEditProjectView(m model) string {
 		{"Use Trunk merge queue (yes/no):", m.editProjectForm.useTrunkMergeInput.View()},
 		{"Default harness (claude/codex/opencode/pi):", m.editProjectForm.harnessInput.View()},
 		{"Draft PRs (yes/no):", m.editProjectForm.draftPRsInput.View()},
+		{"Clean up agents when PR merges (yes/no):", m.editProjectForm.cleanupOnMergeInput.View()},
 	}
 
 	// Each field renders as label + bordered input + blank line ≈ 4-5
