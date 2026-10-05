@@ -3129,3 +3129,154 @@ func TestPRMerged_ShouldMarkAgentMerged_GivenCleanupOnMergeUnset(t *testing.T) {
 		t.Errorf("expected status %s, got %s", agent.StatusMerged, reloaded.Status)
 	}
 }
+
+// installFakeGh puts a `gh` on PATH that records each invocation's arguments,
+// one line per call, and succeeds. It returns the path of that log.
+func installFakeGh(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "gh.log")
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
+// newAcceptTestModel seeds a project with cleanup on merge off, plus one agent
+// whose PR sits selected in the review queue.
+func newAcceptTestModel(t *testing.T, mergeWhenAccepted bool) (model, *agent.Agent) {
+	t.Helper()
+	no := false
+	m := newMergeTestModel(t, &no)
+	if err := m.projectStore.Update("proj", func(p *project.Project) {
+		p.MergeWhenAccepted = mergeWhenAccepted
+	}); err != nil {
+		t.Fatalf("failed to update project: %v", err)
+	}
+	a := &agent.Agent{
+		ID:          "agent-1",
+		ProjectName: "proj",
+		Status:      agent.StatusWaitingReview,
+		PRURL:       "https://github.com/owner/repo/pull/1",
+		CIWaitAt:    time.Now(),
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+	if _, err := m.queueManager.Add(queue.ItemTypePRReady, "agent-1", "PR ready", a.PRURL); err != nil {
+		t.Fatalf("failed to seed queue item: %v", err)
+	}
+	m.queueItems, _ = m.queueManager.List()
+	m.view = ViewReview
+	m.selectedIndex = 0
+	return m, a
+}
+
+func TestAcceptPR_ShouldMergeAndKeepAgent_GivenCleanupOnMergeDisabled(t *testing.T) {
+	// Setup.
+	ghLog := installFakeGh(t)
+	m, a := newAcceptTestModel(t, true)
+
+	// Execute.
+	result, cmd := m.handleReviewKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = result.(model)
+	accepted, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("expected an accept command")
+	}
+	msg := cmd()
+
+	// Assert. Accepting must not mark the agent as being torn down, and
+	// after the merge it is parked idle with its PR cleared.
+	if accepted.Status == agent.StatusCleaningUp {
+		t.Errorf("expected accept not to mark the agent %s", agent.StatusCleaningUp)
+	}
+	if _, ok := msg.(successMsg); !ok {
+		t.Fatalf("expected successMsg, got %T: %v", msg, msg)
+	}
+	logged, _ := os.ReadFile(ghLog)
+	if !strings.Contains(string(logged), "pr merge "+a.PRURL) {
+		t.Errorf("expected the PR to be merged, gh calls were:\n%s", logged)
+	}
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("expected agent to be kept, got error: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected status %s, got %s", agent.StatusReady, reloaded.Status)
+	}
+	if reloaded.PRURL != "" {
+		t.Errorf("expected PRURL cleared, got %q", reloaded.PRURL)
+	}
+	if items, _ := m.queueManager.List(); len(items) != 0 {
+		t.Errorf("expected the review item removed, got %d queue items", len(items))
+	}
+}
+
+func TestAcceptPR_ShouldKeepAgentTrackingPR_GivenCleanupOnMergeDisabledAndNoMerge(t *testing.T) {
+	// Setup.
+	ghLog := installFakeGh(t)
+	m, a := newAcceptTestModel(t, false)
+
+	// Execute.
+	_, cmd := m.handleReviewKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if cmd == nil {
+		t.Fatal("expected an accept command")
+	}
+	msg := cmd()
+
+	// Assert. Nothing is merged, and the agent keeps its PR so CI polling
+	// parks it once the PR is merged elsewhere.
+	if _, ok := msg.(successMsg); !ok {
+		t.Fatalf("expected successMsg, got %T: %v", msg, msg)
+	}
+	if logged, _ := os.ReadFile(ghLog); len(logged) != 0 {
+		t.Errorf("expected no gh calls, got:\n%s", logged)
+	}
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("expected agent to be kept, got error: %v", err)
+	}
+	if reloaded.Status != agent.StatusWaitingReview {
+		t.Errorf("expected status %s, got %s", agent.StatusWaitingReview, reloaded.Status)
+	}
+	if reloaded.PRURL != a.PRURL {
+		t.Errorf("expected PRURL %q kept, got %q", a.PRURL, reloaded.PRURL)
+	}
+	if items, _ := m.queueManager.List(); len(items) != 0 {
+		t.Errorf("expected the review item removed, got %d queue items", len(items))
+	}
+}
+
+func TestCICheckResult_ShouldIgnoreResult_GivenAgentNoLongerTracksPR(t *testing.T) {
+	// Setup. The agent's PR was merged from the review queue while a poll
+	// was in flight, so the agent is already parked with no PR.
+	no := false
+	m := newMergeTestModel(t, &no)
+	a := &agent.Agent{ID: "agent-1", ProjectName: "proj", Status: agent.StatusReady}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.agents = []*agent.Agent{a}
+
+	// Execute.
+	m.Update(ciCheckResultMsg{agentID: "agent-1", prURL: "https://github.com/owner/repo/pull/1", status: ciStatusPassed, completed: 1, total: 1})
+
+	// Assert. The stale "CI passed" must not put the merged PR back up for review.
+	reloaded, err := m.agentStore.Get("agent-1")
+	if err != nil {
+		t.Fatalf("failed to reload agent: %v", err)
+	}
+	if reloaded.Status != agent.StatusReady {
+		t.Errorf("expected status %s, got %s", agent.StatusReady, reloaded.Status)
+	}
+	if items, _ := m.queueManager.List(); len(items) != 0 {
+		t.Errorf("expected no queue items, got %d", len(items))
+	}
+}

@@ -36,10 +36,12 @@ type Project struct {
 	// keep the original draft-PR behaviour.
 	DraftPRs *bool `json:"draft_prs,omitempty"`
 	// CleanupOnMerge controls whether ccmux tears an agent down (kills its
-	// window, removes its worktree) when CI polling sees its PR merge. When
-	// false the agent is kept alive and returned to idle so it can take
-	// follow-up work. A nil pointer means "unset" and resolves to true via
-	// EffectiveCleanupOnMerge, preserving the original behaviour.
+	// window, removes its worktree) when its PR merges — whether CI polling
+	// sees the merge or ccmux merges it on accept — and when its PR is
+	// accepted from the review queue. When false the agent is kept alive and
+	// returned to idle so it can take follow-up work. A nil pointer means
+	// "unset" and resolves to true via EffectiveCleanupOnMerge, preserving
+	// the original behaviour.
 	CleanupOnMerge *bool `json:"cleanup_on_merge,omitempty"`
 }
 

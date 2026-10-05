@@ -1242,24 +1242,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, nil
 		}
+		// Drop a result for a PR the agent no longer tracks. A poll can
+		// still be in flight when the PR is merged from the review queue
+		// in a project with cleanup on merge off, which parks the agent
+		// and clears its PRURL; applying the stale "CI passed" result
+		// would put the merged PR back in the review queue.
+		if stored, err := m.agentStore.Get(msg.agentID); err == nil && stored.PRURL != msg.prURL {
+			return m, nil
+		}
 
 		if msg.isMerged {
 			m.queueManager.RemoveByAgent(msg.agentID)
 			delete(m.ciCheckProgress, msg.agentID)
 			if !m.cleanupOnMergeFor(msg.agentID) {
 				// The project opted out of post-merge cleanup: keep the
-				// agent's window and worktree and park it as idle. Clearing
-				// PRURL stops CI polling for the merged PR (otherwise every
-				// poll would re-enter this branch) and lets PR detection pick
-				// up the next PR the agent opens. StatusMerged is not used
-				// here because it is terminal — recovery and prune treat it
-				// as a teardown in progress and would remove the agent.
-				m.agentStore.Update(msg.agentID, func(ag *agent.Agent) {
-					ag.Status = agent.StatusReady
-					ag.PRURL = ""
-					ag.CIWaitAt = time.Time{}
-					ag.CILastNotifiedSummary = ""
-				})
+				// agent's window and worktree and park it as idle.
+				parkMergedAgent(m.agentStore, msg.agentID)
 				agentID := msg.agentID
 				return m, tea.Batch(m.refreshCmd(), func() tea.Msg {
 					return successMsg{fmt.Sprintf("PR merged; keeping agent %s (cleanup on merge is off)", agentID)}
@@ -2230,22 +2228,26 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Trunk-merge projects park the agent in WaitingMergeQueue
 			// until trunk actually merges the PR, so we shouldn't show
 			// "cleaning up" — the cleanup only happens after the merge
-			// queue reports MERGED. Everyone else goes straight to
-			// CleaningUp for the legacy direct-merge / accept-without-
-			// merge paths.
+			// queue reports MERGED. Projects with cleanup on merge off
+			// keep the agent, so its status is left for acceptPRCmd to
+			// settle. Everyone else goes straight to CleaningUp for the
+			// legacy direct-merge / accept-without-merge paths.
 			usesTrunk := false
 			if a.ProjectName != "" {
 				if proj, err := m.projectStore.Get(a.ProjectName); err == nil {
 					usesTrunk = proj.UseTrunkMerge
 				}
 			}
-			m.agentStore.Update(a.ID, func(ag *agent.Agent) {
-				if usesTrunk {
+			switch {
+			case usesTrunk:
+				m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 					ag.Status = agent.StatusWaitingMergeQueue
-				} else {
+				})
+			case m.projectCleanupOnMerge(a.ProjectName):
+				m.agentStore.Update(a.ID, func(ag *agent.Agent) {
 					ag.Status = agent.StatusCleaningUp
-				}
-			})
+				})
+			}
 			return m, m.acceptPRCmd(a)
 		}
 	case "c":
@@ -3250,13 +3252,17 @@ func (m model) cleanupAgentCmd(a *agent.Agent) tea.Cmd {
 // down once their PR merges. Agents with no project, or whose project can't
 // be loaded, keep the default (true).
 func (m model) cleanupOnMergeFor(agentID string) bool {
-	var projectName string
 	for _, ag := range m.agents {
 		if ag.ID == agentID {
-			projectName = ag.ProjectName
-			break
+			return m.projectCleanupOnMerge(ag.ProjectName)
 		}
 	}
+	return true
+}
+
+// projectCleanupOnMerge reports the named project's cleanup-on-merge
+// setting, defaulting to true when there is no project or it can't be loaded.
+func (m model) projectCleanupOnMerge(projectName string) bool {
 	if projectName == "" {
 		return true
 	}
@@ -3265,6 +3271,21 @@ func (m model) cleanupOnMergeFor(agentID string) bool {
 		return true
 	}
 	return proj.EffectiveCleanupOnMerge()
+}
+
+// parkMergedAgent keeps an agent whose PR merged, in a project with cleanup
+// on merge off, and returns it to idle. Clearing PRURL stops CI polling for
+// the merged PR (otherwise every poll would see MERGED again) and lets PR
+// detection pick up the next PR the agent opens. StatusMerged is not used
+// because it is terminal: recovery and prune treat it as a teardown in
+// progress and would remove the agent.
+func parkMergedAgent(store *agent.Store, agentID string) {
+	store.Update(agentID, func(ag *agent.Agent) {
+		ag.Status = agent.StatusReady
+		ag.PRURL = ""
+		ag.CIWaitAt = time.Time{}
+		ag.CILastNotifiedSummary = ""
+	})
 }
 
 func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
@@ -3276,10 +3297,12 @@ func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 
 		var mergeWhenAccepted bool
 		var useTrunkMerge bool
+		cleanupOnMerge := true
 		if projectName != "" {
 			if proj, err := m.projectStore.Get(projectName); err == nil {
 				mergeWhenAccepted = proj.MergeWhenAccepted
 				useTrunkMerge = proj.UseTrunkMerge
+				cleanupOnMerge = proj.EffectiveCleanupOnMerge()
 			}
 		}
 
@@ -3312,6 +3335,18 @@ func (m model) acceptPRCmd(a *agent.Agent) tea.Cmd {
 				}
 				return errMsg{fmt.Errorf("merge PR failed: %s: %w", outStr, err)}
 			}
+		}
+
+		if !cleanupOnMerge {
+			// The project keeps agents after their PR merges, so accepting
+			// never tears the agent down.
+			if mergeWhenAccepted && prURL != "" {
+				parkMergedAgent(m.agentStore, agentID)
+				return successMsg{fmt.Sprintf("Merged PR; keeping agent %s (cleanup on merge is off)", agentID)}
+			}
+			// Nothing was merged here. Keep tracking the PR, so CI polling
+			// parks the agent as idle once the PR merges.
+			return successMsg{fmt.Sprintf("Accepted PR; keeping agent %s (cleanup on merge is off)", agentID)}
 		}
 
 		go func() {
