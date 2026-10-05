@@ -2267,11 +2267,38 @@ func removeAgentWorktree(a *agent.Agent) error {
 	}
 
 	wtManager := worktree.NewManager(repoRoot)
-	os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-	removeErr := wtManager.Remove(a.WorktreePath)
+
+	// A rift workspace keeps its branch in its own .git, so anything the agent
+	// never pushed exists nowhere else. Remove deletes rift's trashed copy
+	// outright only when nothing in it would be lost, and otherwise keeps it as
+	// the way back. Inspect before deleting .claude below: some repos track
+	// files there, and their deletion would read as uncommitted work.
+	keepRiftTrash := false
+	if worktree.IsRift(a.WorktreePath) {
+		if unsaved := worktree.Inspect(a.WorktreePath); !unsaved.IsClean() {
+			keepRiftTrash = true
+			logging.Log("teardown: keeping %s in rift's trash (%s)", a.WorktreePath, unsaved.Summary())
+		}
+	}
+	if !keepRiftTrash {
+		// A kept copy stays whole, uncommitted .claude files included.
+		os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
+	}
+
+	removeErr := wtManager.Remove(a.WorktreePath, keepRiftTrash)
 	if removeErr == nil || !dirExists(a.WorktreePath) {
+		if removeErr != nil {
+			// The worktree itself is gone; only deleting rift's trashed copy
+			// failed, and `rift gc` can still reclaim that.
+			logging.Log("teardown: removed %s, but %v", a.WorktreePath, removeErr)
+		}
 		wtManager.DeleteBranch(a.BranchName)
 		return nil
+	}
+	if keepRiftTrash {
+		// The plain delete below would destroy the work the trash was meant to
+		// keep. Leave the workspace in place and report.
+		return removeErr
 	}
 
 	// `git worktree remove` / `rift remove` can fail for reasons a plain
@@ -2391,12 +2418,8 @@ func killSessionCmd() *cobra.Command {
 
 			agents, _ := agentStore.List()
 			for _, a := range agents {
-				repoRoot, err := project.GetRepoRoot(a.WorktreePath)
-				if err == nil {
-					wtManager := worktree.NewManager(repoRoot)
-					os.RemoveAll(filepath.Join(a.WorktreePath, ".claude"))
-					wtManager.Remove(a.WorktreePath)
-					wtManager.DeleteBranch(a.BranchName)
+				if err := removeAgentWorktree(a); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree %s: %v\n", a.WorktreePath, err)
 				}
 				removeLauncherFiles(launcherDir, a.ID)
 			}
