@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 )
 
 type Settings struct {
@@ -69,7 +71,7 @@ func (s *Store) save(data *storeData) error {
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
+	if err := lockfile.WriteFileAtomic(s.filePath, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write settings file: %w", err)
 	}
 

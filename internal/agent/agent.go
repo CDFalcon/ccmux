@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 )
 
 type Store struct {
@@ -47,7 +49,9 @@ func (s *Store) load() (*storeData, error) {
 	var envelope struct {
 		Version int `json:"version"`
 	}
-	json.Unmarshal(raw, &envelope)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse agents file: %w", err)
+	}
 
 	if envelope.Version < CurrentSchemaVersion {
 		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
@@ -73,7 +77,7 @@ func (s *Store) save(data *storeData) error {
 		return fmt.Errorf("failed to marshal agents: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
+	if err := lockfile.WriteFileAtomic(s.filePath, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write agents file: %w", err)
 	}
 
@@ -83,6 +87,11 @@ func (s *Store) save(data *storeData) error {
 func (s *Store) Create(agent *Agent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := lockfile.Acquire(s.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := s.load()
 	if err != nil {
@@ -142,6 +151,11 @@ func (s *Store) List() ([]*Agent, error) {
 func (s *Store) Update(id string, updateFn func(*Agent)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := lockfile.Acquire(s.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := s.load()
 	if err != nil {
@@ -162,6 +176,11 @@ func (s *Store) Update(id string, updateFn func(*Agent)) error {
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := lockfile.Acquire(s.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := s.load()
 	if err != nil {

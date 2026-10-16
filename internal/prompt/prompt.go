@@ -10,6 +10,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 )
 
 type Store struct {
@@ -63,7 +65,7 @@ func (s *Store) save(data *storeData) error {
 		return fmt.Errorf("failed to marshal prompts: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
+	if err := lockfile.WriteFileAtomic(s.filePath, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write prompts file: %w", err)
 	}
 

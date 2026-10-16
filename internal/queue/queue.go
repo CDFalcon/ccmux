@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 )
 
 type Queue struct {
@@ -46,7 +48,9 @@ func (q *Queue) load() (*queueData, error) {
 	var envelope struct {
 		Version int `json:"version"`
 	}
-	json.Unmarshal(raw, &envelope)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse queue file: %w", err)
+	}
 
 	if envelope.Version < CurrentSchemaVersion {
 		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
@@ -72,7 +76,7 @@ func (q *Queue) save(data *queueData) error {
 		return fmt.Errorf("failed to marshal queue: %w", err)
 	}
 
-	if err := os.WriteFile(q.filePath, bytes, 0644); err != nil {
+	if err := lockfile.WriteFileAtomic(q.filePath, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write queue file: %w", err)
 	}
 
@@ -82,6 +86,11 @@ func (q *Queue) save(data *queueData) error {
 func (q *Queue) Add(itemType ItemType, agentID, summary, details string) (*QueueItem, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	lock, err := lockfile.Acquire(q.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := q.load()
 	if err != nil {
@@ -138,6 +147,11 @@ func (q *Queue) ListByType(itemType ItemType) ([]*QueueItem, error) {
 func (q *Queue) Remove(id string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	lock, err := lockfile.Acquire(q.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := q.load()
 	if err != nil {
@@ -166,6 +180,11 @@ func (q *Queue) Remove(id string) error {
 func (q *Queue) RemoveByAgent(agentID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	lock, err := lockfile.Acquire(q.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := q.load()
 	if err != nil {
@@ -188,6 +207,11 @@ func (q *Queue) RemoveByAgent(agentID string) error {
 func (q *Queue) RemoveByAgentAndType(agentID string, itemType ItemType) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	lock, err := lockfile.Acquire(q.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data, err := q.load()
 	if err != nil {
@@ -210,6 +234,11 @@ func (q *Queue) RemoveByAgentAndType(agentID string, itemType ItemType) error {
 func (q *Queue) Clear() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	lock, err := lockfile.Acquire(q.filePath, lockfile.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lockfile.Release(lock)
 
 	data := &queueData{
 		Items:   make([]*QueueItem, 0),
