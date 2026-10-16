@@ -40,7 +40,7 @@ func (s *Store) load() (*storeData, error) {
 		Prompts: make(map[string]*Prompt),
 	}
 
-	raw, err := os.ReadFile(s.filePath)
+	raw, err := lockfile.ReadJSON(s.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}

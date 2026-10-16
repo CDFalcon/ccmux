@@ -38,7 +38,7 @@ func (s *Store) load() (*storeData, error) {
 		Agents: make(map[string]*Agent),
 	}
 
-	raw, err := os.ReadFile(s.filePath)
+	raw, err := lockfile.ReadJSON(s.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}

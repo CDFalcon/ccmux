@@ -37,7 +37,7 @@ func (q *Queue) load() (*queueData, error) {
 		Items: make([]*QueueItem, 0),
 	}
 
-	raw, err := os.ReadFile(q.filePath)
+	raw, err := lockfile.ReadJSON(q.filePath)
 	if os.IsNotExist(err) {
 		return data, nil
 	}
