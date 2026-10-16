@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/CDFalcon/ccmux/internal/lockfile"
 )
 
 type Store struct {
@@ -49,7 +51,9 @@ func (s *Store) load() (*storeData, error) {
 	var envelope struct {
 		Version int `json:"version"`
 	}
-	json.Unmarshal(raw, &envelope)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse projects file: %w", err)
+	}
 
 	if envelope.Version < CurrentSchemaVersion {
 		raw, err = migrations.Migrate(raw, envelope.Version, CurrentSchemaVersion)
@@ -76,7 +80,7 @@ func (s *Store) save(data *storeData) error {
 		return fmt.Errorf("failed to marshal projects: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
+	if err := lockfile.WriteFileAtomic(s.filePath, bytes, 0644); err != nil {
 		return fmt.Errorf("failed to write projects file: %w", err)
 	}
 
