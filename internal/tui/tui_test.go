@@ -292,27 +292,75 @@ func TestHandleNewTaskHarnessKeys_ShouldGoBackToProject_GivenEsc(t *testing.T) {
 	}
 }
 
-func TestHandleNewTaskHarnessKeys_ShouldNotMovePastEnds_GivenNavigation(t *testing.T) {
+func TestHandleNewTaskHarnessKeys_ShouldWrapAround_GivenNavigationPastEnds(t *testing.T) {
 	// Setup.
 	m := newTestModel()
 	m.view = ViewNewTaskHarness
 	m.selectedIndex = 0
+	last := len(harness.All()) - 1
 
-	// Execute: up at the top is a no-op.
+	// Execute: up at the top wraps to the last harness.
 	result, _ := m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyUp})
 
 	// Assert.
-	if result.(model).selectedIndex != 0 {
-		t.Errorf("expected selectedIndex to stay 0, got %d", result.(model).selectedIndex)
+	if result.(model).selectedIndex != last {
+		t.Errorf("expected selectedIndex to wrap to %d, got %d", last, result.(model).selectedIndex)
 	}
 
-	// Execute: down past the last harness is a no-op.
-	m.selectedIndex = len(harness.All()) - 1
+	// Execute: down past the last harness wraps to the first.
+	m.selectedIndex = last
 	result, _ = m.handleNewTaskHarnessKeys(tea.KeyMsg{Type: tea.KeyDown})
 
 	// Assert.
-	if result.(model).selectedIndex != len(harness.All())-1 {
-		t.Errorf("expected selectedIndex to stay %d, got %d", len(harness.All())-1, result.(model).selectedIndex)
+	if result.(model).selectedIndex != 0 {
+		t.Errorf("expected selectedIndex to wrap to 0, got %d", result.(model).selectedIndex)
+	}
+}
+
+func TestHandleManageProjectsKeys_ShouldWrapAround_GivenVimKeysPastEnds(t *testing.T) {
+	// Setup.
+	m := newTestModel()
+	m.view = ViewManageProjects
+	m.projects = []*project.Project{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+	m.selectedIndex = 0
+
+	// Execute: k at the top wraps to the bottom.
+	result, _ := m.handleManageProjectsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+
+	// Assert.
+	if result.(model).selectedIndex != 2 {
+		t.Errorf("expected selectedIndex to wrap to 2, got %d", result.(model).selectedIndex)
+	}
+
+	// Execute: j at the bottom wraps to the top.
+	m.selectedIndex = 2
+	result, _ = m.handleManageProjectsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+
+	// Assert.
+	if result.(model).selectedIndex != 0 {
+		t.Errorf("expected selectedIndex to wrap to 0, got %d", result.(model).selectedIndex)
+	}
+}
+
+func TestWrapIndex(t *testing.T) {
+	cases := []struct {
+		name              string
+		i, delta, n, want int
+	}{
+		{"down in middle", 1, 1, 3, 2},
+		{"up in middle", 1, -1, 3, 0},
+		{"down from last wraps to first", 2, 1, 3, 0},
+		{"up from first wraps to last", 0, -1, 3, 2},
+		{"single item stays put", 0, 1, 1, 0},
+		{"empty list resets to zero", 4, -1, 0, 0},
+		{"stale index past end is pulled back into range", 7, 1, 3, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wrapIndex(tc.i, tc.delta, tc.n); got != tc.want {
+				t.Errorf("wrapIndex(%d, %d, %d) = %d, want %d", tc.i, tc.delta, tc.n, got, tc.want)
+			}
+		})
 	}
 }
 

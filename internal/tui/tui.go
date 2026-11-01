@@ -1794,6 +1794,16 @@ func (m model) handleMainKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// wrapIndex moves a menu cursor at index i by delta through a list of n items,
+// looping past either end: up from the first item lands on the last, and down
+// from the last lands on the first. An empty list leaves the cursor at 0.
+func wrapIndex(i, delta, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return ((i+delta)%n + n) % n
+}
+
 func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	projects := m.visibleProjects()
 
@@ -1808,14 +1818,10 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.projectFilter.Blur()
 			return m, nil
 		case "up":
-			if m.selectedIndex > 0 {
-				m.selectedIndex--
-			}
+			m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(projects))
 			return m, nil
 		case "down":
-			if m.selectedIndex < len(projects)-1 {
-				m.selectedIndex++
-			}
+			m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(projects))
 			return m, nil
 		case "enter":
 			if m.selectedIndex >= 0 && m.selectedIndex < len(projects) {
@@ -1846,13 +1852,9 @@ func (m model) handleSelectProjectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projectFilter.Focus()
 		return m, textinput.Blink
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(projects))
 	case "down", "j":
-		if m.selectedIndex < len(projects)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(projects))
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(projects) {
 			p := projects[m.selectedIndex]
@@ -1898,14 +1900,10 @@ func (m model) handleNewTaskHarnessKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedIndex = 0
 		return m, nil
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(harnesses))
 		return m, nil
 	case "down", "j":
-		if m.selectedIndex < len(harnesses)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(harnesses))
 		return m, nil
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(harnesses) {
@@ -1938,14 +1936,10 @@ func (m model) handleNewTaskBranchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedIndex = harnessIndex(m.spawnHarness)
 		return m, nil
 	case "up":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, totalItems)
 		return m, nil
 	case "down":
-		if m.selectedIndex < totalItems-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, totalItems)
 		return m, nil
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < totalItems {
@@ -2088,13 +2082,9 @@ func (m model) handleInterveneKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(items))
 	case "down", "j":
-		if m.selectedIndex < len(items)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(items))
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(items) {
 			selected := items[m.selectedIndex]
@@ -2215,13 +2205,9 @@ func (m model) handleReviewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(items))
 	case "down", "j":
-		if m.selectedIndex < len(items)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(items))
 	case "a":
 		if a, _ := findAgent(); a != nil {
 			m.view = ViewMain
@@ -2328,13 +2314,9 @@ func (m model) handleConfirmKillKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.agents))
 	case "down", "j":
-		if m.selectedIndex < len(m.agents)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.agents))
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
 			m.confirmKillAgent = m.agents[m.selectedIndex]
@@ -2348,13 +2330,9 @@ func (m model) handleManageProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.projects))
 	case "down", "j":
-		if m.selectedIndex < len(m.projects)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.projects))
 	case "K":
 		return m.moveSelectedProject(-1)
 	case "J":
@@ -2579,13 +2557,9 @@ func (m model) handleManagePromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.prompts))
 	case "down", "j":
-		if m.selectedIndex < len(m.prompts)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.prompts))
 	case "a":
 		m.view = ViewAddPromptName
 		m.promptForm.reset()
@@ -2685,13 +2659,9 @@ func (m model) handleAddPromptProjectsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.view = ViewAddPromptDefault
 		return m, nil
 	case "up", "k":
-		if m.promptProjectIndex > 0 {
-			m.promptProjectIndex--
-		}
+		m.promptProjectIndex = wrapIndex(m.promptProjectIndex, -1, len(m.projects))
 	case "down", "j":
-		if m.promptProjectIndex < len(m.projects)-1 {
-			m.promptProjectIndex++
-		}
+		m.promptProjectIndex = wrapIndex(m.promptProjectIndex, 1, len(m.projects))
 	case " ":
 		if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
 			p := m.projects[m.promptProjectIndex]
@@ -2758,13 +2728,9 @@ func (m model) handleEditPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editPromptForm.focusIndex == 3 {
 		switch msg.String() {
 		case "up", "k":
-			if m.promptProjectIndex > 0 {
-				m.promptProjectIndex--
-			}
+			m.promptProjectIndex = wrapIndex(m.promptProjectIndex, -1, len(m.projects))
 		case "down", "j":
-			if m.promptProjectIndex < len(m.projects)-1 {
-				m.promptProjectIndex++
-			}
+			m.promptProjectIndex = wrapIndex(m.promptProjectIndex, 1, len(m.projects))
 		case " ":
 			if m.promptProjectIndex >= 0 && m.promptProjectIndex < len(m.projects) {
 				p := m.projects[m.promptProjectIndex]
@@ -2811,13 +2777,9 @@ func (m model) handleNewTaskSelectPromptsKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 		cmd := m.taskInput.Focus()
 		return m, cmd
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.spawnFilteredPrompts))
 	case "down", "j":
-		if m.selectedIndex < len(m.spawnFilteredPrompts)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.spawnFilteredPrompts))
 	case " ":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.spawnFilteredPrompts) {
 			p := m.spawnFilteredPrompts[m.selectedIndex]
@@ -2885,13 +2847,9 @@ func (m model) handleAgentInfoKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = ViewMain
 	case "up", "k":
-		if m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.agents))
 	case "down", "j":
-		if m.selectedIndex < len(m.agents)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.agents))
 	case "enter":
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.agents) {
 			selected := m.agents[m.selectedIndex]
@@ -2931,13 +2889,9 @@ func (m model) handleUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case "up", "k":
-		if len(m.changelogEntries) > 0 && m.selectedIndex > 0 {
-			m.selectedIndex--
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, -1, len(m.changelogEntries))
 	case "down", "j":
-		if len(m.changelogEntries) > 0 && m.selectedIndex < len(m.changelogEntries)-1 {
-			m.selectedIndex++
-		}
+		m.selectedIndex = wrapIndex(m.selectedIndex, 1, len(m.changelogEntries))
 	case "b":
 		if !m.updateDownloading && !m.updateComplete {
 			m.betaChannel = !m.betaChannel
