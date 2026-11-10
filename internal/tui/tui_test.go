@@ -1636,6 +1636,80 @@ func TestRefreshCmd_ShouldHandIdleRunningAgentWithPRToCI(t *testing.T) {
 	}
 }
 
+func TestRefreshCmd_ShouldDropQueueItems_GivenAgentNoLongerRegistered(t *testing.T) {
+	// Setup. `ccmux cleanup` and startup recovery remove agent records
+	// without going through the TUI, and their queue items used to stay in
+	// the action queue for weeks.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", fmt.Sprintf("%d", time.Now().Unix()))
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+
+	m := newRefreshTestModel(t)
+	a := &agent.Agent{
+		ID:           "agent-1",
+		Status:       agent.StatusWaitingReview,
+		PRURL:        "https://github.com/owner/repo/pull/1",
+		WorktreePath: t.TempDir(),
+		TmuxWindow:   "@1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.queueManager.Add(queue.ItemTypeIdle, "gone-1", "Agent finished (no PR)", "")
+	m.queueManager.Add(queue.ItemTypeDead, "gone-2", "Agent failed - kill or restart", "spawn failed")
+	m.queueManager.Add(queue.ItemTypePRReady, a.ID, "PR ready", a.PRURL)
+
+	// Execute.
+	msg := m.refreshCmd()()
+
+	// Assert.
+	rm, ok := msg.(refreshMsg)
+	if !ok {
+		t.Fatalf("expected refreshMsg, got %T", msg)
+	}
+	if len(rm.queueItems) != 1 || rm.queueItems[0].AgentID != a.ID {
+		t.Errorf("expected only agent-1's item in the refreshed queue, got %+v", rm.queueItems)
+	}
+	items, _ := m.queueManager.List()
+	if len(items) != 1 {
+		t.Errorf("expected the orphaned items removed from disk, got %d items", len(items))
+	}
+}
+
+func TestRefreshCmd_ShouldNotQueueDeadPane_GivenAgentAlreadyHasPRReadyItem(t *testing.T) {
+	// Setup. The agent's PR is waiting on review and its harness has exited.
+	// It is already in the queue; the dead pane is not a second reason to
+	// look at it, and must not displace the PR item.
+	installFakeTmux(t)
+	t.Setenv("FAKE_TMUX_WINDOW_ACTIVITY", "0")
+	t.Setenv("FAKE_TMUX_PANE_PID", "999999")
+	t.Setenv("FAKE_TMUX_PANE_DEAD", "1")
+
+	m := newRefreshTestModel(t)
+	a := &agent.Agent{
+		ID:           "agent-1",
+		Status:       agent.StatusWaitingReview,
+		PRURL:        "https://github.com/owner/repo/pull/1",
+		WorktreePath: t.TempDir(),
+		TmuxWindow:   "@1",
+	}
+	if err := m.agentStore.Create(a); err != nil {
+		t.Fatalf("failed to seed agent: %v", err)
+	}
+	m.queueManager.Add(queue.ItemTypePRReady, a.ID, "PR ready", a.PRURL)
+
+	// Execute.
+	if _, ok := m.refreshCmd()().(refreshMsg); !ok {
+		t.Fatal("expected refreshMsg")
+	}
+
+	// Assert.
+	items, _ := m.queueManager.List()
+	if len(items) != 1 || items[0].Type != queue.ItemTypePRReady {
+		t.Errorf("expected agent-1's PR item alone, got %+v", items)
+	}
+}
+
 func TestRefreshCmd_ShouldInitializeCIWaitAt_GivenIdleRunningAgentWithPRAndZeroCIWaitAt(t *testing.T) {
 	// Setup. An agent whose PR was recorded without a CIWaitAt (e.g. older
 	// store records) must still get a cutoff, otherwise the poller never

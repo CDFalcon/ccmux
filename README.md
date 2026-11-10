@@ -111,7 +111,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 3. **Spawn an agent:** Press `n`, select a project, pick the harness (defaults to the project's default), choose a base branch, and describe the task. ccmux creates a worktree and launches the selected agent.
 
-4. **Monitor and work the queue:** As agents work, items appear in the quick action queue. Press `q` to pop the top item and take action:
+4. **Monitor and work the queue:** As agents work, items appear in the quick action queue — at most one per agent, showing its latest state. Press `q` to pop the top item and take action:
 
    - 💤 **Idle** — agent's terminal has gone quiet (may be stuck). Jump in to check on it or send it a message.
    - 🔀 **PR Ready** — agent opened a pull request. `a`ccept (cleanup agent and worktree), `c`omment (resume agent to address feedback), `r`eject (close PR + cleanup), or `b`rowser (open PR in browser).
