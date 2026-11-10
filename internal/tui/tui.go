@@ -829,7 +829,8 @@ func (m model) refreshCmd() tea.Cmd {
 			defer m.refreshInFlight.Store(false)
 		}
 
-		agents, _ := m.agentStore.List()
+		agentsListedAt := time.Now()
+		agents, agentsErr := m.agentStore.List()
 		projects, _ := m.projectStore.List()
 
 		// One tmux call for the whole live-window set, used to skip agents
@@ -842,18 +843,31 @@ func (m model) refreshCmd() tea.Cmd {
 		const idleThreshold = ciIdleThreshold
 		const readyGracePeriod = 15 * time.Second
 
+		// Keep the queue to one item per registered agent. Agents leave the
+		// registry through paths that never touched the queue (a cleanup run
+		// outside the TUI, startup recovery dropping a record), and racing
+		// writers can still leave two items for one agent in a file written
+		// by an older ccmux. Skip it when the registry could not be read: an
+		// empty agent list would read as "every agent is gone".
+		if agentsErr == nil {
+			live := make(map[string]bool, len(agents))
+			for _, a := range agents {
+				live[a.ID] = true
+			}
+			m.queueManager.Reconcile(live, agentsListedAt)
+		}
+
 		queueItems, _ := m.queueManager.List()
 
 		idleItemByAgent := make(map[string]*queue.QueueItem)
 		prReadyByAgent := make(map[string]bool)
-		deadItemByAgent := make(map[string]bool)
+		hasItem := make(map[string]bool)
 		for _, item := range queueItems {
+			hasItem[item.AgentID] = true
 			if item.Type == queue.ItemTypeIdle {
 				idleItemByAgent[item.AgentID] = item
 			} else if item.Type == queue.ItemTypePRReady {
 				prReadyByAgent[item.AgentID] = true
-			} else if item.Type == queue.ItemTypeDead {
-				deadItemByAgent[item.AgentID] = true
 			}
 		}
 
@@ -976,7 +990,10 @@ func (m model) refreshCmd() tea.Cmd {
 		}
 
 		for _, a := range agents {
-			if a.TmuxWindow == "" || deadItemByAgent[a.ID] {
+			// An agent that already has an item is already in front of the
+			// user; a dead pane is no reason to swap a ready PR (or an idle
+			// prompt) for a second line about the same agent.
+			if a.TmuxWindow == "" || hasItem[a.ID] {
 				continue
 			}
 			if a.Status == agent.StatusKilling || a.Status == agent.StatusCleaningUp || a.Status == agent.StatusMerged || a.Status == agent.StatusWaitingMergeQueue {
@@ -984,9 +1001,6 @@ func (m model) refreshCmd() tea.Cmd {
 			}
 			dead, err := m.tmuxManager.IsPaneDead(a.TmuxWindow)
 			if err != nil || !dead {
-				continue
-			}
-			if _, hasIdle := idleItemByAgent[a.ID]; hasIdle {
 				continue
 			}
 			m.queueManager.Add(queue.ItemTypeDead, a.ID, "Pane exited - kill or restart", "")

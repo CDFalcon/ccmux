@@ -2241,6 +2241,13 @@ func doCleanup(agentID, action string, closePR bool) error {
 	}
 
 	agentStore.Delete(agentID)
+	// The agent is gone, so nothing it queued can be acted on any more.
+	// Callers that went through the TUI already cleared its items, but a
+	// direct `ccmux cleanup` / `ccmux kill` did not, and its items sat in the
+	// queue indefinitely.
+	if q, err := queue.NewQueue(sessionID); err == nil {
+		q.RemoveByAgent(agentID)
+	}
 
 	fmt.Printf("%s agent %s\n", action, agentID)
 	return nil
