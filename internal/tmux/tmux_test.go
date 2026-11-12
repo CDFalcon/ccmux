@@ -626,6 +626,29 @@ func TestSendText_ShouldTypeLiterally_GivenKeyNameAsMessage(t *testing.T) {
 	}
 }
 
+func TestSendText_ShouldPasteBracketed_GivenSingleLineMessage(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Setup: a program that asks for bracketed paste, as the agent harnesses
+	// do, then shows its raw input with control characters made visible.
+	mgr := createTestSession(t, "ccmux-test-sendtext-bracketed")
+	_, paneID, err := mgr.CreateWindow("/tmp", `bash -c "printf '\033[?2004hready\n'; cat -v"`, "cat")
+	if err != nil {
+		t.Fatalf("failed to create window: %v", err)
+	}
+	waitForPaneText(t, paneID, "ready")
+
+	// Execute.
+	if err := mgr.SendText(paneID, "hello codex"); err != nil {
+		t.Fatalf("SendText failed: %v", err)
+	}
+
+	// Assert: the line arrives wrapped in paste brackets. Codex takes bare
+	// keystrokes followed by Enter for an unbracketed paste and inserts the
+	// Enter as a newline instead of submitting.
+	waitForPaneText(t, paneID, "^[[200~hello codex^[[201~")
+}
+
 func TestSendText_ShouldDeliverEveryLine_GivenMultilineMessage(t *testing.T) {
 	skipIfNoTmux(t)
 
