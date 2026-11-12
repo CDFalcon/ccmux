@@ -3186,8 +3186,16 @@ func (m model) quickRespondToAgentCmd(a *agent.Agent) tea.Cmd {
 }
 
 func (m model) sendKeysToAgentCmd(a *agent.Agent, text string) tea.Cmd {
+	// The agent's own pane, not its window: the window's active pane may be
+	// the shared output pane, which would swallow the message.
+	target := a.TmuxPane
+	if target == "" {
+		target = a.TmuxWindow
+	}
 	return func() tea.Msg {
-		if err := m.tmuxManager.SendKeys(a.TmuxWindow, text); err != nil {
+		// SendText, not SendKeys: keystrokes followed by Enter are not
+		// submitted by Codex (see SendText).
+		if err := m.tmuxManager.SendText(target, text); err != nil {
 			return errMsg{err}
 		}
 		m.queueManager.RemoveByAgent(a.ID)

@@ -409,29 +409,32 @@ func (m *Manager) SendKeys(target, keys string) error {
 	return nil
 }
 
-// SendText types text into target as input and submits it with Enter. A
-// single-line message is sent as literal keys (no tmux key-name lookup, so a
-// message that happens to be "Enter" or "C-c" is typed, not interpreted). A
-// multi-line message goes through a tmux paste buffer with bracketed paste,
-// so applications that support it (the agent harnesses do) receive the
-// newlines as part of the text instead of as early submits.
+// SendText puts text into target's input and submits it with Enter. The text
+// travels through a tmux paste buffer with bracketed paste, so applications
+// that support it (the agent harnesses all do) receive it as one explicit
+// paste: nothing in it is looked up as a tmux key name (a message that happens
+// to be "Enter" or "C-c" is inserted, not interpreted) and its newlines are
+// part of the text instead of early submits.
+//
+// It must be a paste even for a single line. Typing the text as keystrokes
+// (`send-keys -l`) and pressing Enter right behind it works in Claude Code,
+// OpenCode and Pi, but not in Codex: Codex's composer guesses at pastes from
+// terminals without bracketed paste by timing, so a burst of characters with
+// an Enter on its heels is taken for pasted text and the Enter becomes a
+// newline. The message then sat in the Codex agent's composer, unsubmitted,
+// while the sender was told it had been delivered. An explicit bracketed paste
+// is exempt from that guess, so the Enter after it submits — idle or mid-turn,
+// and without depending on how quickly the harness drains its input.
 func (m *Manager) SendText(target, text string) error {
-	if strings.Contains(text, "\n") {
-		bufName := fmt.Sprintf("ccmux-msg-%d", time.Now().UnixNano())
-		load := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
-		load.Stdin = strings.NewReader(text)
-		if output, err := load.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to load paste buffer: %s: %w", string(output), err)
-		}
-		paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", bufName, "-t", target)
-		if output, err := paste.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to paste text: %s: %w", string(output), err)
-		}
-	} else {
-		cmd := exec.Command("tmux", "send-keys", "-t", target, "-l", text)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to send text: %s: %w", string(output), err)
-		}
+	bufName := fmt.Sprintf("ccmux-msg-%d", time.Now().UnixNano())
+	load := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
+	load.Stdin = strings.NewReader(text)
+	if output, err := load.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to load paste buffer: %s: %w", string(output), err)
+	}
+	paste := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", bufName, "-t", target)
+	if output, err := paste.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to paste text: %s: %w", string(output), err)
 	}
 	cmd := exec.Command("tmux", "send-keys", "-t", target, "Enter")
 	if output, err := cmd.CombinedOutput(); err != nil {
